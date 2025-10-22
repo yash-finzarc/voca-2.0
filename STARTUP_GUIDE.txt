@@ -1,0 +1,152 @@
+# VOCA Project Startup Guide
+
+## 🚀 Complete Commands to Run Your VOCA Project
+
+### **Option 1: One-Command Startup (Recommended)**
+```bash
+# This starts backend + ngrok automatically
+python start_twilio_voca.py
+```
+
+### **Option 2: Manual Startup (3 Terminals)**
+
+#### **Terminal 1: Start Backend (Twilio Webhook Server)**
+```bash
+# Option A: Using startup script
+python start_twilio_voca.py
+
+# Option B: Direct command
+python -m src.voca.twilio_app
+
+# Option C: Alternative
+python main.py
+```
+
+#### **Terminal 2: Start ngrok (if not using startup script)**
+```bash
+ngrok http 5000
+```
+
+#### **Terminal 3: Start Frontend GUI (Optional)**
+```bash
+# Option A: Using module syntax
+python -m src.voca.gui.app
+
+# Option B: Direct command
+cd src/voca/gui
+python app.py
+```
+
+## 📋 **Complete Setup Checklist**
+
+### **Step 1: Environment Setup**
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Set up environment variables (create .env file or set in system)
+# Required variables:
+GEMINI_API_KEY=your_gemini_key
+TWILIO_ACCOUNT_SID=your_twilio_sid
+TWILIO_AUTH_TOKEN=your_twilio_token
+TWILIO_PHONE_NUMBER=your_twilio_number
+```
+
+### **Step 2: Start the System**
+```bash
+# Terminal 1: Start backend + ngrok
+python start_twilio_voca.py
+
+# Terminal 2: Start frontend GUI (optional)
+python -m src.voca.gui.app
+```
+
+### **Step 3: Configure Twilio Console**
+Update your Twilio Console webhook URLs to:
+- **A call comes in**: `https://erectly-cigarless-lionel.ngrok-free.dev/webhook/voice`
+- **Primary handler fails**: `https://erectly-cigarless-lionel.ngrok-free.dev/webhook/voice`
+- **Call status changes**: `https://erectly-cigarless-lionel.ngrok-free.dev/call/status`
+
+### **Step 4: Test the System**
+```bash
+# Test with your phone number
+python test_twilio_call.py
+```
+
+## 🎯 **What Each Component Does**
+
+1. **Backend (`start_twilio_voca.py`)**: 
+   - Loads AI models (STT, TTS, LLM)
+   - Starts Flask webhook server on port 5000
+   - Handles Twilio voice calls and AI processing
+
+2. **ngrok**: 
+   - Creates secure tunnel to expose local server
+   - Provides public URL for Twilio webhooks
+   - Handles HTTPS traffic
+
+3. **Frontend GUI**: 
+   - Tkinter-based interface for local voice interaction
+   - Twilio call management interface
+   - Real-time status monitoring
+
+## ✅ **System Status**
+
+Your AI voice assistant is successfully:
+- ✅ Receiving calls
+- ✅ Processing speech with high confidence (0.97+)
+- ✅ Generating intelligent AI responses
+- ✅ Handling multiple concurrent calls
+- ✅ Answering questions about locations, people, etc.
+
+## 🔧 **Troubleshooting Commands**
+
+```bash
+# Check if processes are running
+tasklist | findstr python
+
+# Kill ngrok if needed
+taskkill /f /im ngrok.exe
+
+# Check ngrok status
+curl http://localhost:4040/api/tunnels
+
+# Test webhook locally
+Invoke-WebRequest -Uri "http://localhost:5000/webhook/voice" -Method POST -Body "CallSid=test123&From=%2B1234567890" -ContentType "application/x-www-form-urlencoded"
+
+# Test webhook via ngrok
+Invoke-WebRequest -Uri "https://erectly-cigarless-lionel.ngrok-free.dev/webhook/voice" -Method POST -Body "CallSid=test123&From=%2B1234567890" -ContentType "application/x-www-form-urlencoded"
+```
+
+## 🛠 **Tools Used**
+
+- Python 3.11
+- Twilio Voice API
+- ngrok (tunneling service)
+- Flask (webhook server)
+- Faster-Whisper (Speech-to-Text)
+- Coqui TTS (Text-to-Speech)
+- Google Gemini 2.5 Flash AI
+- WebRTC
+- PyAudio/sounddevice
+- NumPy
+- Tkinter (GUI)
+- python-dotenv
+- pyngrok
+
+## 📞 **Making Calls**
+
+```bash
+# Test call script
+python test_twilio_call.py
+
+# Use proper phone number format: +919540465263 (with country code)
+```
+
+## 🎉 **Success Indicators**
+
+When working correctly, you should see:
+- "VOCA models loaded successfully"
+- "Twilio webhook server started on 0.0.0.0:5000"
+- "Ready to receive calls with real-time AI processing!"
+- AI responses like "Arvind Kejriwal", "The Taj Mahal is located in Agra, India"

@@ -1,0 +1,3 @@
+﻿regex:ACfe961760d422e25d2b3a51e13593f521==>your_twilio_account_sid
+regex:7a79180cdb31a65b117c48bf2597275d==>your_twilio_auth_token
+regex:\+15854604655==>+1XXXXXXXXXX

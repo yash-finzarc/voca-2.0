@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+venv/
+.env
+
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Credentials
+.env
+twilio_credentials.env
+
+# Local test scripts
+test_your_credentials.py
+
+# Models & large assets
+models/
+vosk-model-*.zip
+*.mdl
+*.fst
+*.int
+*.mat
+*.ie
+*.dubm
+*.stats
+
+# Binaries
+*.exe
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+.env
+.vscode/
+.idea/
+.build/
+build/
+dist/
+.mypy_cache/
+.pytest_cache/
+.DS_Store
+Thumbs.db
+*.log
+*.wav
+*.mp3
+models/**
+vosk-model-*.zip
