@@ -5,8 +5,9 @@ Test Twilio integration without webhooks
 import sys
 import os
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'src'))
 
 from voca.twilio_config import get_twilio_config
 from twilio.rest import Client
@@ -106,6 +107,8 @@ def main():
     else:
         print("❌ Invalid choice")
         return 1
-
+    
 if __name__ == "__main__":
     sys.exit(main())
+
+

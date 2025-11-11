@@ -64,8 +64,18 @@ See `.env.example` for available variables. Only OpenAI API uses a key.
 - WebRTC/SIP: This repo includes aiortc-based stubs to connect to a remote audio track. Integrate with Asterisk/FreeSWITCH (e.g., via sip-js/gateway) as needed.
 - Security: Keep only `GPT4ALL_API_KEY` in `.env`. Do not commit it. Consider OS keychain or file ACLs for additional protection.
 
+### Documentation
+
+For detailed documentation, see the [docs/](docs/) folder:
+- **[Getting Started](docs/STARTUP_GUIDE.txt)** - Complete startup guide
+- **[Twilio Setup](docs/TWILIO_SETUP.md)** - Twilio integration setup
+- **[Architecture](docs/VOCA_ARCHITECTURE_EXPLANATION.md)** - System architecture
+- **[Full Documentation Index](docs/README.md)** - All available documentation
+
 ### Troubleshooting
 - If Coqui STT fails to load, confirm model file paths and CPU/GPU compatibility.
-- On Windows, install build tools if `aiortc` requires them. See project docs.
+- On Windows, install build tools if `aiortc` requires them. See [docs/](docs/) for more information.
+- For Twilio setup issues, see [docs/TWILIO_SETUP.md](docs/TWILIO_SETUP.md)
+- For ngrok setup, see [docs/NGROK_EXPLANATION.md](docs/NGROK_EXPLANATION.md)
 
 

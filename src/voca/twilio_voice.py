@@ -9,7 +9,9 @@ import time
 import base64
 import io
 from typing import Optional, Callable, Dict, Any
-from flask import Flask, request, Response, jsonify
+from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi.responses import PlainTextResponse
+import uvicorn
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Start, Stream
 from twilio.twiml.messaging_response import MessagingResponse
@@ -39,19 +41,23 @@ class TwilioVoiceHandler:
         self.audio_buffers: Dict[str, list] = {}
         
     def start_webhook_server(self, host='0.0.0.0', port=5000):
-        """Start Flask server to handle Twilio webhooks with real-time audio streaming."""
-        app = Flask(__name__)
+        """Start FastAPI server to handle Twilio webhooks with real-time audio streaming."""
+        app = FastAPI(title="VOCA Twilio Webhook Server")
         
-        @app.route('/webhook/voice', methods=['POST'])
-        def handle_incoming_call():
+        # Store reference to self for route handlers
+        handler = self
+        
+        @app.post('/webhook/voice')
+        async def handle_incoming_call(request: Request):
             """Handle incoming Twilio voice calls."""
-            call_sid = request.form.get('CallSid')
-            from_number = request.form.get('From')
+            form_data = await request.form()
+            call_sid = form_data.get('CallSid')
+            from_number = form_data.get('From')
             
-            self.logger.info(f"Incoming call from {from_number}, SID: {call_sid}")
+            handler.logger.info(f"Incoming call from {from_number}, SID: {call_sid}")
             
             # Store call information
-            self.active_calls[call_sid] = {
+            handler.active_calls[call_sid] = {
                 'from_number': from_number,
                 'status': 'ringing',
                 'start_time': time.time(),
@@ -77,27 +83,27 @@ class TwilioVoiceHandler:
             # If no input, redirect to process
             response.redirect(f'/process_speech/{call_sid}')
             
-            return Response(str(response), mimetype='text/xml')
+            return Response(content=str(response), media_type='text/xml')
         
-        @app.route('/process_speech/<call_sid>', methods=['POST'])
-        def handle_speech(call_sid):
+        @app.post('/process_speech/{call_sid}')
+        async def handle_speech(call_sid: str, request: Request):
             """Handle speech input from user."""
-            if call_sid not in self.active_calls:
-                return Response("Call not found", status=404)
+            if call_sid not in handler.active_calls:
+                raise HTTPException(status_code=404, detail="Call not found")
             
-            # Get speech result
-            speech_result = request.form.get('SpeechResult', '')
-            confidence = request.form.get('Confidence', '0')
+            form_data = await request.form()
+            speech_result = form_data.get('SpeechResult', '')
+            confidence = form_data.get('Confidence', '0')
             
-            self.logger.info(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
+            handler.logger.info(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
             
             if speech_result and float(confidence) > 0.5:
                 # Process speech through VOCA orchestrator
                 try:
                     # Generate AI response with error handling
                     try:
-                        ai_response = self.orchestrator.generate_reply(speech_result)
-                        self.logger.info(f"AI Response: {ai_response}")
+                        ai_response = handler.orchestrator.generate_reply(speech_result)
+                        handler.logger.info(f"AI Response: {ai_response}")
                         
                         # Ensure response is not empty
                         if not ai_response or len(ai_response.strip()) == 0:
@@ -108,7 +114,7 @@ class TwilioVoiceHandler:
                             ai_response = ai_response[:500] + "..."
                         
                     except Exception as ai_error:
-                        self.logger.error(f"AI processing error: {ai_error}")
+                        handler.logger.error(f"AI processing error: {ai_error}")
                         # Use simple fallback response
                         if 'hello' in speech_result.lower():
                             ai_response = "Hello! Nice to meet you. How are you doing today?"
@@ -135,60 +141,62 @@ class TwilioVoiceHandler:
                     response.redirect(f'/process_speech/{call_sid}')
                     
                     twiml_str = str(response)
-                    self.logger.info(f"TwiML Response: {twiml_str}")
-                    return Response(twiml_str, mimetype='text/xml')
+                    handler.logger.info(f"TwiML Response: {twiml_str}")
+                    return Response(content=twiml_str, media_type='text/xml')
                     
                 except Exception as e:
-                    self.logger.error(f"Error processing speech: {e}")
+                    handler.logger.error(f"Error processing speech: {e}")
                     response = VoiceResponse()
                     response.say("I'm sorry, I had trouble processing that. Please try again.")
                     response.redirect(f'/process_speech/{call_sid}')
                     twiml_str = str(response)
-                    return Response(twiml_str, mimetype='text/xml')
+                    return Response(content=twiml_str, media_type='text/xml')
             else:
                 # No speech or low confidence
                 response = VoiceResponse()
                 response.say("I didn't catch that. Please speak clearly.")
                 response.redirect(f'/process_speech/{call_sid}')
-                return Response(str(response), mimetype='text/xml')
+                return Response(content=str(response), media_type='text/xml')
         
-        @app.route('/media/<call_sid>', methods=['POST'])
-        def handle_media_stream(call_sid):
+        @app.post('/media/{call_sid}')
+        async def handle_media_stream(call_sid: str, request: Request):
             """Handle incoming media stream from Twilio."""
-            if call_sid not in self.active_calls:
-                return Response("Call not found", status=404)
+            if call_sid not in handler.active_calls:
+                raise HTTPException(status_code=404, detail="Call not found")
             
-            # Get audio data from request
-            audio_data = request.get_data()
+            # Get audio data from request body
+            audio_data = await request.body()
             if audio_data:
                 # Process audio through VOCA orchestrator
-                self.process_audio_stream(call_sid, audio_data)
+                handler.process_audio_stream(call_sid, audio_data)
             
-            return Response("OK", mimetype='text/plain')
+            return PlainTextResponse("OK")
         
-        @app.route('/call/status', methods=['POST'])
-        def handle_call_status():
+        @app.post('/call/status')
+        async def handle_call_status(request: Request):
             """Handle call status updates from Twilio."""
-            call_sid = request.form.get('CallSid')
-            call_status = request.form.get('CallStatus')
+            form_data = await request.form()
+            call_sid = form_data.get('CallSid')
+            call_status = form_data.get('CallStatus')
             
-            if call_sid in self.active_calls:
-                self.active_calls[call_sid]['status'] = call_status
-                self.logger.info(f"Call {call_sid} status: {call_status}")
+            if call_sid in handler.active_calls:
+                handler.active_calls[call_sid]['status'] = call_status
+                handler.logger.info(f"Call {call_sid} status: {call_status}")
                 
                 if call_status in ['completed', 'failed', 'busy', 'no-answer']:
                     # Clean up call
-                    self.cleanup_call(call_sid)
+                    handler.cleanup_call(call_sid)
             
-            return Response("OK", mimetype='text/plain')
+            return PlainTextResponse("OK")
         
-        @app.route('/outbound', methods=['POST'])
-        def handle_outbound_call():
+        @app.post('/outbound')
+        async def handle_outbound_call(request: Request):
             """Handle outbound call TwiML."""
-            call_sid = request.form.get('CallSid')
+            form_data = await request.form()
+            call_sid = form_data.get('CallSid')
             
             # Store call information
-            self.active_calls[call_sid] = {
+            handler.active_calls[call_sid] = {
                 'to_number': 'outbound',
                 'status': 'ringing',
                 'start_time': time.time(),
@@ -211,11 +219,18 @@ class TwilioVoiceHandler:
             # If no input, redirect to process
             response.redirect(f'/process_speech/{call_sid}')
             
-            return Response(str(response), mimetype='text/xml')
+            return Response(content=str(response), media_type='text/xml')
         
-        # Start server in a separate thread
+        # Start server in a separate thread using uvicorn
+        config = uvicorn.Config(app, host=host, port=port, log_level="info")
+        server = uvicorn.Server(config)
+        
         def run_server():
-            app.run(host=host, port=port, debug=False, threaded=True)
+            import asyncio
+            # Create new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(server.serve())
         
         server_thread = threading.Thread(target=run_server, daemon=True)
         server_thread.start()

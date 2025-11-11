@@ -14,9 +14,9 @@ pyautogui>=0.9.54
 pywin32>=306; platform_system=="Windows"
 openai>=1.33.0
 google-generativeai>=0.8.2
-webrtcvad>=2.0.10
+# webrtcvad>=2.0.10  # Optional: Requires Visual C++ Build Tools on Windows
 twilio>=8.10.0
-flask>=2.3.0
-flask-socketio>=5.3.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
 pyngrok>=7.0.0
 

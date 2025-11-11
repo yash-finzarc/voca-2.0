@@ -40,6 +40,8 @@ TWILIO_API_KEY_SECRET=your_api_key_secret_here
 3. Copy the HTTPS URL (e.g., `https://abc123.ngrok.io`)
 4. Add this URL + `/webhook/voice` to your `.env` file
 
+> 📖 For more details about ngrok and why it's needed, see [NGROK_EXPLANATION.md](NGROK_EXPLANATION.md)
+
 ## 3. Configure Twilio Phone Number
 1. In Twilio Console, go to **Phone Numbers > Manage > Active numbers**
 2. Click on your phone number

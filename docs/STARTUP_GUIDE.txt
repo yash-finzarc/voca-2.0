@@ -70,14 +70,17 @@ Update your Twilio Console webhook URLs to:
 ### **Step 4: Test the System**
 ```bash
 # Test with your phone number
-python test_twilio_call.py
+python testing/test_twilio_call.py
+
+# Quick component sanity check (imports, STT, config)
+python testing/test_voca_components.py
 ```
 
 ## 🎯 **What Each Component Does**
 
 1. **Backend (`start_twilio_voca.py`)**: 
    - Loads AI models (STT, TTS, LLM)
-   - Starts Flask webhook server on port 5000
+   - Starts FastAPI webhook server on port 5000
    - Handles Twilio voice calls and AI processing
 
 2. **ngrok**: 
@@ -123,7 +126,7 @@ Invoke-WebRequest -Uri "https://erectly-cigarless-lionel.ngrok-free.dev/webhook/
 - Python 3.11
 - Twilio Voice API
 - ngrok (tunneling service)
-- Flask (webhook server)
+- FastAPI (webhook server)
 - Faster-Whisper (Speech-to-Text)
 - Coqui TTS (Text-to-Speech)
 - Google Gemini 2.5 Flash AI
@@ -138,7 +141,7 @@ Invoke-WebRequest -Uri "https://erectly-cigarless-lionel.ngrok-free.dev/webhook/
 
 ```bash
 # Test call script
-python test_twilio_call.py
+python testing/test_twilio_call.py
 
 # Use proper phone number format: +919540465263 (with country code)
 ```

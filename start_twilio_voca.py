@@ -27,7 +27,7 @@ def check_environment():
     if not env_file.exists():
         logger.error("❌ .env file not found!")
         logger.error("Please create a .env file with your credentials.")
-        logger.error("See TWILIO_VOCA_SETUP.md for details.")
+        logger.error("See docs/TWILIO_VOCA_SETUP.md for details.")
         return False
     
     # Check if required directories exist
@@ -45,7 +45,8 @@ def check_dependencies():
     logger = logging.getLogger(__name__)
     
     try:
-        import flask
+        import fastapi
+        import uvicorn
         import twilio
         import google.generativeai
         import numpy

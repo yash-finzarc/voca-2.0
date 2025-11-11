@@ -11,8 +11,8 @@ import base64
 import numpy as np
 from typing import Dict, Optional, Callable
 import websocket
-from flask import Flask, request, Response
-from flask_socketio import SocketIO, emit, join_room, leave_room
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 
 from .orchestrator import VocaOrchestrator
 
@@ -25,71 +25,76 @@ class TwilioWebSocketHandler:
         self.logger = logging.getLogger(__name__)
         self.active_connections: Dict[str, Dict] = {}
         self.audio_buffers: Dict[str, list] = {}
+        self.websocket_connections: Dict[str, WebSocket] = {}
+        self.call_rooms: Dict[str, set] = {}  # call_sid -> set of websocket_ids
         
-    def create_socketio_app(self, host='0.0.0.0', port=5000):
-        """Create Flask-SocketIO app for WebSocket handling."""
-        app = Flask(__name__)
-        app.config['SECRET_KEY'] = 'voca_twilio_secret'
-        socketio = SocketIO(app, cors_allowed_origins="*")
+    def create_websocket_app(self, host='0.0.0.0', port=5000):
+        """Create FastAPI app with WebSocket support for WebSocket handling."""
+        app = FastAPI(title="VOCA Twilio WebSocket Server")
+        handler = self
         
-        @socketio.on('connect')
-        def handle_connect():
+        @app.websocket("/ws/{connection_id}")
+        async def websocket_endpoint(websocket: WebSocket, connection_id: str):
             """Handle WebSocket connection."""
-            self.logger.info(f"WebSocket connection established: {request.sid}")
-        
-        @socketio.on('disconnect')
-        def handle_disconnect():
-            """Handle WebSocket disconnection."""
-            self.logger.info(f"WebSocket disconnected: {request.sid}")
-            self.cleanup_connection(request.sid)
-        
-        @socketio.on('join_call')
-        def handle_join_call(data):
-            """Handle joining a call room."""
-            call_sid = data.get('call_sid')
-            if call_sid:
-                join_room(call_sid)
-                self.active_connections[request.sid] = {
-                    'call_sid': call_sid,
-                    'connected_at': time.time()
-                }
-                self.logger.info(f"Connection {request.sid} joined call {call_sid}")
-        
-        @socketio.on('audio_data')
-        def handle_audio_data(data):
-            """Handle incoming audio data from Twilio."""
-            call_sid = data.get('call_sid')
-            audio_payload = data.get('audio')
-            
-            if not call_sid or not audio_payload:
-                return
+            await websocket.accept()
+            handler.logger.info(f"WebSocket connection established: {connection_id}")
+            handler.websocket_connections[connection_id] = websocket
             
             try:
-                # Decode base64 audio data
-                audio_bytes = base64.b64decode(audio_payload)
-                
-                # Convert to numpy array (assuming 16-bit PCM, 8kHz)
-                audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-                
-                # Process through VOCA orchestrator
-                self.process_audio_chunk(call_sid, audio_array)
-                
+                while True:
+                    # Receive JSON message
+                    data = await websocket.receive_json()
+                    message_type = data.get('type')
+                    
+                    if message_type == 'join_call':
+                        call_sid = data.get('call_sid')
+                        if call_sid:
+                            if call_sid not in handler.call_rooms:
+                                handler.call_rooms[call_sid] = set()
+                            handler.call_rooms[call_sid].add(connection_id)
+                            handler.active_connections[connection_id] = {
+                                'call_sid': call_sid,
+                                'connected_at': time.time()
+                            }
+                            handler.logger.info(f"Connection {connection_id} joined call {call_sid}")
+                            await websocket.send_json({'status': 'joined', 'call_sid': call_sid})
+                    
+                    elif message_type == 'audio_data':
+                        call_sid = data.get('call_sid')
+                        audio_payload = data.get('audio')
+                        
+                        if call_sid and audio_payload:
+                            try:
+                                # Decode base64 audio data
+                                audio_bytes = base64.b64decode(audio_payload)
+                                
+                                # Convert to numpy array (assuming 16-bit PCM, 8kHz)
+                                audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+                                
+                                # Process through VOCA orchestrator
+                                handler.process_audio_chunk(call_sid, audio_array)
+                                
+                            except Exception as e:
+                                handler.logger.error(f"Error processing audio data: {e}")
+                    
+                    elif message_type == 'call_status':
+                        call_sid = data.get('call_sid')
+                        status = data.get('status')
+                        
+                        if call_sid:
+                            handler.logger.info(f"Call {call_sid} status: {status}")
+                            
+                            if status in ['completed', 'failed', 'busy', 'no-answer']:
+                                handler.cleanup_call(call_sid)
+                    
+            except WebSocketDisconnect:
+                handler.logger.info(f"WebSocket disconnected: {connection_id}")
+                handler.cleanup_connection(connection_id)
             except Exception as e:
-                self.logger.error(f"Error processing audio data: {e}")
+                handler.logger.error(f"WebSocket error: {e}")
+                handler.cleanup_connection(connection_id)
         
-        @socketio.on('call_status')
-        def handle_call_status(data):
-            """Handle call status updates."""
-            call_sid = data.get('call_sid')
-            status = data.get('status')
-            
-            if call_sid:
-                self.logger.info(f"Call {call_sid} status: {status}")
-                
-                if status in ['completed', 'failed', 'busy', 'no-answer']:
-                    self.cleanup_call(call_sid)
-        
-        return app, socketio
+        return app
     
     def process_audio_chunk(self, call_sid: str, audio_array: np.ndarray):
         """Process audio chunk through VOCA orchestrator."""
@@ -106,26 +111,49 @@ class TwilioWebSocketHandler:
         except Exception as e:
             self.logger.error(f"Error processing audio chunk for call {call_sid}: {e}")
     
-    def send_audio_response(self, call_sid: str, audio_data: bytes):
-        """Send audio response back to Twilio."""
+    async def send_audio_response(self, call_sid: str, audio_data: bytes):
+        """Send audio response back to Twilio via WebSocket."""
         try:
             # Encode audio data as base64
             audio_b64 = base64.b64encode(audio_data).decode('utf-8')
             
             # Send to all connections in the call room
-            from flask_socketio import emit
-            emit('audio_response', {
-                'call_sid': call_sid,
-                'audio': audio_b64
-            }, room=call_sid)
+            if call_sid in self.call_rooms:
+                message = {
+                    'type': 'audio_response',
+                    'call_sid': call_sid,
+                    'audio': audio_b64
+                }
+                disconnected = []
+                for connection_id in self.call_rooms[call_sid]:
+                    if connection_id in self.websocket_connections:
+                        try:
+                            await self.websocket_connections[connection_id].send_json(message)
+                        except Exception as e:
+                            self.logger.error(f"Error sending to {connection_id}: {e}")
+                            disconnected.append(connection_id)
+                
+                # Clean up disconnected connections
+                for conn_id in disconnected:
+                    self.cleanup_connection(conn_id)
             
         except Exception as e:
             self.logger.error(f"Error sending audio response: {e}")
     
     def cleanup_connection(self, connection_id: str):
         """Clean up WebSocket connection."""
+        # Remove from active connections
         if connection_id in self.active_connections:
+            call_sid = self.active_connections[connection_id].get('call_sid')
+            if call_sid and call_sid in self.call_rooms:
+                self.call_rooms[call_sid].discard(connection_id)
+                if not self.call_rooms[call_sid]:
+                    del self.call_rooms[call_sid]
             del self.active_connections[connection_id]
+        
+        # Remove WebSocket connection
+        if connection_id in self.websocket_connections:
+            del self.websocket_connections[connection_id]
     
     def cleanup_call(self, call_sid: str):
         """Clean up all resources for a call."""
@@ -136,7 +164,11 @@ class TwilioWebSocketHandler:
         ]
         
         for conn_id in connections_to_remove:
-            del self.active_connections[conn_id]
+            self.cleanup_connection(conn_id)
+        
+        # Clean up call room
+        if call_sid in self.call_rooms:
+            del self.call_rooms[call_sid]
         
         # Clean up audio buffer
         if call_sid in self.audio_buffers:

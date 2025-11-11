@@ -6,8 +6,9 @@ import os
 import sys
 from dotenv import load_dotenv
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'src'))
 
 from voca.twilio_config import get_twilio_config
 from voca.twilio_voice import TwilioCallManager
@@ -150,3 +151,5 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+

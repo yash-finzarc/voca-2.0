@@ -6,6 +6,12 @@ This script helps identify what's causing the "application error has occurred" m
 
 import requests
 import json
+import os
+import sys
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'src'))
 from src.voca.twilio_config import get_twilio_config
 from src.voca.llm_client import GeminiClient
 from src.voca.config import Config
@@ -124,29 +130,40 @@ def create_debug_webhook():
     print("\n🐛 Creating Debug Webhook...")
     
     debug_code = '''
-from flask import Flask, request, Response
+from fastapi import FastAPI, Request, Response
 from twilio.twiml import VoiceResponse
 import logging
+import uvicorn
 
-app = Flask(__name__)
+app = FastAPI(title="Debug Twilio Webhook")
 logging.basicConfig(level=logging.DEBUG)
 
-@app.route('/debug/webhook', methods=['POST'])
-def debug_webhook():
+@app.post('/debug/webhook')
+async def debug_webhook(request: Request):
     print("\\n=== DEBUG WEBHOOK CALLED ===")
     print(f"Headers: {dict(request.headers)}")
-    print(f"Form Data: {dict(request.form)}")
-    print(f"JSON Data: {request.get_json()}")
+    
+    try:
+        form_data = await request.form()
+        print(f"Form Data: {dict(form_data)}")
+    except Exception:
+        print("No form data")
+    
+    try:
+        json_data = await request.json()
+        print(f"JSON Data: {json_data}")
+    except Exception:
+        print("No JSON data")
     
     # Create simple TwiML
     response = VoiceResponse()
     response.say("Debug test successful. This should work.")
     response.hangup()
     
-    return Response(str(response), mimetype='text/xml')
+    return Response(content=str(response), media_type='text/xml')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    uvicorn.run(app, host='0.0.0.0', port=5001, log_level="info")
 '''
     
     with open('debug_webhook.py', 'w') as f:
@@ -177,3 +194,5 @@ if __name__ == "__main__":
     print("- Run: python debug_webhook.py")
     print("- Update Twilio webhook URL to: https://your-ngrok-url.ngrok-free.dev/debug/webhook")
     print("- Make a test call and check logs")
+
+

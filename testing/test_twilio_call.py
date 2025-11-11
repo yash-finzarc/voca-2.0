@@ -7,6 +7,10 @@ This bypasses the GUI import issues and tests the core functionality
 import os
 import sys
 from twilio.rest import Client
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'src'))
 from src.voca.twilio_config import get_twilio_config
 
 def make_test_call():
@@ -91,3 +95,5 @@ if __name__ == "__main__":
     
     print("\n" + "=" * 40)
     print("🎉 Test completed!")
+
+
