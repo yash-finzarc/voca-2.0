@@ -92,7 +92,7 @@ def start_voca_application():
     try:
         # Run the test script with --start flag
         result = subprocess.run([
-            sys.executable, 'test_twilio_voca_integration.py', '--start'
+            sys.executable, 'testing/test_twilio_voca_integration.py', '--start'
         ], cwd=os.getcwd())
         
         if result.returncode == 0:
