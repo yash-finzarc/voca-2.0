@@ -29,6 +29,8 @@ class VocaApp:
         self.country_combo = None
         self.country_code_label = None
         self.phone_format_label = None
+        self._status_refresh_job = None
+        self._status_refresh_interval_ms = 25000
 
         self.orchestrator = VocaOrchestrator(on_log=self.append_log)
         
@@ -215,13 +217,17 @@ class VocaApp:
         ttk.Button(call_frame, text="Start Twilio Server", command=self.start_twilio_server).pack(side=tk.LEFT, padx=6)
         ttk.Button(call_frame, text="Make Call", command=self.make_twilio_call).pack(side=tk.LEFT, padx=6)
         ttk.Button(call_frame, text="Hang Up All", command=self.hangup_all_calls).pack(side=tk.LEFT, padx=6)
-        ttk.Button(call_frame, text="Refresh Status", command=self.refresh_call_status).pack(side=tk.LEFT, padx=6)
+        ttk.Button(call_frame, text="Refresh Status", command=lambda: self.refresh_call_status(schedule_next=True, reset_timer=True)).pack(side=tk.LEFT, padx=6)
         
         # Call status
         status_frame = ttk.LabelFrame(parent, text="Call Status")
         status_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         self.twilio_status_text = tk.Text(status_frame, height=10)
         self.twilio_status_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.twilio_status_text.insert(tk.END, "Call status will auto-refresh every 25 seconds.\nClick 'Refresh Status' to update immediately.\n")
+        
+        # Kick off the auto-refresh loop
+        self.refresh_call_status(schedule_next=True, reset_timer=False)
 
     def append_log(self, msg: str):
         self.log_text.insert(tk.END, msg + "\n")
@@ -304,29 +310,73 @@ class VocaApp:
             self.append_log(f"Error hanging up calls: {e}")
             messagebox.showerror("Error", f"Failed to hang up calls: {e}")
     
-    def refresh_call_status(self):
-        """Refresh the call status display."""
+    def refresh_call_status(self, schedule_next: bool = True, reset_timer: bool = False):
+        """Refresh the call status display, optionally scheduling the next refresh."""
         if not self.twilio_manager:
             return
-        
-        try:
-            status = self.twilio_manager.get_call_status()
-            self.twilio_status_text.delete(1.0, tk.END)
-            
-            if status['active_calls'] == 0:
-                self.twilio_status_text.insert(tk.END, "No active calls")
-            else:
-                self.twilio_status_text.insert(tk.END, f"Active calls: {status['active_calls']}\n\n")
-                for call_sid, call_info in status['calls'].items():
-                    self.twilio_status_text.insert(tk.END, f"Call SID: {call_sid}\n")
-                    self.twilio_status_text.insert(tk.END, f"Status: {call_info['status']}\n")
-                    if 'from_number' in call_info:
-                        self.twilio_status_text.insert(tk.END, f"From: {call_info['from_number']}\n")
-                    if 'to_number' in call_info:
-                        self.twilio_status_text.insert(tk.END, f"To: {call_info['to_number']}\n")
-                    self.twilio_status_text.insert(tk.END, "-" * 40 + "\n")
-        except Exception as e:
-            self.append_log(f"Error refreshing status: {e}")
+
+        if reset_timer and self._status_refresh_job:
+            self.root.after_cancel(self._status_refresh_job)
+            self._status_refresh_job = None
+
+        def _worker():
+            try:
+                status = self.twilio_manager.get_call_status()
+                breakdown = self.twilio_manager.fetch_call_history(limit=15)
+            except Exception as exc:
+                self.root.after(0, lambda: self._update_status_text_error(exc, schedule_next))
+                return
+
+            def _update():
+                lines = []
+                lines.append(f"Models ready: {'Yes' if status.get('models_ready') else 'No'}")
+                lines.append(f"Active calls (internal): {status.get('active_calls', 0)}")
+                lines.append("")
+                lines.append("Call Breakdown (last fetch):")
+
+                sections = [
+                    ("ongoing", "Active / In Progress"),
+                    ("declined", "Declined / Failed"),
+                    ("completed", "Completed"),
+                    ("others", "Other Statuses"),
+                ]
+
+                for key, title in sections:
+                    entries = breakdown.get(key, [])
+                    lines.append(f"{title} ({len(entries)})")
+                    if entries:
+                        for call in entries[:5]:
+                            start_time = call.get("start_time") or "Unknown"
+                            status_text = call.get("status", "unknown")
+                            duration = call.get("duration_human") or "-"
+                            to_number = call.get("to_number") or call.get("from_number") or "Unknown number"
+                            lines.append(f"  • {status_text} | {to_number}")
+                            lines.append(f"    Started: {start_time} | Duration: {duration}")
+                    else:
+                        lines.append("  • No calls")
+                    lines.append("")
+
+                self.twilio_status_text.delete(1.0, tk.END)
+                self.twilio_status_text.insert(tk.END, "\n".join(lines))
+
+                if schedule_next:
+                    self._status_refresh_job = self.root.after(
+                        self._status_refresh_interval_ms,
+                        self.refresh_call_status,
+                    )
+
+            self.root.after(0, _update)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _update_status_text_error(self, error: Exception, schedule_next: bool):
+        self.twilio_status_text.delete(1.0, tk.END)
+        self.twilio_status_text.insert(tk.END, f"Error fetching call status: {error}\n")
+        if schedule_next:
+            self._status_refresh_job = self.root.after(
+                self._status_refresh_interval_ms,
+                self.refresh_call_status,
+            )
 
     def run(self):
         self.root.mainloop()

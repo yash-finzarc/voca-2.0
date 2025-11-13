@@ -10,10 +10,10 @@ from datetime import datetime
 from queue import Queue, Empty
 
 import os
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from twilio.twiml.voice_response import VoiceResponse
 import time
 
@@ -64,6 +64,25 @@ class LogEntry(BaseModel):
 
 class NgrokUrlRequest(BaseModel):
     url: str
+
+
+class CallRecord(BaseModel):
+    call_sid: str
+    status: str
+    from_number: Optional[str] = None
+    to_number: Optional[str] = None
+    direction: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    duration_human: Optional[str] = None
+
+
+class CallStatusSummary(BaseModel):
+    ongoing: List[CallRecord] = Field(default_factory=list)
+    declined: List[CallRecord] = Field(default_factory=list)
+    completed: List[CallRecord] = Field(default_factory=list)
+    others: List[CallRecord] = Field(default_factory=list)
 
 
 # Global state management
@@ -377,13 +396,18 @@ async def start_twilio_server():
     
     threading.Thread(target=_worker, daemon=True).start()
     
-    # Wait a bit to check if server started
-    await asyncio.sleep(1)
+    # Poll for server readiness with a timeout to avoid returning false errors
+    timeout_seconds = 30
+    poll_interval = 0.5
+    elapsed = 0.0
+
+    while elapsed < timeout_seconds:
+        if app_state.is_twilio_server_running:
+            return StatusResponse(status="success", message="Twilio server started")
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
     
-    if app_state.is_twilio_server_running:
-        return StatusResponse(status="success", message="Twilio server started")
-    else:
-        raise HTTPException(status_code=500, detail="Failed to start Twilio server")
+    raise HTTPException(status_code=500, detail="Failed to start Twilio server")
 
 
 @app.post("/api/twilio/make-call", response_model=Dict[str, Any])
@@ -451,6 +475,63 @@ async def get_twilio_status():
         return CallStatusResponse(**status)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get status: {e}")
+
+
+@app.get("/api/twilio/call-status/summary", response_model=CallStatusSummary)
+async def get_twilio_call_status_summary(
+    limit: int = Query(20, ge=1, le=100),
+    start_time_after: Optional[str] = Query(
+        None,
+        description="ISO 8601 timestamp. Only calls starting after this time are returned.",
+    ),
+    start_time_before: Optional[str] = Query(
+        None,
+        description="ISO 8601 timestamp. Only calls starting before this time are returned.",
+    ),
+):
+    """Fetch categorized Twilio call records for the dashboard."""
+    twilio_manager = app_state.get_twilio_manager()
+    if not twilio_manager:
+        raise HTTPException(
+            status_code=400,
+            detail="Twilio not configured. Please set up environment variables.",
+        )
+
+    def _parse_iso8601(value: Optional[str], field_name: str) -> Optional[datetime]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid {field_name} value. Expected ISO 8601 format.",
+            ) from exc
+
+    parsed_after = _parse_iso8601(start_time_after, "start_time_after")
+    parsed_before = _parse_iso8601(start_time_before, "start_time_before")
+
+    try:
+        summary = twilio_manager.fetch_call_history(
+            limit=limit,
+            start_time_after=parsed_after,
+            start_time_before=parsed_before,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch call history: {exc}",
+        ) from exc
+
+    return CallStatusSummary(
+        ongoing=[CallRecord(**record) for record in summary.get("ongoing", [])],
+        declined=[CallRecord(**record) for record in summary.get("declined", [])],
+        completed=[CallRecord(**record) for record in summary.get("completed", [])],
+        others=[CallRecord(**record) for record in summary.get("others", [])],
+    )
 
 
 @app.get("/api/twilio/configured", response_model=Dict[str, bool])

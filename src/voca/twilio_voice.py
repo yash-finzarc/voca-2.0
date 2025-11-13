@@ -8,7 +8,8 @@ import logging
 import time
 import base64
 import io
-from typing import Optional, Callable, Dict, Any
+from datetime import datetime, timezone
+from typing import Optional, Callable, Dict, Any, List
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import PlainTextResponse
 import uvicorn
@@ -365,6 +366,142 @@ class TwilioCallManager:
             'calls': self.voice_handler.get_active_calls(),
             'models_ready': self.orchestrator.models_ready()
         }
+    
+    def fetch_call_history(
+        self,
+        limit: int = 50,
+        start_time_after: Optional[datetime] = None,
+        start_time_before: Optional[datetime] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Fetch recent call records from Twilio and bucket them by status."""
+        client = self.voice_handler.client
+
+        def _to_iso(dt: Optional[datetime]) -> Optional[str]:
+            if not dt:
+                return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc).isoformat()
+
+        def _format_duration(duration_seconds: Optional[int]) -> Optional[str]:
+            if duration_seconds is None:
+                return None
+            hours, remainder = divmod(duration_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+        declined_statuses = {"busy", "failed", "no-answer", "canceled"}
+        ongoing_statuses = {"queued", "ringing", "in-progress"}
+        completed_statuses = {"completed"}
+
+        summary: Dict[str, List[Dict[str, Any]]] = {
+            "ongoing": [],
+            "declined": [],
+            "completed": [],
+            "others": [],
+        }
+
+        seen: Dict[str, Dict[str, Any]] = {}
+
+        def _upsert_call(call_obj):
+            if call_obj.sid in seen:
+                return
+            duration_seconds: Optional[int] = None
+            if call_obj.duration is not None:
+                try:
+                    duration_seconds = int(call_obj.duration)
+                except (TypeError, ValueError):
+                    duration_seconds = None
+
+            record = {
+                "call_sid": call_obj.sid,
+                "status": call_obj.status,
+                "from_number": getattr(call_obj, "from_", None),
+                "to_number": getattr(call_obj, "to", None),
+                "direction": getattr(call_obj, "direction", None),
+                "start_time": _to_iso(getattr(call_obj, "start_time", None)),
+                "end_time": _to_iso(getattr(call_obj, "end_time", None)),
+                "duration_seconds": duration_seconds,
+                "duration_human": _format_duration(duration_seconds) if duration_seconds is not None else None,
+            }
+            seen[call_obj.sid] = record
+
+        # Fetch specific status buckets first for accuracy with in-progress calls.
+        status_fetch_plan = [
+            ("ongoing", list(ongoing_statuses)),
+            ("declined", list(declined_statuses)),
+            ("completed", list(completed_statuses)),
+        ]
+
+        for _, status_list in status_fetch_plan:
+            for status in status_list:
+                try:
+                    calls_by_status = client.calls.list(
+                        status=status,
+                        limit=limit,
+                        start_time_after=start_time_after,
+                        start_time_before=start_time_before,
+                    )
+                except Exception:
+                    continue
+                for call_obj in calls_by_status:
+                    _upsert_call(call_obj)
+
+        # Fallback: fetch recent calls without status filter to pick up any remaining records.
+        try:
+            fallback_calls = client.calls.list(
+                limit=limit,
+                start_time_after=start_time_after,
+                start_time_before=start_time_before,
+            )
+            for call_obj in fallback_calls:
+                _upsert_call(call_obj)
+        except Exception:
+            pass
+
+        for record in seen.values():
+            status_value = record["status"]
+            if status_value in ongoing_statuses:
+                summary["ongoing"].append(record)
+            elif status_value in declined_statuses:
+                summary["declined"].append(record)
+            elif status_value in completed_statuses:
+                summary["completed"].append(record)
+            else:
+                summary["others"].append(record)
+
+        # Merge locally tracked active calls to surface immediate state changes before Twilio propagates them.
+        timestamp_now = datetime.now(timezone.utc).isoformat()
+        for call_sid, call_info in self.voice_handler.get_active_calls().items():
+            if call_sid in seen:
+                continue
+            status = call_info.get("status", "initiated")
+            start_ts = call_info.get("start_time")
+            if isinstance(start_ts, (int, float)):
+                start_iso = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
+            else:
+                start_iso = _to_iso(start_ts) if isinstance(start_ts, datetime) else None
+            local_record = {
+                "call_sid": call_sid,
+                "status": status,
+                "from_number": call_info.get("from_number"),
+                "to_number": call_info.get("to_number"),
+                "direction": call_info.get("direction", "outbound-api"),
+                "start_time": start_iso or timestamp_now,
+                "end_time": None,
+                "duration_seconds": int(time.time() - start_ts) if isinstance(start_ts, (int, float)) else None,
+                "duration_human": None,
+            }
+            if status in ongoing_statuses or status == "initiated":
+                summary["ongoing"].append(local_record)
+            elif status in declined_statuses:
+                summary["declined"].append(local_record)
+            elif status in completed_statuses:
+                summary["completed"].append(local_record)
+            else:
+                summary["others"].append(local_record)
+
+        return summary
     
     def stop(self):
         """Stop the call manager and clean up resources."""
