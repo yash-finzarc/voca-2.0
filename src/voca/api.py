@@ -133,11 +133,15 @@ app = FastAPI(
 )
 
 # Add CORS middleware for frontend
-# Allow all origins for development (ngrok compatibility)
+# Allow specific origins for production and development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for ngrok compatibility
-    allow_credentials=False,  # Must be False when allow_origins=["*"]
+    allow_origins=[
+        "https://voca-frontend-self.vercel.app",  # Vercel production deployment
+        "http://localhost:3000",  # Local development
+        "http://localhost:3001",  # Alternative local port
+    ],
+    allow_credentials=True,  # Can be True when using specific origins
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=["*"],
