@@ -26,6 +26,7 @@ except ImportError:
 from src.voca.orchestrator import VocaOrchestrator
 from src.voca.twilio_voice import TwilioCallManager
 from src.voca.twilio_config import get_twilio_config
+from src.voca.system_prompt import get_prompt, get_prompt_with_name, update_prompt, reset_prompt, get_default_prompt
 
 
 # Request/Response Models
@@ -83,6 +84,16 @@ class CallStatusSummary(BaseModel):
     declined: List[CallRecord] = Field(default_factory=list)
     completed: List[CallRecord] = Field(default_factory=list)
     others: List[CallRecord] = Field(default_factory=list)
+
+
+class SystemPromptRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="The system prompt text")
+    name: Optional[str] = Field(None, description="The name of the system prompt")
+
+
+class SystemPromptResponse(BaseModel):
+    prompt: str
+    name: Optional[str] = None
 
 
 # Global state management
@@ -890,3 +901,54 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         if call_sid:
             response.redirect(f'/process_speech/{call_sid}')
         return Response(content=str(response), media_type='text/xml')
+
+
+# ==================== System Prompt Endpoints ====================
+
+@app.get("/api/system-prompt", response_model=SystemPromptResponse)
+async def get_system_prompt():
+    """Get the current system prompt and name."""
+    try:
+        prompt_data = get_prompt_with_name()
+        return SystemPromptResponse(prompt=prompt_data["prompt"], name=prompt_data.get("name"))
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error fetching system prompt: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch system prompt: {str(e)}")
+
+
+@app.post("/api/system-prompt", response_model=StatusResponse)
+async def update_system_prompt(request: SystemPromptRequest):
+    """Update the system prompt and optionally the name."""
+    try:
+        success = update_prompt(request.prompt, request.name)
+        if success:
+            name_msg = f" with name '{request.name}'" if request.name else ""
+            app_state._log_callback(f"System prompt updated via API{name_msg}")
+            return StatusResponse(status="success", message="System prompt updated successfully")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to update system prompt")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error updating system prompt: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update system prompt: {str(e)}")
+
+
+@app.post("/api/system-prompt/reset", response_model=StatusResponse)
+async def reset_system_prompt():
+    """Reset the system prompt to default."""
+    try:
+        success = reset_prompt()
+        if success:
+            app_state._log_callback("System prompt reset to default via API")
+            return StatusResponse(status="success", message="System prompt reset to default successfully")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to reset system prompt")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error resetting system prompt: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reset system prompt: {str(e)}")

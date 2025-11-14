@@ -25,4 +25,8 @@ class Config:
     # TTS
     tts_model_name: str = os.getenv("VOCA_TTS_MODEL_NAME", "tts_models/en/ljspeech/tacotron2-DDC")
 
+    # Supabase
+    supabase_url: str = os.getenv("SUPABASE_URL", "")
+    supabase_key: str = os.getenv("SUPABASE_KEY", "")
+
 

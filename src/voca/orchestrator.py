@@ -9,6 +9,7 @@ from src.voca.stt import build_stt
 from src.voca.tts import CoquiTTS
 from src.voca.llm_client import GeminiClient
 from src.voca.config import Config
+from src.voca.system_prompt import get_prompt
 
 try:
     import sounddevice as sd
@@ -63,12 +64,8 @@ class VocaOrchestrator:
             self.log(f"Error processing audio: {e}")
 
     def generate_reply(self, user_text: str) -> str:
-        system_prompt = (
-            "You are Voca, a helpful voice assistant. "
-            "Respond concisely and naturally. "
-            "If asked how you can help, say: 'I can assist you with the information that is available to me.' "
-            "Keep responses brief and conversational."
-        )
+        # Get system prompt from Supabase (with fallback to default)
+        system_prompt = get_prompt()
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
