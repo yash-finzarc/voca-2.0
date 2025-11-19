@@ -10,7 +10,7 @@ from datetime import datetime
 from queue import Queue, Empty
 
 import os
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Query
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
@@ -26,7 +26,16 @@ except ImportError:
 from src.voca.orchestrator import VocaOrchestrator
 from src.voca.twilio_voice import TwilioCallManager
 from src.voca.twilio_config import get_twilio_config
-from src.voca.system_prompt import get_prompt, get_prompt_with_name, update_prompt, reset_prompt, get_default_prompt
+from src.voca.config import Config
+from src.voca.system_prompt import (
+    get_prompt,
+    get_prompt_with_name,
+    update_prompt,
+    reset_prompt,
+    get_default_prompt,
+    DEFAULT_SYSTEM_PROMPT,
+)
+from src.voca.conversation_logger import log_user, log_ai
 
 
 # Request/Response Models
@@ -89,11 +98,52 @@ class CallStatusSummary(BaseModel):
 class SystemPromptRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="The system prompt text")
     name: Optional[str] = Field(None, description="The name of the system prompt")
+    welcome_message: Optional[str] = Field(None, description="Custom welcome message for calls. If not provided, will be generated from system prompt.")
+    organization_id: Optional[str] = Field(
+        None,
+        description="Organization ID this prompt belongs to",
+    )
 
 
 class SystemPromptResponse(BaseModel):
     prompt: str
     name: Optional[str] = None
+    welcome_message: Optional[str] = None
+
+
+class SystemPromptListItem(BaseModel):
+    id: Optional[str] = None
+    key: Optional[str] = None
+    name: Optional[str] = None
+    prompt: str
+    welcome_message: Optional[str] = None
+    is_default: Optional[bool] = None
+    organization_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class OrganizationRequest(BaseModel):
+    name: str = Field(..., min_length=1, description="Organization name")
+    domain: Optional[str] = Field(None, description="Organization domain")
+    api_key: Optional[str] = Field(None, description="API key for authentication")
+
+
+class OrganizationResponse(BaseModel):
+    id: str
+    name: str
+    domain: Optional[str] = None
+    api_key: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+def _resolve_org_id(
+    body_value: Optional[str] = None,
+    query_value: Optional[str] = None,
+    header_value: Optional[str] = None,
+) -> Optional[str]:
+    """Determine the organization ID from request components."""
+    return body_value or query_value or header_value or Config.default_organization_id or None
 
 
 # Global state management
@@ -784,7 +834,19 @@ async def handle_outbound_call(request: Request):
         }
     
     response = VoiceResponse()
-    response.say("Hello! This is VOCA calling. How can I help you today?")
+    
+    # Generate greeting from system prompt
+    try:
+        org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
+        greeting = app_state.get_orchestrator().generate_greeting(
+            conversation_id=call_sid,
+            organization_id=org_id
+        )
+    except Exception as e:
+        logger.error(f"Error generating greeting: {e}")
+        greeting = "Hello! This is VOCA calling. How can I help you today?"
+    
+    response.say(greeting)
     
     # Gather user input
     if call_sid:
@@ -825,7 +887,19 @@ async def handle_incoming_call_webhook(request: Request):
         }
     
     response = VoiceResponse()
-    response.say("Hello! You've reached VOCA, your AI voice assistant. Please speak after the tone.")
+    
+    # Generate greeting from system prompt
+    try:
+        org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
+        greeting = app_state.get_orchestrator().generate_greeting(
+            conversation_id=call_sid,
+            organization_id=org_id
+        )
+    except Exception as e:
+        logger.error(f"Error generating greeting: {e}")
+        greeting = "Hello! You've reached VOCA, your AI voice assistant. Please speak after the tone."
+    
+    response.say(greeting)
     
     if call_sid:
         gather = response.gather(
@@ -863,7 +937,12 @@ async def handle_speech_webhook(call_sid: str, request: Request):
     
     if speech_result and float(confidence) > 0.5:
         try:
-            ai_response = voice_handler.orchestrator.generate_reply(speech_result)
+            # User message and AI response are logged in orchestrator.generate_reply
+            ai_response = voice_handler.orchestrator.generate_reply(
+                speech_result,
+                conversation_id=call_sid,
+                call_sid=call_sid,
+            )
             app_state._log_callback(f"AI Response: {ai_response}")
             
             if not ai_response or len(ai_response.strip()) == 0:
@@ -874,6 +953,34 @@ async def handle_speech_webhook(call_sid: str, request: Request):
             
             response = VoiceResponse()
             response.say(ai_response)
+            
+            # Check if user declined further assistance and AI responded with closing message
+            speech_lower = speech_result.lower()
+            ai_response_lower = ai_response.lower()
+            
+            # Check if user said "no thank you" or similar declining phrases
+            decline_phrases = [
+                "no thank you", "no thanks", "no, thank you", "no, thanks",
+                "that's all", "nothing else", "i'm good", "i'm fine",
+                "not really", "no more", "no, that's all", "no that's all"
+            ]
+            
+            user_declined = any(phrase in speech_lower for phrase in decline_phrases)
+            
+            # Check if AI responded with closing message
+            closing_phrases = [
+                "thank you for calling. have a great day",
+                "thank you for calling, have a great day",
+                "have a great day"
+            ]
+            
+            ai_closing = any(phrase in ai_response_lower for phrase in closing_phrases)
+            
+            # If user declined and AI gave closing message, end the call
+            if user_declined and ai_closing:
+                response.hangup()
+                app_state._log_callback(f"Call {call_sid} ended - user declined further assistance")
+                return Response(content=str(response), media_type='text/xml')
             
             if call_sid:
                 gather = response.gather(
@@ -906,28 +1013,190 @@ async def handle_speech_webhook(call_sid: str, request: Request):
 # ==================== System Prompt Endpoints ====================
 
 @app.get("/api/system-prompt", response_model=SystemPromptResponse)
-async def get_system_prompt():
+async def get_system_prompt(
+    organization_id: Optional[str] = Query(None),
+    x_organization_id: Optional[str] = Header(None),
+):
     """Get the current system prompt and name."""
     try:
-        prompt_data = get_prompt_with_name()
-        return SystemPromptResponse(prompt=prompt_data["prompt"], name=prompt_data.get("name"))
+        resolved_org = _resolve_org_id(query_value=organization_id, header_value=x_organization_id)
+        prompt_data = get_prompt_with_name(resolved_org)
+        return SystemPromptResponse(
+            prompt=prompt_data["prompt"],
+            name=prompt_data.get("name"),
+            welcome_message=prompt_data.get("welcome_message")
+        )
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Error fetching system prompt: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch system prompt: {str(e)}")
 
 
-@app.post("/api/system-prompt", response_model=StatusResponse)
-async def update_system_prompt(request: SystemPromptRequest):
-    """Update the system prompt and optionally the name."""
+@app.get("/api/system-prompt/list", response_model=List[SystemPromptListItem])
+async def list_system_prompts(
+    organization_id: Optional[str] = Query(None),
+    x_organization_id: Optional[str] = Header(None),
+    include_default: bool = Query(True, description="Include default prompts"),
+):
+    """List all system prompts (default and organization-specific)."""
+    from src.voca.supabase_client import get_supabase_client, is_supabase_configured
+    
+    results = []
+    
+    if not is_supabase_configured():
+        # Return default prompt if Supabase not configured
+        return [
+            SystemPromptListItem(
+                name="Default",
+                prompt=DEFAULT_SYSTEM_PROMPT,
+                is_default=True,
+            )
+        ]
+    
+    client = get_supabase_client()
+    if client is None:
+        return results
+    
     try:
-        success = update_prompt(request.prompt, request.name)
+        resolved_org = _resolve_org_id(query_value=organization_id, header_value=x_organization_id)
+        
+        # Get default prompts
+        if include_default:
+            try:
+                default_response = client.table("system_prompts").select("*").order("updated_at", desc=True).execute()
+                if default_response.data:
+                    for item in default_response.data:
+                        results.append(
+                            SystemPromptListItem(
+                                id=item.get("id"),
+                                key=item.get("key"),
+                                name=item.get("name") or "Default",
+                                prompt=item.get("prompt", ""),
+                                welcome_message=item.get("welcome_message"),
+                                is_default=item.get("is_default", False),
+                                created_at=item.get("created_at"),
+                                updated_at=item.get("updated_at"),
+                            )
+                        )
+            except Exception as e:
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error fetching default prompts: {e}")
+        
+        # Get organization-specific prompts
+        if resolved_org:
+            try:
+                org_response = (
+                    client.table("organization_system_prompts")
+                    .select("*")
+                    .eq("organization_id", resolved_org)
+                    .eq("is_active", True)
+                    .order("updated_at", desc=True)
+                    .execute()
+                )
+                if org_response.data:
+                    for item in org_response.data:
+                        results.append(
+                            SystemPromptListItem(
+                                id=item.get("id"),
+                                name=item.get("name") or "Custom Prompt",
+                                prompt=item.get("prompt", ""),
+                                welcome_message=item.get("welcome_message"),
+                                organization_id=item.get("organization_id"),
+                                is_default=False,
+                                created_at=item.get("created_at"),
+                                updated_at=item.get("updated_at"),
+                            )
+                        )
+            except Exception as e:
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error fetching organization prompts: {e}")
+        else:
+            # If no org specified, get all organization prompts
+            try:
+                all_org_response = (
+                    client.table("organization_system_prompts")
+                    .select("*")
+                    .eq("is_active", True)
+                    .order("updated_at", desc=True)
+                    .execute()
+                )
+                if all_org_response.data:
+                    for item in all_org_response.data:
+                        results.append(
+                            SystemPromptListItem(
+                                id=item.get("id"),
+                                name=item.get("name") or "Custom Prompt",
+                                prompt=item.get("prompt", ""),
+                                welcome_message=item.get("welcome_message"),
+                                organization_id=item.get("organization_id"),
+                                is_default=False,
+                                created_at=item.get("created_at"),
+                                updated_at=item.get("updated_at"),
+                            )
+                        )
+            except Exception as e:
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error fetching all organization prompts: {e}")
+        
+        return results
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error listing system prompts: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list system prompts: {str(e)}")
+
+
+@app.post("/api/system-prompt", response_model=StatusResponse)
+@app.put("/api/system-prompt", response_model=StatusResponse)
+@app.patch("/api/system-prompt", response_model=StatusResponse)
+async def update_system_prompt(
+    request: SystemPromptRequest,
+    x_organization_id: Optional[str] = Header(None),
+):
+    """Update the system prompt and optionally the name.
+    
+    If organization_id is not provided, the prompt will be saved as the default prompt.
+    This allows the system to work without multi-tenant setup initially.
+    """
+    try:
+        resolved_org = _resolve_org_id(
+            body_value=request.organization_id,
+            header_value=x_organization_id,
+        )
+        
+        # Allow None organization_id - will save as default prompt
+        if not request.prompt or not request.prompt.strip():
+            raise HTTPException(status_code=400, detail="Prompt text is required")
+        
+        # If organization_id is provided, verify it exists
+        if resolved_org:
+            from src.voca.supabase_client import get_supabase_client, is_supabase_configured
+            if is_supabase_configured():
+                client = get_supabase_client()
+                if client:
+                    try:
+                        org_check = client.table("organizations").select("id").eq("id", resolved_org).limit(1).execute()
+                        if not org_check.data or len(org_check.data) == 0:
+                            raise HTTPException(
+                                status_code=404,
+                                detail=f"Organization '{resolved_org}' not found. Please create the organization first using POST /api/organizations"
+                            )
+                    except HTTPException:
+                        raise
+                    except Exception as e:
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"Could not verify organization existence: {e}")
+        
+        success = update_prompt(request.prompt, request.name, request.welcome_message, organization_id=resolved_org)
         if success:
             name_msg = f" with name '{request.name}'" if request.name else ""
-            app_state._log_callback(f"System prompt updated via API{name_msg}")
-            return StatusResponse(status="success", message="System prompt updated successfully")
+            org_msg = f" for organization {resolved_org}" if resolved_org else " as default prompt"
+            app_state._log_callback(
+                f"System prompt updated via API{name_msg}{org_msg}"
+            )
+            message = f"System prompt updated successfully{org_msg}"
+            return StatusResponse(status="success", message=message)
         else:
-            raise HTTPException(status_code=500, detail="Failed to update system prompt")
+            raise HTTPException(status_code=500, detail="Failed to update system prompt. Check backend logs for details.")
     except HTTPException:
         raise
     except Exception as e:
@@ -936,13 +1205,75 @@ async def update_system_prompt(request: SystemPromptRequest):
         raise HTTPException(status_code=500, detail=f"Failed to update system prompt: {str(e)}")
 
 
+class WelcomeMessageRequest(BaseModel):
+    welcome_message: Optional[str] = Field(None, description="Custom welcome message for calls")
+    organization_id: Optional[str] = Field(None, description="Organization ID")
+
+
+@app.put("/api/system-prompt/welcome-message", response_model=StatusResponse)
+@app.patch("/api/system-prompt/welcome-message", response_model=StatusResponse)
+@app.post("/api/system-prompt/welcome-message", response_model=StatusResponse)
+async def update_welcome_message(
+    request: Optional[WelcomeMessageRequest] = None,
+    welcome_message: Optional[str] = Query(None),
+    organization_id: Optional[str] = Query(None),
+    x_organization_id: Optional[str] = Header(None),
+):
+    """Update only the welcome message for the system prompt."""
+    try:
+        # Get welcome_message from request body or query parameter
+        msg = None
+        if request and request.welcome_message is not None:
+            msg = request.welcome_message
+        elif welcome_message is not None:
+            msg = welcome_message
+        
+        resolved_org = _resolve_org_id(
+            body_value=request.organization_id if request else None,
+            query_value=organization_id,
+            header_value=x_organization_id,
+        )
+        
+        # Get current prompt to preserve it
+        prompt_data = get_prompt_with_name(resolved_org)
+        current_prompt = prompt_data.get("prompt", "")
+        current_name = prompt_data.get("name")
+        
+        # Update with same prompt but new welcome_message
+        success = update_prompt(
+            current_prompt,
+            current_name,
+            msg,
+            organization_id=resolved_org
+        )
+        
+        if success:
+            org_msg = f" for organization {resolved_org}" if resolved_org else " as default prompt"
+            message = f"Welcome message updated successfully{org_msg}"
+            return StatusResponse(status="success", message=message)
+        else:
+            raise HTTPException(status_code=500, detail="Failed to update welcome message. Check backend logs for details.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error updating welcome message: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update welcome message: {str(e)}")
+
+
 @app.post("/api/system-prompt/reset", response_model=StatusResponse)
-async def reset_system_prompt():
+async def reset_system_prompt(
+    organization_id: Optional[str] = Query(None),
+    x_organization_id: Optional[str] = Header(None),
+):
     """Reset the system prompt to default."""
     try:
-        success = reset_prompt()
+        resolved_org = _resolve_org_id(query_value=organization_id, header_value=x_organization_id)
+        success = reset_prompt(resolved_org)
         if success:
-            app_state._log_callback("System prompt reset to default via API")
+            app_state._log_callback(
+                f"System prompt reset to default via API (org={resolved_org or 'default'})"
+            )
             return StatusResponse(status="success", message="System prompt reset to default successfully")
         else:
             raise HTTPException(status_code=500, detail="Failed to reset system prompt")
@@ -952,3 +1283,113 @@ async def reset_system_prompt():
         logger = logging.getLogger(__name__)
         logger.error(f"Error resetting system prompt: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to reset system prompt: {str(e)}")
+
+
+# ==================== Organization Management Endpoints ====================
+
+@app.post("/api/organizations", response_model=OrganizationResponse)
+async def create_organization(request: OrganizationRequest):
+    """Create a new organization."""
+    from src.voca.supabase_client import get_supabase_client, is_supabase_configured
+    
+    if not is_supabase_configured():
+        raise HTTPException(status_code=400, detail="Supabase not configured")
+    
+    client = get_supabase_client()
+    if client is None:
+        raise HTTPException(status_code=500, detail="Supabase client unavailable")
+    
+    try:
+        insert_data = {
+            "name": request.name.strip(),
+            "domain": request.domain.strip() if request.domain else None,
+            "api_key": request.api_key.strip() if request.api_key else None,
+        }
+        
+        response = client.table("organizations").insert(insert_data).execute()
+        
+        if response.data and len(response.data) > 0:
+            org_data = response.data[0]
+            app_state._log_callback(f"Organization created: {request.name} (ID: {org_data['id']})")
+            return OrganizationResponse(
+                id=org_data["id"],
+                name=org_data["name"],
+                domain=org_data.get("domain"),
+                api_key=org_data.get("api_key"),
+                created_at=org_data.get("created_at"),
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create organization")
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error creating organization: {e}")
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            raise HTTPException(status_code=400, detail="Organization with this name or API key already exists")
+        raise HTTPException(status_code=500, detail=f"Failed to create organization: {str(e)}")
+
+
+@app.get("/api/organizations", response_model=List[OrganizationResponse])
+async def list_organizations():
+    """List all organizations."""
+    from src.voca.supabase_client import get_supabase_client, is_supabase_configured
+    
+    if not is_supabase_configured():
+        raise HTTPException(status_code=400, detail="Supabase not configured")
+    
+    client = get_supabase_client()
+    if client is None:
+        raise HTTPException(status_code=500, detail="Supabase client unavailable")
+    
+    try:
+        response = client.table("organizations").select("*").order("created_at", desc=True).execute()
+        
+        if response.data:
+            return [
+                OrganizationResponse(
+                    id=org["id"],
+                    name=org["name"],
+                    domain=org.get("domain"),
+                    api_key=org.get("api_key"),
+                    created_at=org.get("created_at"),
+                )
+                for org in response.data
+            ]
+        return []
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error listing organizations: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list organizations: {str(e)}")
+
+
+@app.get("/api/organizations/{organization_id}", response_model=OrganizationResponse)
+async def get_organization(organization_id: str):
+    """Get a specific organization by ID."""
+    from src.voca.supabase_client import get_supabase_client, is_supabase_configured
+    
+    if not is_supabase_configured():
+        raise HTTPException(status_code=400, detail="Supabase not configured")
+    
+    client = get_supabase_client()
+    if client is None:
+        raise HTTPException(status_code=500, detail="Supabase client unavailable")
+    
+    try:
+        response = client.table("organizations").select("*").eq("id", organization_id).limit(1).execute()
+        
+        if response.data and len(response.data) > 0:
+            org_data = response.data[0]
+            return OrganizationResponse(
+                id=org_data["id"],
+                name=org_data["name"],
+                domain=org_data.get("domain"),
+                api_key=org_data.get("api_key"),
+                created_at=org_data.get("created_at"),
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Organization not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error getting organization: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get organization: {str(e)}")

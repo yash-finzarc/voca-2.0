@@ -6,6 +6,7 @@ Create a `.env` file in the project root with your credentials:
 TWILIO_ACCOUNT_SID=your_twilio_account_sid
 TWILIO_AUTH_TOKEN=your_twilio_auth_token
 TWILIO_PHONE_NUMBER=+1XXXXXXXXXX
+VOCA_DEFAULT_ORGANIZATION_ID=your_default_org_uuid  # Optional, for multi-tenant prompts
 ```
 
 Never commit real secrets. Use environment variables or a `.env` file that is excluded from git.

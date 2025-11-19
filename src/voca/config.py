@@ -28,5 +28,6 @@ class Config:
     # Supabase
     supabase_url: str = os.getenv("SUPABASE_URL", "")
     supabase_key: str = os.getenv("SUPABASE_KEY", "")
+    default_organization_id: str = os.getenv("VOCA_DEFAULT_ORGANIZATION_ID", "")
 
 

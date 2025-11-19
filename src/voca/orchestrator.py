@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
+from langchain_core.messages import BaseMessage, HumanMessage
 
-from src.voca.stt import build_stt
-from src.voca.tts import CoquiTTS
-from src.voca.llm_client import GeminiClient
 from src.voca.config import Config
-from src.voca.system_prompt import get_prompt
+from src.voca.conversation_store import save_conversation_snapshot
+from src.voca.langgraph_agent import LangGraphAgent, LangGraphAgentResult
+from src.voca.stt import build_stt
+from src.voca.system_prompt import get_prompt, get_welcome_message
+from src.voca.tts import CoquiTTS
+from src.voca.conversation_logger import log_user, log_ai
 
 try:
     import sounddevice as sd
@@ -21,13 +25,30 @@ except Exception:
     webrtcvad = None  # type: ignore
 
 
+@dataclass
+class ConversationSession:
+    organization_id: Optional[str]
+    messages: List[BaseMessage] = field(default_factory=list)
+    collected_data: Dict[str, Any] = field(default_factory=dict)
+    lead_status: Optional[str] = None
+    transcript: List[Dict[str, Any]] = field(default_factory=list)
+    summary_requested: bool = False
+    greeting_sent: bool = False  # Track if greeting has been sent
+
+
 class VocaOrchestrator:
-    def __init__(self, on_log: Optional[Callable[[str], None]] = None):
+    def __init__(
+        self,
+        on_log: Optional[Callable[[str], None]] = None,
+        organization_id: Optional[str] = None,
+    ):
         self.on_log = on_log or (lambda m: None)
         self.stt = None
         self.tts = CoquiTTS()
-        self.llm = GeminiClient()
+        self.llm = LangGraphAgent()
         self._lock = threading.Lock()
+        self._sessions: Dict[str, ConversationSession] = {}
+        self.default_organization_id = organization_id or Config.default_organization_id or None
 
     def log(self, msg: str):
         self.on_log(msg)
@@ -56,21 +77,177 @@ class VocaOrchestrator:
             text = self.stt.transcribe_pcm16(pcm16)
             if text:
                 self.log(f"USER: {text}")
-                reply = self.generate_reply(text)
+                log_user(text)
+                reply = self.generate_reply(text, conversation_id="local_audio")
                 if reply:
                     self.log(f"ASSISTANT: {reply}")
+                    log_ai(reply)
                     self.tts.speak(reply)
         except Exception as e:
             self.log(f"Error processing audio: {e}")
 
-    def generate_reply(self, user_text: str) -> str:
-        # Get system prompt from Supabase (with fallback to default)
-        system_prompt = get_prompt()
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
-        ]
-        return self.llm.complete_chat(messages)
+    def _get_session(self, conversation_id: Optional[str], organization_id: Optional[str]) -> ConversationSession:
+        key = conversation_id or "default"
+        session = self._sessions.get(key)
+        if session is None:
+            session = ConversationSession(organization_id=organization_id or self.default_organization_id)
+            self._sessions[key] = session
+        elif organization_id and organization_id != session.organization_id:
+            session.organization_id = organization_id
+        return session
+
+    def generate_reply(
+        self,
+        user_text: str,
+        *,
+        conversation_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        call_sid: Optional[str] = None,
+    ) -> str:
+        session = self._get_session(conversation_id, organization_id)
+        session.transcript.append({"role": "user", "content": user_text})
+        session.messages.append(HumanMessage(content=user_text))
+        
+        # Log user message
+        log_user(user_text)
+
+        org_id = session.organization_id or self.default_organization_id
+        system_prompt = get_prompt(organization_id=org_id)
+        
+        # If greeting has already been sent, modify the system prompt to prevent re-greeting
+        if session.greeting_sent:
+            # Add instruction to not greet again
+            system_prompt = (
+                system_prompt + 
+                "\n\nIMPORTANT: A greeting has already been given at the start of this call. "
+                "Do NOT greet the user again. If they say 'hi', 'hello', or similar greetings, "
+                "simply acknowledge them naturally and continue the conversation. "
+                "For example, respond with 'Hi! How can I help you?' or 'Hello! What can I do for you?' "
+                "instead of repeating the full greeting."
+            )
+
+        try:
+            result: LangGraphAgentResult = self.llm.generate_reply(
+                organization_id=org_id,
+                system_prompt=system_prompt,
+                messages=session.messages,
+                collected_data=session.collected_data,
+                lead_status=session.lead_status,
+                transcript=session.transcript,
+                summary_requested=session.summary_requested,
+            )
+
+            session.messages = result.messages
+            session.collected_data = result.collected_data
+            session.lead_status = result.lead_status
+            session.transcript = result.transcript
+            session.summary_requested = result.summary_requested
+
+            if org_id:
+                save_conversation_snapshot(
+                    organization_id=org_id,
+                    call_sid=call_sid or conversation_id,
+                    transcript=session.transcript,
+                    lead_data=session.collected_data,
+                    lead_status=session.lead_status,
+                )
+
+            # Ensure we have a valid reply
+            reply = result.reply.strip() if result.reply else ""
+            if not reply:
+                # If no reply, provide a graceful response
+                if 'name' in user_text.lower() or session.collected_data.get('name'):
+                    reply = "I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name."
+                else:
+                    reply = "I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?"
+            
+            # Log AI response
+            if reply:
+                log_ai(reply)
+            
+            return reply
+            
+        except Exception as e:
+            self.log(f"Error generating reply: {e}")
+            # Return a graceful error message instead of raising
+            # Check if we're collecting a name
+            if 'name' in user_text.lower() or session.collected_data.get('name'):
+                reply = "I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name."
+            else:
+                reply = "I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?"
+            
+            # Log AI response even on error
+            if reply:
+                log_ai(reply)
+            
+            return reply
+
+    def generate_greeting(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+    ) -> str:
+        """
+        Generate an initial greeting message.
+        First checks for a welcome_message in the database.
+        If not found, generates one based on the system prompt.
+        This is used when a call first connects.
+        """
+        org_id = organization_id or self.default_organization_id
+        
+        # Mark that greeting will be sent (get session to set the flag)
+        session = self._get_session(conversation_id, organization_id)
+        session.greeting_sent = True
+        
+        # First, try to get welcome_message from database
+        welcome_message = get_welcome_message(organization_id=org_id)
+        if welcome_message and welcome_message.strip():
+            # Use the welcome_message from database
+            greeting = welcome_message.strip()
+            # Limit length for TwiML
+            if len(greeting) > 300:
+                greeting = greeting[:300] + "..."
+            self.log(f"Using welcome_message from database: {greeting}")
+            log_ai(greeting)
+            return greeting
+        
+        # If no welcome_message in database, generate one from system prompt
+        system_prompt = get_prompt(organization_id=org_id)
+        
+        try:
+            # Use the LLM to generate a greeting based on the system prompt
+            from langchain_core.messages import HumanMessage, SystemMessage
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Generate a brief, natural greeting (1-2 sentences) that you would say when answering a phone call. Keep it warm, professional, and aligned with your role.")
+            ]
+            
+            result: LangGraphAgentResult = self.llm.generate_reply(
+                organization_id=org_id,
+                system_prompt=system_prompt,
+                messages=messages,
+                collected_data={},
+                lead_status=None,
+                transcript=[],
+                summary_requested=False,
+            )
+            
+            greeting = result.reply.strip()
+            if greeting and len(greeting) > 0:
+                # Limit length for TwiML
+                if len(greeting) > 300:
+                    greeting = greeting[:300] + "..."
+                self.log(f"Generated greeting from system prompt: {greeting}")
+                log_ai(greeting)
+                return greeting
+        except Exception as e:
+            self.log(f"Error generating greeting: {e}")
+        
+        # Fallback to a simple greeting if LLM fails
+        fallback_greeting = "Hello! How can I help you today?"
+        log_ai(fallback_greeting)
+        return fallback_greeting
 
     def run_one_minute_interaction(self, duration_sec: int = 30):
         """Record mic audio for duration, transcribe once, query LLM, then speak reply."""
@@ -106,9 +283,10 @@ class VocaOrchestrator:
             return
 
         self.log(f"USER: {text}")
+        log_user(text)
         self.log("Generating reply...")
         try:
-            reply = self.generate_reply(text)
+            reply = self.generate_reply(text, conversation_id="one_minute_test")
         except Exception as e:
             self.log(f"LLM error: {e}")
             return
@@ -117,6 +295,7 @@ class VocaOrchestrator:
             self.log("Empty reply.")
             return
         self.log(f"ASSISTANT: {reply}")
+        log_ai(reply)
         try:
             self.tts.speak(reply)
         except Exception as e:
@@ -199,9 +378,11 @@ class VocaOrchestrator:
                         text = self.stt.transcribe_pcm16(pcm_clean)
                         if text and len(text.strip()) > 2:  # Only process if meaningful text
                             self.log(f"USER: {text}")
-                            reply = self.generate_reply(text)
+                            log_user(text)
+                            reply = self.generate_reply(text, conversation_id="continuous_vad")
                             if reply:
                                 self.log(f"ASSISTANT: {reply}")
+                                log_ai(reply)
                                 self.tts.speak(reply)
                     except Exception as e:
                         self.log(f"Pipeline error: {e}")

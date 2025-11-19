@@ -62,14 +62,30 @@ class TwilioVoiceHandler:
                 'from_number': from_number,
                 'status': 'ringing',
                 'start_time': time.time(),
-                'audio_buffer': []
+                'audio_buffer': [],
+                'unclear_count': 0,  # Track consecutive unclear responses
+                'last_speech_attempt': None,  # Track last speech attempt to detect name collection
+                'name_attempt_count': 0  # Track attempts to provide name
             }
             
             # Create TwiML response
             response = VoiceResponse()
             
+            # Generate welcome message from system prompt
+            try:
+                # Get organization_id from call metadata if available
+                org_id = form_data.get('organization_id') or handler.orchestrator.default_organization_id
+                greeting = handler.orchestrator.generate_greeting(
+                    conversation_id=call_sid,
+                    organization_id=org_id
+                )
+                handler.logger.info(f"Generated greeting for call {call_sid}: {greeting}")
+            except Exception as e:
+                handler.logger.error(f"Error generating greeting: {e}")
+                greeting = "Hello! How can I help you today?"
+            
             # Say welcome message
-            response.say("Hello! You've reached VOCA, your AI voice assistant. Please speak after the tone.")
+            response.say(greeting)
             
             # Gather user input
             gather = response.gather(
@@ -98,13 +114,66 @@ class TwilioVoiceHandler:
             
             handler.logger.info(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
             
+            # Get session to check if we're collecting a name
+            session = handler.orchestrator._get_session(call_sid, None)
+            
+            # Detect if user is providing their name
+            # Check if speech contains name-related phrases or looks like a name (2-3 words)
+            speech_lower = speech_result.lower() if speech_result else ''
+            looks_like_name = False
+            if speech_result:
+                words = speech_result.strip().split()
+                # If it's 2-3 words and doesn't contain common question words, might be a name
+                if 2 <= len(words) <= 3:
+                    question_words = {'what', 'who', 'where', 'when', 'why', 'how', 'is', 'are', 'can', 'could', 'would', 'should'}
+                    if not any(qw in speech_lower for qw in question_words):
+                        looks_like_name = True
+            
+            is_collecting_name = (
+                'name' in speech_lower or 
+                'my name is' in speech_lower or 
+                "i'm" in speech_lower or
+                "i am" in speech_lower or
+                looks_like_name
+            ) or (
+                session.collected_data.get('name') is not None and 
+                (not session.collected_data.get('name') or len(str(session.collected_data.get('name', '')).strip()) < 2)
+            )
+            
             if speech_result and float(confidence) > 0.5:
+                # Reset unclear count on successful speech recognition
+                if call_sid in handler.active_calls:
+                    handler.active_calls[call_sid]['unclear_count'] = 0
+                    handler.active_calls[call_sid]['last_speech_attempt'] = speech_result
+                    # Track if this looks like a name attempt
+                    if is_collecting_name:
+                        handler.active_calls[call_sid]['name_attempt_count'] = handler.active_calls[call_sid].get('name_attempt_count', 0) + 1
+                    else:
+                        handler.active_calls[call_sid]['name_attempt_count'] = 0
                 # Process speech through VOCA orchestrator
                 try:
                     # Generate AI response with error handling
                     try:
-                        ai_response = handler.orchestrator.generate_reply(speech_result)
+                        ai_response = handler.orchestrator.generate_reply(
+                            speech_result,
+                            conversation_id=call_sid,
+                            call_sid=call_sid,
+                        )
                         handler.logger.info(f"AI Response: {ai_response}")
+                        
+                        # Check if AI is asking to repeat and we're in a name collection loop
+                        ai_response_lower = ai_response.lower() if ai_response else ''
+                        is_asking_to_repeat = any(phrase in ai_response_lower for phrase in [
+                            "didn't catch", "didn't understand", "couldn't catch", "couldn't understand",
+                            "speak clearly", "please repeat", "say that again", "didn't hear"
+                        ])
+                        
+                        # If AI is asking to repeat and we've had multiple name attempts, ask to spell instead
+                        if is_asking_to_repeat and is_collecting_name:
+                            name_attempt_count = handler.active_calls.get(call_sid, {}).get('name_attempt_count', 0)
+                            if name_attempt_count >= 2:
+                                ai_response = "I'm having trouble understanding your name. Could you please spell it for me? First, tell me your first name letter by letter, and then your last name."
+                                handler.logger.info(f"Intercepted AI response - asking to spell name after {name_attempt_count} attempts")
                         
                         # Ensure response is not empty
                         if not ai_response or len(ai_response.strip()) == 0:
@@ -116,13 +185,15 @@ class TwilioVoiceHandler:
                         
                     except Exception as ai_error:
                         handler.logger.error(f"AI processing error: {ai_error}")
-                        # Use simple fallback response
-                        if 'hello' in speech_result.lower():
-                            ai_response = "Hello! Nice to meet you. How are you doing today?"
+                        # Use graceful fallback response - never mention technical errors
+                        if 'name' in speech_result.lower():
+                            ai_response = "I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name."
+                        elif 'hello' in speech_result.lower() or 'hi' in speech_result.lower():
+                            ai_response = "Hello! How can I help you today?"
                         elif 'help' in speech_result.lower():
                             ai_response = "I'm here to help! What would you like to know?"
                         else:
-                            ai_response = "I understand. Could you please repeat that?"
+                            ai_response = "I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?"
                     
                     # Create TwiML response
                     response = VoiceResponse()
@@ -148,14 +219,69 @@ class TwilioVoiceHandler:
                 except Exception as e:
                     handler.logger.error(f"Error processing speech: {e}")
                     response = VoiceResponse()
-                    response.say("I'm sorry, I had trouble processing that. Please try again.")
+                    # Never mention technical errors - use graceful response
+                    if 'name' in speech_result.lower() if speech_result else False:
+                        response.say("I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name.")
+                    else:
+                        response.say("I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?")
+                    # Continue the conversation - don't cut off
+                    gather = response.gather(
+                        input='speech',
+                        timeout=10,
+                        speech_timeout='auto',
+                        action=f'/process_speech/{call_sid}',
+                        method='POST'
+                    )
+                    gather.say("I'm listening...")
                     response.redirect(f'/process_speech/{call_sid}')
                     twiml_str = str(response)
                     return Response(content=twiml_str, media_type='text/xml')
             else:
                 # No speech or low confidence
+                # Track unclear responses
+                if call_sid in handler.active_calls:
+                    handler.active_calls[call_sid]['unclear_count'] = handler.active_calls[call_sid].get('unclear_count', 0) + 1
+                    unclear_count = handler.active_calls[call_sid]['unclear_count']
+                    last_speech = handler.active_calls[call_sid].get('last_speech_attempt', '')
+                else:
+                    unclear_count = 1
+                    last_speech = ''
+                
+                # Get session to check if we're collecting a name
+                session = handler.orchestrator._get_session(call_sid, None)
+                
+                # Detect if user is providing their name (same logic as above)
+                last_speech_lower = last_speech.lower() if last_speech else ''
+                looks_like_name = False
+                if last_speech:
+                    words = last_speech.strip().split()
+                    if 2 <= len(words) <= 3:
+                        question_words = {'what', 'who', 'where', 'when', 'why', 'how', 'is', 'are', 'can', 'could', 'would', 'should'}
+                        if not any(qw in last_speech_lower for qw in question_words):
+                            looks_like_name = True
+                
+                is_collecting_name = (
+                    'name' in last_speech_lower or 
+                    'my name is' in last_speech_lower or 
+                    "i'm" in last_speech_lower or
+                    "i am" in last_speech_lower or
+                    looks_like_name
+                ) or (
+                    session.collected_data.get('name') is not None and 
+                    (not session.collected_data.get('name') or len(str(session.collected_data.get('name', '')).strip()) < 2)
+                )
+                
                 response = VoiceResponse()
-                response.say("I didn't catch that. Please speak clearly.")
+                
+                # If we're in a loop and it's about a name, ask to spell it
+                if unclear_count >= 2 and is_collecting_name:
+                    response.say("I'm having trouble understanding your name. Could you please spell it for me? First, tell me your first name letter by letter, and then your last name.")
+                elif unclear_count >= 2:
+                    # After multiple unclear attempts, be more helpful
+                    response.say("I'm having trouble understanding. Could you please speak a bit slower and more clearly?")
+                else:
+                    response.say("I didn't catch that. Please speak clearly.")
+                
                 response.redirect(f'/process_speech/{call_sid}')
                 return Response(content=str(response), media_type='text/xml')
         
@@ -201,11 +327,28 @@ class TwilioVoiceHandler:
                 'to_number': 'outbound',
                 'status': 'ringing',
                 'start_time': time.time(),
-                'audio_buffer': []
+                'audio_buffer': [],
+                'unclear_count': 0,  # Track consecutive unclear responses
+                'last_speech_attempt': None,  # Track last speech attempt to detect name collection
+                'name_attempt_count': 0  # Track attempts to provide name
             }
             
             response = VoiceResponse()
-            response.say("Hello! This is VOCA calling. How can I help you today?")
+            
+            # Generate greeting from system prompt
+            try:
+                # Get organization_id from call metadata if available
+                org_id = form_data.get('organization_id') or handler.orchestrator.default_organization_id
+                greeting = handler.orchestrator.generate_greeting(
+                    conversation_id=call_sid,
+                    organization_id=org_id
+                )
+                handler.logger.info(f"Generated greeting for outbound call {call_sid}: {greeting}")
+            except Exception as e:
+                handler.logger.error(f"Error generating greeting: {e}")
+                greeting = "Hello! This is VOCA calling. How can I help you today?"
+            
+            response.say(greeting)
             
             # Gather user input
             gather = response.gather(
