@@ -97,8 +97,8 @@ class TwilioVoiceHandler:
             )
             gather.say("I'm listening...")
             
-            # If no input, redirect to process
-            response.redirect(f'/process_speech/{call_sid}')
+            # Don't redirect - gather will POST to action URL when user speaks or times out
+            # Removing redirect prevents infinite loop - let gather handle timeout naturally
             
             return Response(content=str(response), media_type='text/xml')
         
@@ -223,8 +223,8 @@ class TwilioVoiceHandler:
                     )
                     gather.say("I'm listening...")
                     
-                    # If no input, redirect to process
-                    response.redirect(f'/process_speech/{call_sid}')
+                    # Don't redirect - gather will POST to action URL when user speaks or times out
+                    # Removing redirect prevents infinite loop on empty responses
                     
                     twiml_str = str(response)
                     handler.logger.info(f"TwiML Response: {twiml_str}")
@@ -247,7 +247,9 @@ class TwilioVoiceHandler:
                         method='POST'
                     )
                     gather.say("I'm listening...")
-                    response.redirect(f'/process_speech/{call_sid}')
+                    
+                    # Don't redirect immediately - let gather wait for user input
+                    # The gather action will handle the next request when user speaks or times out
                     twiml_str = str(response)
                     return Response(content=twiml_str, media_type='text/xml')
             else:
@@ -317,18 +319,20 @@ class TwilioVoiceHandler:
                     response.say("I didn't catch that. Please speak clearly.")
                 
                 # Always add gather element to give user a chance to respond
-                # Don't just redirect - that creates an infinite loop
+                # Don't redirect immediately - let gather wait for user input
+                # The action on gather will handle the next request
                 gather = response.gather(
                     input='speech',
-                    timeout=10,
+                    timeout=5,
                     speech_timeout='auto',
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
                 gather.say("I'm listening...")
                 
-                # If no input after gather, redirect (but only once, not in infinite loop)
-                response.redirect(f'/process_speech/{call_sid}')
+                # Don't redirect immediately - let the gather timeout handle it
+                # If gather times out without input, it will POST to /process_speech/{call_sid} with empty result
+                # That's handled by the else block above
                 return Response(content=str(response), media_type='text/xml')
         
         @app.post('/media/{call_sid}')
@@ -406,8 +410,8 @@ class TwilioVoiceHandler:
             )
             gather.say("I'm listening...")
             
-            # If no input, redirect to process
-            response.redirect(f'/process_speech/{call_sid}')
+            # Don't redirect - gather will POST to action URL when user speaks or times out
+            # Removing redirect prevents infinite loop - let gather handle timeout naturally
             
             return Response(content=str(response), media_type='text/xml')
         

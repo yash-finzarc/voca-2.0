@@ -791,7 +791,8 @@ async def handle_outbound_call(request: Request):
             method='POST'
         )
         gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Don't redirect - gather will POST to action URL when user speaks or times out
+        # Removing redirect prevents infinite loop on initial greeting timeout
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -843,7 +844,8 @@ async def handle_incoming_call_webhook(request: Request):
             method='POST'
         )
         gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Don't redirect - gather will POST to action URL when user speaks or times out
+        # Removing redirect prevents infinite loop - let gather handle timeout naturally
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -932,13 +934,15 @@ async def handle_speech_webhook(call_sid: str, request: Request):
             if call_sid:
                 gather = response.gather(
                     input='speech',
-                    timeout=10,
+                    timeout=5,
                     speech_timeout='auto',
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
                 gather.say("I'm listening...")
-                response.redirect(f'/process_speech/{call_sid}')
+                
+                # Don't redirect immediately - let gather wait for user input
+                # If gather times out, it will POST to action with empty result
             
             return Response(content=str(response), media_type='text/xml')
             
@@ -947,7 +951,16 @@ async def handle_speech_webhook(call_sid: str, request: Request):
             response = VoiceResponse()
             response.say("I'm sorry, I had trouble processing that. Please try again.")
             if call_sid:
-                response.redirect(f'/process_speech/{call_sid}')
+                # Add gather to wait for user input - don't redirect immediately
+                gather = response.gather(
+                    input='speech',
+                    timeout=5,
+                    speech_timeout='auto',
+                    action=f'/process_speech/{call_sid}',
+                    method='POST'
+                )
+                gather.say("I'm listening...")
+                # Don't redirect - let gather handle the next request
             return Response(content=str(response), media_type='text/xml')
     else:
         # No speech or low confidence - handle unclear input
@@ -981,15 +994,22 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         
         if call_sid:
             # Always add gather element to give user a chance to respond
+            # Don't redirect immediately - let gather wait for user input
+            # The action on gather will handle the next request
             gather = response.gather(
                 input='speech',
-                timeout=10,
+                timeout=5,
                 speech_timeout='auto',
                 action=f'/process_speech/{call_sid}',
                 method='POST'
             )
             gather.say("I'm listening...")
-            response.redirect(f'/process_speech/{call_sid}')
+            
+            # Don't redirect immediately - let the gather timeout handle it
+            # If gather times out without input, it will POST to /process_speech/{call_sid} with empty result
+            # That will increment unclear_count and handle appropriately
+            return Response(content=str(response), media_type='text/xml')
+        
         return Response(content=str(response), media_type='text/xml')
 
 
