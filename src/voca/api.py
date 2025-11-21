@@ -320,22 +320,43 @@ async def health():
 
 
 # OPTIONS handler - FastAPI CORS middleware should handle this automatically
-# Explicit handler for Twilio webhooks (using Linode server)
+# But we add explicit handler to ensure it works correctly
 @app.options("/{full_path:path}")
 async def options_handler(full_path: str, request: Request):
     """Handle OPTIONS requests for CORS preflight."""
-    origin = request.headers.get("origin", "*")
+    origin = request.headers.get("origin")
     
-    response = Response(
-        content="",
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": origin if origin else "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With",
-            "Access-Control-Max-Age": "3600",
-        }
-    )
+    # Check if origin is in allowed origins
+    allowed_origin = None
+    if origin:
+        for allowed in _cors_origins:
+            if origin == allowed or allowed == "*":
+                allowed_origin = origin
+                break
+    else:
+        # If no origin header, allow it (for same-origin requests)
+        allowed_origin = "*"
+    
+    # If origin is allowed, return CORS headers, otherwise deny
+    if allowed_origin:
+        response = Response(
+            content="",
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": allowed_origin,
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With",
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Max-Age": "3600",
+            }
+        )
+    else:
+        # Origin not allowed
+        response = Response(
+            content="CORS policy: Origin not allowed",
+            status_code=403
+        )
+    
     return response
 
 
@@ -787,6 +808,8 @@ async def handle_outbound_call(request: Request):
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='en-US',
+            enhanced=True,
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
@@ -840,6 +863,8 @@ async def handle_incoming_call_webhook(request: Request):
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='en-US',
+            enhanced=True,
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
@@ -865,8 +890,19 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         raise HTTPException(status_code=404, detail="Call not found")
     
     form_data = await request.form()
+    
+    # Log ALL form data received from Twilio for debugging
+    form_dict = dict(form_data)
+    app_state._log_callback("=" * 80)
+    app_state._log_callback(f"[DEBUG] Call {call_sid} - All Form Data Received:")
+    for key, value in form_dict.items():
+        app_state._log_callback(f"[DEBUG] {key}: {value}")
+    app_state._log_callback("=" * 80)
+    
     speech_result = form_data.get('SpeechResult', '')
     confidence = form_data.get('Confidence', '0')
+    speech_error = form_data.get('SpeechError', '')
+    digits = form_data.get('Digits', '')
     
     # Clear logging for debugging - USER input
     if speech_result:
@@ -874,13 +910,25 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         app_state._log_callback(f"[USER] Call {call_sid} - Speech Recognized by Twilio:")
         app_state._log_callback(f"[USER] Confidence: {confidence}")
         app_state._log_callback(f"[USER] Text: \"{speech_result}\"")
+        if speech_error:
+            app_state._log_callback(f"[USER] Speech Error: {speech_error}")
         app_state._log_callback("=" * 80)
     else:
         app_state._log_callback("=" * 80)
-        app_state._log_callback(f"[USER] Call {call_sid} - No speech recognized (confidence: {confidence})")
+        app_state._log_callback(f"[USER] Call {call_sid} - No speech recognized")
+        app_state._log_callback(f"[USER] Confidence: {confidence}")
+        if speech_error:
+            app_state._log_callback(f"[USER] Speech Error: {speech_error}")
+        if digits:
+            app_state._log_callback(f"[USER] Digits received instead: {digits}")
         app_state._log_callback("=" * 80)
     
-    if speech_result and float(confidence) > 0.5:
+    # Lower confidence threshold from 0.5 to 0.3 to catch more speech
+    # Also accept speech even with empty confidence if speech_result is not empty
+    confidence_value = float(confidence) if confidence else 0.0
+    has_valid_speech = speech_result and (confidence_value > 0.3 or confidence_value == 0.0)
+    
+    if has_valid_speech:
         try:
             # User message and AI response are logged in orchestrator.generate_reply
             ai_response = voice_handler.orchestrator.generate_reply(
@@ -934,8 +982,10 @@ async def handle_speech_webhook(call_sid: str, request: Request):
             if call_sid:
                 gather = response.gather(
                     input='speech',
-                    timeout=5,
+                    timeout=10,
                     speech_timeout='auto',
+                    language='en-US',
+                    enhanced=True,
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
@@ -954,8 +1004,10 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                 # Add gather to wait for user input - don't redirect immediately
                 gather = response.gather(
                     input='speech',
-                    timeout=5,
+                    timeout=10,
                     speech_timeout='auto',
+                    language='en-US',
+                    enhanced=True,
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
@@ -998,8 +1050,10 @@ async def handle_speech_webhook(call_sid: str, request: Request):
             # The action on gather will handle the next request
             gather = response.gather(
                 input='speech',
-                timeout=5,
+                timeout=10,
                 speech_timeout='auto',
+                language='en-US',
+                enhanced=True,
                 action=f'/process_speech/{call_sid}',
                 method='POST'
             )

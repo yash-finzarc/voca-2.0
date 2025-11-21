@@ -92,6 +92,8 @@ class TwilioVoiceHandler:
                 input='speech',
                 timeout=10,
                 speech_timeout='auto',
+                language='en-US',
+                enhanced=True,
                 action=f'/process_speech/{call_sid}',
                 method='POST'
             )
@@ -109,8 +111,19 @@ class TwilioVoiceHandler:
                 raise HTTPException(status_code=404, detail="Call not found")
             
             form_data = await request.form()
+            
+            # Log ALL form data received from Twilio for debugging
+            form_dict = dict(form_data)
+            handler.logger.info("=" * 80)
+            handler.logger.info(f"[DEBUG] Call {call_sid} - All Form Data Received:")
+            for key, value in form_dict.items():
+                handler.logger.info(f"[DEBUG] {key}: {value}")
+            handler.logger.info("=" * 80)
+            
             speech_result = form_data.get('SpeechResult', '')
             confidence = form_data.get('Confidence', '0')
+            speech_error = form_data.get('SpeechError', '')
+            digits = form_data.get('Digits', '')
             
             # Clear logging for debugging - USER input
             if speech_result:
@@ -118,10 +131,17 @@ class TwilioVoiceHandler:
                 handler.logger.info(f"[USER] Call {call_sid} - Speech Recognized by Twilio:")
                 handler.logger.info(f"[USER] Confidence: {confidence}")
                 handler.logger.info(f"[USER] Text: \"{speech_result}\"")
+                if speech_error:
+                    handler.logger.info(f"[USER] Speech Error: {speech_error}")
                 handler.logger.info("=" * 80)
             else:
                 handler.logger.info("=" * 80)
-                handler.logger.info(f"[USER] Call {call_sid} - No speech recognized (confidence: {confidence})")
+                handler.logger.info(f"[USER] Call {call_sid} - No speech recognized")
+                handler.logger.info(f"[USER] Confidence: {confidence}")
+                if speech_error:
+                    handler.logger.info(f"[USER] Speech Error: {speech_error}")
+                if digits:
+                    handler.logger.info(f"[USER] Digits received instead: {digits}")
                 handler.logger.info("=" * 80)
             
             # Get session to check if we're collecting a name
@@ -150,7 +170,12 @@ class TwilioVoiceHandler:
                 (not session.collected_data.get('name') or len(str(session.collected_data.get('name', '')).strip()) < 2)
             )
             
-            if speech_result and float(confidence) > 0.5:
+            # Lower confidence threshold from 0.5 to 0.3 to catch more speech
+            # Also accept speech even with empty confidence if speech_result is not empty
+            confidence_value = float(confidence) if confidence else 0.0
+            has_valid_speech = speech_result and (confidence_value > 0.3 or confidence_value == 0.0)
+            
+            if has_valid_speech:
                 # Reset unclear count on successful speech recognition
                 if call_sid in handler.active_calls:
                     handler.active_calls[call_sid]['unclear_count'] = 0
@@ -218,6 +243,8 @@ class TwilioVoiceHandler:
                         input='speech',
                         timeout=10,
                         speech_timeout='auto',
+                        language='en-US',
+                        enhanced=True,
                         action=f'/process_speech/{call_sid}',
                         method='POST'
                     )
@@ -243,6 +270,8 @@ class TwilioVoiceHandler:
                         input='speech',
                         timeout=10,
                         speech_timeout='auto',
+                        language='en-US',
+                        enhanced=True,
                         action=f'/process_speech/{call_sid}',
                         method='POST'
                     )
@@ -323,8 +352,10 @@ class TwilioVoiceHandler:
                 # The action on gather will handle the next request
                 gather = response.gather(
                     input='speech',
-                    timeout=5,
+                    timeout=10,
                     speech_timeout='auto',
+                    language='en-US',
+                    enhanced=True,
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
@@ -405,6 +436,8 @@ class TwilioVoiceHandler:
                 input='speech',
                 timeout=10,
                 speech_timeout='auto',
+                language='en-US',
+                enhanced=True,
                 action=f'/process_speech/{call_sid}',
                 method='POST'
             )
