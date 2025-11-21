@@ -50,7 +50,7 @@ def check_dependencies():
         import twilio
         import google.generativeai
         import numpy
-        import sounddevice
+        # import sounddevice  # Commented out - not needed for Twilio calls
         logger.info("✅ All required dependencies are installed")
         return True
     except ImportError as e:

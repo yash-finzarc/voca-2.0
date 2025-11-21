@@ -4,7 +4,8 @@ import queue
 from typing import Optional
 
 import numpy as np
-import sounddevice as sd
+# import sounddevice as sd  # Commented out - not needed for Twilio calls
+sd = None  # type: ignore
 import logging
 
 from src.voca.config import Config
@@ -37,6 +38,11 @@ class CoquiTTS:
             return
         if self._tts is None:
             raise RuntimeError("TTS model not loaded")
+        if sd is None:
+            # Sounddevice not available - this is expected for Twilio calls
+            # Twilio uses its own TTS via TwiML response.say()
+            self.log.warning("sounddevice not available. Audio playback skipped (this is normal for Twilio calls).")
+            return
         # Generate waveform
         self.log.info(f"Synthesizing {len(text)} characters")
         wav = self._tts.tts(text=text)

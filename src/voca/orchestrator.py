@@ -15,10 +15,12 @@ from src.voca.system_prompt import get_prompt, get_welcome_message
 from src.voca.tts import CoquiTTS
 from src.voca.conversation_logger import log_user, log_ai
 
-try:
-    import sounddevice as sd
-except Exception:  # pragma: no cover
-    sd = None  # type: ignore
+# Sounddevice commented out - not needed for Twilio calls
+# try:
+#     import sounddevice as sd
+# except Exception:  # pragma: no cover
+#     sd = None  # type: ignore
+sd = None  # type: ignore
 try:
     import webrtcvad
 except Exception:
@@ -263,14 +265,19 @@ class VocaOrchestrator:
 
         sr = Config.sample_rate
         self.log(f"Recording microphone for {duration_sec}s at {sr} Hz...")
-        try:
-            audio = sd.rec(int(duration_sec * sr), samplerate=sr, channels=1, dtype='int16')
-            sd.wait()
-        except Exception as e:
-            self.log(f"Audio capture failed: {e}")
-            return
-
-        pcm16 = np.squeeze(audio)  # shape (N,)
+        # Sounddevice commented out - not available
+        # try:
+        #     audio = sd.rec(int(duration_sec * sr), samplerate=sr, channels=1, dtype='int16')
+        #     sd.wait()
+        # except Exception as e:
+        #     self.log(f"Audio capture failed: {e}")
+        #     return
+        # 
+        # pcm16 = np.squeeze(audio)  # shape (N,)
+        
+        # Return early since sounddevice is not available
+        self.log("Audio recording skipped - sounddevice not available")
+        return
         self.log("Transcribing...")
         try:
             text = self.stt.transcribe_pcm16(pcm16)
@@ -332,66 +339,67 @@ class VocaOrchestrator:
         speech_count = 0
         consecutive_silence = 0
 
-        with sd.RawInputStream(samplerate=sr, blocksize=frame_samples, channels=1, dtype='int16') as stream:
-            while not getattr(self, "_vad_stop", False):
-                chunk = stream.read(frame_samples)[0]
-                if use_webrtc:
-                    is_speech = vad.is_speech(chunk, sr)
-                else:
-                    # Energy-based VAD: compute RMS and compare to adaptive threshold
-                    arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
-                    rms = float(np.sqrt(np.mean(arr * arr)) + 1e-6)
-                    # Initialize adaptive threshold using first 50 frames (~1.5s)
-                    if not hasattr(self, "_rms_noise_floor"):
-                        self._rms_noise_floor = rms
-                        self._rms_thresh = max(200.0, self._rms_noise_floor * 2.0)  # Even lower threshold
-                    else:
-                        # Slowly adapt noise floor when detected as silence
-                        if rms < getattr(self, "_rms_thresh", 500.0) * 0.6:  # More lenient
-                            self._rms_noise_floor = 0.995 * self._rms_noise_floor + 0.005 * rms
-                            self._rms_thresh = max(200.0, self._rms_noise_floor * 2.0)
-                    is_speech = rms >= getattr(self, "_rms_thresh", 500.0)
-                buffer.append(chunk)
-                if is_speech:
-                    silence_count = 0
-                    speech_count += 1
-                    consecutive_silence = 0
-                else:
-                    silence_count += 1
-                    consecutive_silence += 1
-                # If we've observed speech and then enough silence, finalize utterance
-                if silence_count >= silence_limit_frames and buffer and speech_count >= min_utterance_frames:
-                    pcm = np.frombuffer(b"".join(buffer), dtype=np.int16)
-                    buffer.clear()
-                    silence_count = 0
-                    speech_count = 0
-                    consecutive_silence = 0
-                    try:
-                        # Apply simple noise reduction and normalization
-                        pcm_float = pcm.astype(np.float32) / 32768.0
-                        # Simple high-pass filter to remove low-frequency noise
-                        pcm_float = np.diff(pcm_float, prepend=pcm_float[0])
-                        # Normalize
-                        if np.max(np.abs(pcm_float)) > 0:
-                            pcm_float = pcm_float / np.max(np.abs(pcm_float)) * 0.95
-                        pcm_clean = (pcm_float * 32768.0).astype(np.int16)
-                        text = self.stt.transcribe_pcm16(pcm_clean)
-                        if text and len(text.strip()) > 2:  # Only process if meaningful text
-                            self.log(f"USER: {text}")
-                            log_user(text)
-                            reply = self.generate_reply(text, conversation_id="continuous_vad")
-                            if reply:
-                                self.log(f"ASSISTANT: {reply}")
-                                log_ai(reply)
-                                self.tts.speak(reply)
-                    except Exception as e:
-                        self.log(f"Pipeline error: {e}")
-                elif silence_count >= silence_limit_frames and buffer:
-                    # Reset if we had audio but not enough speech
-                    buffer.clear()
-                    silence_count = 0
-                    speech_count = 0
-                    consecutive_silence = 0
+        # Sounddevice commented out - not available
+        # with sd.RawInputStream(samplerate=sr, blocksize=frame_samples, channels=1, dtype='int16') as stream:
+        #     while not getattr(self, "_vad_stop", False):
+        #         chunk = stream.read(frame_samples)[0]
+        #         if use_webrtc:
+        #             is_speech = vad.is_speech(chunk, sr)
+        #         else:
+        #             # Energy-based VAD: compute RMS and compare to adaptive threshold
+        #             arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+        #             rms = float(np.sqrt(np.mean(arr * arr)) + 1e-6)
+        #             # Initialize adaptive threshold using first 50 frames (~1.5s)
+        #             if not hasattr(self, "_rms_noise_floor"):
+        #                 self._rms_noise_floor = rms
+        #                 self._rms_thresh = max(200.0, self._rms_noise_floor * 2.0)  # Even lower threshold
+        #             else:
+        #                 # Slowly adapt noise floor when detected as silence
+        #                 if rms < getattr(self, "_rms_thresh", 500.0) * 0.6:  # More lenient
+        #                     self._rms_noise_floor = 0.995 * self._rms_noise_floor + 0.005 * rms
+        #                     self._rms_thresh = max(200.0, self._rms_noise_floor * 2.0)
+        #             is_speech = rms >= getattr(self, "_rms_thresh", 500.0)
+        #         buffer.append(chunk)
+        #         if is_speech:
+        #             silence_count = 0
+        #             speech_count += 1
+        #             consecutive_silence = 0
+        #         else:
+        #             silence_count += 1
+        #             consecutive_silence += 1
+        #         # If we've observed speech and then enough silence, finalize utterance
+        #         if silence_count >= silence_limit_frames and buffer and speech_count >= min_utterance_frames:
+        #             pcm = np.frombuffer(b"".join(buffer), dtype=np.int16)
+        #             buffer.clear()
+        #             silence_count = 0
+        #             speech_count = 0
+        #             consecutive_silence = 0
+        #             try:
+        #                 # Apply simple noise reduction and normalization
+        #                 pcm_float = pcm.astype(np.float32) / 32768.0
+        #                 # Simple high-pass filter to remove low-frequency noise
+        #                 pcm_float = np.diff(pcm_float, prepend=pcm_float[0])
+        #                 # Normalize
+        #                 if np.max(np.abs(pcm_float)) > 0:
+        #                     pcm_float = pcm_float / np.max(np.abs(pcm_float)) * 0.95
+        #                 pcm_clean = (pcm_float * 32768.0).astype(np.int16)
+        #                 text = self.stt.transcribe_pcm16(pcm_clean)
+        #                 if text and len(text.strip()) > 2:  # Only process if meaningful text
+        #                     self.log(f"USER: {text}")
+        #                     log_user(text)
+        #                     reply = self.generate_reply(text, conversation_id="continuous_vad")
+        #                     if reply:
+        #                         self.log(f"ASSISTANT: {reply}")
+        #                         log_ai(reply)
+        #                         self.tts.speak(reply)
+        #             except Exception as e:
+        #                 self.log(f"Pipeline error: {e}")
+        #         elif silence_count >= silence_limit_frames and buffer:
+        #             # Reset if we had audio but not enough speech
+        #             buffer.clear()
+        #             silence_count = 0
+        #             speech_count = 0
+        #             consecutive_silence = 0
         self.log("VAD loop stopped.")
 
 
