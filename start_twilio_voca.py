@@ -51,6 +51,7 @@ def check_dependencies():
         import google.generativeai
         import numpy
         # import sounddevice  # Commented out - not needed for Twilio calls
+        # pyngrok removed - using Linode server with public IP
         logger.info("✅ All required dependencies are installed")
         return True
     except ImportError as e:
@@ -58,30 +59,31 @@ def check_dependencies():
         logger.error("Please run: pip install -r requirements.txt")
         return False
 
-def start_ngrok():
-    """Start ngrok in the background."""
-    logger = logging.getLogger(__name__)
-    
-    try:
-        # Check if ngrok is already running
-        result = subprocess.run(['ngrok', 'version'], capture_output=True, text=True)
-        if result.returncode == 0:
-            logger.info("✅ ngrok is available")
-            
-            # Start ngrok in background
-            logger.info("🚀 Starting ngrok...")
-            subprocess.Popen(['ngrok', 'http', '5000'], 
-                           stdout=subprocess.DEVNULL, 
-                           stderr=subprocess.DEVNULL)
-            time.sleep(3)  # Give ngrok time to start
-            logger.info("✅ ngrok started on port 5000")
-            return True
-        else:
-            logger.warning("⚠️ ngrok not found, you'll need to set up webhooks manually")
-            return False
-    except FileNotFoundError:
-        logger.warning("⚠️ ngrok not found, you'll need to set up webhooks manually")
-        return False
+# Ngrok removed - using Linode server with public IP (172.105.50.83:8000)
+# def start_ngrok():
+#     """Start ngrok in the background."""
+#     logger = logging.getLogger(__name__)
+#     
+#     try:
+#         # Check if ngrok is already running
+#         result = subprocess.run(['ngrok', 'version'], capture_output=True, text=True)
+#         if result.returncode == 0:
+#             logger.info("✅ ngrok is available")
+#             
+#             # Start ngrok in background
+#             logger.info("🚀 Starting ngrok...")
+#             subprocess.Popen(['ngrok', 'http', '5000'], 
+#                            stdout=subprocess.DEVNULL, 
+#                            stderr=subprocess.DEVNULL)
+#             time.sleep(3)  # Give ngrok time to start
+#             logger.info("✅ ngrok started on port 5000")
+#             return True
+#         else:
+#             logger.warning("⚠️ ngrok not found, you'll need to set up webhooks manually")
+#             return False
+#     except FileNotFoundError:
+#         logger.warning("⚠️ ngrok not found, you'll need to set up webhooks manually")
+#         return False
 
 def start_voca_application():
     """Start the VOCA application."""
@@ -124,8 +126,9 @@ def main():
     if not check_dependencies():
         return False
     
-    # Step 3: Start ngrok (optional)
-    start_ngrok()
+    # Step 3: Ngrok removed - using Linode server with public IP (172.105.50.83:8000)
+    # start_ngrok()
+    logger.info("✅ Server running on Linode: http://172.105.50.83:8000")
     
     # Step 4: Start VOCA application
     logger.info("")

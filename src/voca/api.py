@@ -17,11 +17,8 @@ from pydantic import BaseModel, Field
 from twilio.twiml.voice_response import VoiceResponse
 import time
 
-try:
-    from pyngrok import ngrok
-    NGROK_AVAILABLE = True
-except ImportError:
-    NGROK_AVAILABLE = False
+# Ngrok removed - using Linode server
+NGROK_AVAILABLE = False
 
 from src.voca.orchestrator import VocaOrchestrator
 from src.voca.twilio_voice import TwilioCallManager
@@ -236,7 +233,9 @@ async def startup_event():
     # Start log broadcaster task
     asyncio.create_task(log_broadcaster())
     
-    # Automatically start ngrok tunnel when API server starts
+    # Ngrok removed - using Linode server (172.105.50.83:8000)
+    # Old ngrok startup code commented out:
+    # # Automatically start ngrok tunnel when API server starts
     run_main = os.getenv("RUN_MAIN")
     if (
         NGROK_AVAILABLE
@@ -260,6 +259,9 @@ async def startup_event():
             await loop.run_in_executor(None, _connect)
 
         await start_ngrok()
+    
+    logger.info("Server running on Linode: http://172.105.50.83:8000")
+    app_state._log_callback("Server running on Linode: http://172.105.50.83:8000")
 
 
 @app.on_event("shutdown")
