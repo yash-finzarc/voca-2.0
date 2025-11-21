@@ -1,0 +1,93 @@
+═══════════════════════════════════════════════════════════════
+QUICK FIX: Add Twilio Credentials to Linode Server
+═══════════════════════════════════════════════════════════════
+
+PROBLEM: No TWILIO environment variables in .env file on Linode
+
+SOLUTION: Add Twilio credentials to .env file on Linode
+═══════════════════════════════════════════════════════════════
+
+STEP 1: Edit .env file on Linode
+───────────────────────────────────────────────────────────────
+SSH into Linode, then:
+
+    cd ~/voca-2.0
+    nano .env
+
+STEP 2: Add These Lines
+───────────────────────────────────────────────────────────────
+Add these lines to the .env file (replace with YOUR values):
+
+    TWILIO_ACCOUNT_SID=your_twilio_account_sid
+    TWILIO_AUTH_TOKEN=your_twilio_auth_token
+    TWILIO_PHONE_NUMBER=+1XXXXXXXXXX
+
+Example:
+    TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    TWILIO_AUTH_TOKEN=your_auth_token_here
+    TWILIO_PHONE_NUMBER=+15551234567
+    
+    (Replace with your actual credentials from Twilio Console)
+
+STEP 3: Save File
+───────────────────────────────────────────────────────────────
+Press:
+    Ctrl+X (to exit)
+    Y (to save)
+    Enter (to confirm)
+
+STEP 4: Verify
+───────────────────────────────────────────────────────────────
+    cat .env | grep TWILIO
+
+Should show:
+    TWILIO_ACCOUNT_SID=...
+    TWILIO_AUTH_TOKEN=...
+    TWILIO_PHONE_NUMBER=...
+
+STEP 5: Restart Backend Server
+───────────────────────────────────────────────────────────────
+1. Stop current server (Press Ctrl+C)
+2. Start again:
+    python main_api_server.py
+
+STEP 6: Test
+───────────────────────────────────────────────────────────────
+From your local computer:
+
+    curl http://172.105.50.83:8000/api/twilio/configured
+
+Should return: {"configured": true}
+
+    curl http://172.105.50.83:8000/api/twilio/call-status/summary?limit=15
+
+Should return: 200 OK (not 400)
+
+═══════════════════════════════════════════════════════════════
+WHERE TO FIND YOUR TWILIO CREDENTIALS:
+═══════════════════════════════════════════════════════════════
+
+1. Go to: https://console.twilio.com/
+2. Log in to your Twilio account
+3. Find credentials:
+   - Account SID: Dashboard → Account Info
+   - Auth Token: Dashboard → Account Info (click to reveal)
+   - Phone Number: Phone Numbers → Manage → Active Numbers
+
+═══════════════════════════════════════════════════════════════
+IMPORTANT:
+═══════════════════════════════════════════════════════════════
+
+✓ Variable names must be EXACTLY:
+  - TWILIO_ACCOUNT_SID
+  - TWILIO_AUTH_TOKEN
+  - TWILIO_PHONE_NUMBER
+
+✓ No spaces around the = sign
+
+✓ Phone number must include + and country code (e.g., +15551234567)
+
+✓ RESTART the server after editing .env
+
+═══════════════════════════════════════════════════════════════
+

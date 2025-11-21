@@ -112,7 +112,17 @@ class TwilioVoiceHandler:
             speech_result = form_data.get('SpeechResult', '')
             confidence = form_data.get('Confidence', '0')
             
-            handler.logger.info(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
+            # Clear logging for debugging - USER input
+            if speech_result:
+                handler.logger.info("=" * 80)
+                handler.logger.info(f"[USER] Call {call_sid} - Speech Recognized by Twilio:")
+                handler.logger.info(f"[USER] Confidence: {confidence}")
+                handler.logger.info(f"[USER] Text: \"{speech_result}\"")
+                handler.logger.info("=" * 80)
+            else:
+                handler.logger.info("=" * 80)
+                handler.logger.info(f"[USER] Call {call_sid} - No speech recognized (confidence: {confidence})")
+                handler.logger.info("=" * 80)
             
             # Get session to check if we're collecting a name
             session = handler.orchestrator._get_session(call_sid, None)
@@ -159,7 +169,11 @@ class TwilioVoiceHandler:
                             conversation_id=call_sid,
                             call_sid=call_sid,
                         )
-                        handler.logger.info(f"AI Response: {ai_response}")
+                        # Clear logging for debugging - AI response
+                        handler.logger.info("=" * 80)
+                        handler.logger.info(f"[AI] Call {call_sid} - AI Response Generated:")
+                        handler.logger.info(f"[AI] Response: \"{ai_response}\"")
+                        handler.logger.info("=" * 80)
                         
                         # Check if AI is asking to repeat and we're in a name collection loop
                         ai_response_lower = ai_response.lower() if ai_response else ''
@@ -238,6 +252,13 @@ class TwilioVoiceHandler:
                     return Response(content=twiml_str, media_type='text/xml')
             else:
                 # No speech or low confidence
+                # Clear logging for debugging
+                handler.logger.info("=" * 80)
+                handler.logger.info(f"[USER] Call {call_sid} - Speech Recognition Failed:")
+                handler.logger.info(f"[USER] SpeechResult: \"{speech_result or '(empty)'}\"")
+                handler.logger.info(f"[USER] Confidence: {confidence} (below 0.5 threshold)")
+                handler.logger.info("=" * 80)
+                
                 # Track unclear responses
                 if call_sid in handler.active_calls:
                     handler.active_calls[call_sid]['unclear_count'] = handler.active_calls[call_sid].get('unclear_count', 0) + 1
@@ -273,8 +294,21 @@ class TwilioVoiceHandler:
                 
                 response = VoiceResponse()
                 
+                # Maximum retry limit to prevent infinite loops
+                MAX_UNCLEAR_ATTEMPTS = 3
+                
+                # If we've exceeded max attempts, gracefully handle the situation
+                if unclear_count >= MAX_UNCLEAR_ATTEMPTS:
+                    if is_collecting_name:
+                        response.say("I'm having trouble understanding your name over the phone. Let's skip that for now. How can I help you today?")
+                    else:
+                        response.say("I'm having trouble understanding you. Let me try a different approach. Please say your question or request again, and I'll do my best to help.")
+                    
+                    # Reset unclear count after max attempts to give user a fresh chance
+                    if call_sid in handler.active_calls:
+                        handler.active_calls[call_sid]['unclear_count'] = 0
                 # If we're in a loop and it's about a name, ask to spell it
-                if unclear_count >= 2 and is_collecting_name:
+                elif unclear_count >= 2 and is_collecting_name:
                     response.say("I'm having trouble understanding your name. Could you please spell it for me? First, tell me your first name letter by letter, and then your last name.")
                 elif unclear_count >= 2:
                     # After multiple unclear attempts, be more helpful
@@ -282,6 +316,18 @@ class TwilioVoiceHandler:
                 else:
                     response.say("I didn't catch that. Please speak clearly.")
                 
+                # Always add gather element to give user a chance to respond
+                # Don't just redirect - that creates an infinite loop
+                gather = response.gather(
+                    input='speech',
+                    timeout=10,
+                    speech_timeout='auto',
+                    action=f'/process_speech/{call_sid}',
+                    method='POST'
+                )
+                gather.say("I'm listening...")
+                
+                # If no input after gather, redirect (but only once, not in infinite loop)
                 response.redirect(f'/process_speech/{call_sid}')
                 return Response(content=str(response), media_type='text/xml')
         

@@ -1,0 +1,76 @@
+═══════════════════════════════════════════════════════════════
+QUICK FIX: Install Dependencies on Linode
+═══════════════════════════════════════════════════════════════
+
+PROBLEM: ModuleNotFoundError: No module named 'uvicorn'
+
+SOLUTION: Install Python dependencies
+═══════════════════════════════════════════════════════════════
+
+On your Linode server, run these commands:
+───────────────────────────────────────────────────────────────
+
+1. Navigate to project directory:
+   cd ~/voca-2.0
+
+2. Activate virtual environment (if not already active):
+   source venv/bin/activate
+
+   You should see (venv) in your prompt.
+
+3. Install all dependencies:
+   pip install -r requirements.txt
+
+   This will install uvicorn, fastapi, twilio, and all other packages.
+   May take 2-5 minutes.
+
+4. Verify installation:
+   pip list | grep uvicorn
+
+   Should show uvicorn with a version number.
+
+5. Start backend server:
+   python main_api_server.py
+
+   Should now start successfully!
+
+═══════════════════════════════════════════════════════════════
+IF PIP INSTALL FAILS:
+═══════════════════════════════════════════════════════════════
+
+Try these:
+
+Option 1: Upgrade pip first
+   pip install --upgrade pip
+   pip install -r requirements.txt
+
+Option 2: Install only essential packages
+   pip install uvicorn fastapi twilio python-dotenv
+
+Option 3: Use python3 -m pip
+   python3 -m pip install -r requirements.txt
+
+═══════════════════════════════════════════════════════════════
+AFTER INSTALLATION:
+═══════════════════════════════════════════════════════════════
+
+1. Add Twilio credentials to .env:
+   nano .env
+   # Add:
+   TWILIO_ACCOUNT_SID=your_account_sid
+   TWILIO_AUTH_TOKEN=your_auth_token
+   TWILIO_PHONE_NUMBER=+1XXXXXXXXXX
+
+2. Add CORS configuration:
+   CORS_ORIGINS=http://localhost:3000
+
+3. Start server:
+   python main_api_server.py
+
+4. Test from your computer:
+   curl http://172.105.50.83:8000/health
+
+   Should return: {"status":"healthy"}
+
+═══════════════════════════════════════════════════════════════
+

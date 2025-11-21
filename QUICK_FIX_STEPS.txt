@@ -1,0 +1,66 @@
+═══════════════════════════════════════════════════════════════
+QUICK FIX FOR FRONTEND NOT CONNECTING TO LINODE BACKEND
+═══════════════════════════════════════════════════════════════
+
+PROBLEM: Frontend still using localhost:8000 instead of Linode server
+
+SOLUTION IN 3 STEPS:
+═══════════════════════════════════════════════════════════════
+
+STEP 1: Go to Your Frontend Directory
+───────────────────────────────────────────────────────────────
+Open PowerShell/terminal and navigate to your frontend folder:
+
+    cd C:\path\to\your\frontend-project
+    
+(Replace with your actual frontend path)
+
+STEP 2: Create .env.local File
+───────────────────────────────────────────────────────────────
+In your frontend root directory, create a file named: .env.local
+
+Add this ONE line to the file:
+
+    NEXT_PUBLIC_API_BASE_URL=http://172.105.50.83:8000
+
+Save the file!
+
+STEP 3: Restart Next.js Server
+───────────────────────────────────────────────────────────────
+1. Stop current server (Press Ctrl+C in terminal running npm run dev)
+2. Start it again: npm run dev
+3. Check console - should NOT show warning anymore
+
+═══════════════════════════════════════════════════════════════
+VERIFY IT WORKED:
+═══════════════════════════════════════════════════════════════
+
+✓ Console should show:
+  [API Client] Initialized with base URL: http://172.105.50.83:8000
+
+✗ Should NOT show:
+  [API Client] ⚠️ No NEXT_PUBLIC_API_BASE_URL configured
+
+═══════════════════════════════════════════════════════════════
+STILL NOT WORKING?
+═══════════════════════════════════════════════════════════════
+
+1. Make sure .env.local is in the SAME directory as package.json
+2. Make sure variable name is EXACTLY: NEXT_PUBLIC_API_BASE_URL
+3. Make sure you RESTARTED the server after creating the file
+4. Check for typos in the file
+
+═══════════════════════════════════════════════════════════════
+BACKEND ALSO NEEDS CONFIGURATION (on Linode server):
+═══════════════════════════════════════════════════════════════
+
+SSH into Linode (172.105.50.83) and edit .env file:
+
+    CORS_ORIGINS=http://localhost:3000,https://your-frontend.vercel.app
+
+Replace "your-frontend.vercel.app" with your actual frontend URL.
+
+Then restart backend server on Linode.
+
+═══════════════════════════════════════════════════════════════
+

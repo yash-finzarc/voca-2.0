@@ -17,8 +17,13 @@ from pydantic import BaseModel, Field
 from twilio.twiml.voice_response import VoiceResponse
 import time
 
-# Ngrok removed - using Linode server
-NGROK_AVAILABLE = False
+# Ngrok removed - using Linode server with public IP (172.105.50.83:8000)
+# try:
+#     from pyngrok import ngrok
+#     NGROK_AVAILABLE = True
+# except ImportError:
+#     NGROK_AVAILABLE = False
+NGROK_AVAILABLE = False  # Ngrok disabled - using Linode server
 
 from src.voca.orchestrator import VocaOrchestrator
 from src.voca.twilio_voice import TwilioCallManager
@@ -152,9 +157,10 @@ class AppState:
         self.is_twilio_server_running: bool = False
         self.is_continuous_call_running: bool = False
         self.continuous_call_thread: Optional[threading.Thread] = None
-        self.ngrok_tunnel = None  # pyngrok tunnel object
-        self.ngrok_url: Optional[str] = None
-        self.ngrok_port: int = 8000  # API server port
+        # Ngrok removed - using Linode server with public IP
+        # self.ngrok_tunnel = None  # pyngrok tunnel object
+        # self.ngrok_url: Optional[str] = None
+        # self.ngrok_port: int = 8000  # API server port
         
     def get_orchestrator(self) -> VocaOrchestrator:
         if self.orchestrator is None:
@@ -165,7 +171,12 @@ class AppState:
         if self.twilio_manager is None:
             config = get_twilio_config()
             if config.validate():
-                self.twilio_manager = TwilioCallManager(self.get_orchestrator())
+                try:
+                    self.twilio_manager = TwilioCallManager(self.get_orchestrator())
+                except Exception as e:
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"Failed to create TwilioCallManager: {e}")
+                    return None
             else:
                 return None
         return self.twilio_manager
@@ -192,13 +203,26 @@ app = FastAPI(
 
 # Add CORS middleware for frontend
 # Allow specific origins for production and development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# Get allowed origins from environment variable or use defaults
+_cors_origins_env = os.getenv("CORS_ORIGINS", "")
+if _cors_origins_env:
+    # Parse comma-separated origins from environment variable
+    _cors_origins = [origin.strip() for origin in _cors_origins_env.split(",")]
+else:
+    # Default origins
+    _cors_origins = [
         "https://voca-frontend-self.vercel.app",  # Vercel production deployment
         "http://localhost:3000",  # Local development
         "http://localhost:3001",  # Alternative local port
-    ],
+    ]
+
+# Log CORS configuration for debugging
+logger = logging.getLogger(__name__)
+logger.info(f"CORS allowed origins: {_cors_origins}")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
     allow_credentials=True,  # Can be True when using specific origins
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
@@ -233,32 +257,28 @@ async def startup_event():
     # Start log broadcaster task
     asyncio.create_task(log_broadcaster())
     
-    # Ngrok removed - using Linode server (172.105.50.83:8000)
-    # Old ngrok startup code commented out:
-    # # Automatically start ngrok tunnel when API server starts
-    run_main = os.getenv("RUN_MAIN")
-    if (
-        NGROK_AVAILABLE
-        and app_state.ngrok_tunnel is None
-        and (run_main is None or run_main == "true")  # Run when not using reloader or in main process
-    ):
-        loop = asyncio.get_running_loop()
-
-        async def start_ngrok():
-            def _connect():
-                try:
-                    tunnel = ngrok.connect(app_state.ngrok_port)
-                    app_state.ngrok_tunnel = tunnel
-                    app_state.ngrok_url = tunnel.public_url
-                    logger.info(f"Ngrok tunnel started automatically: {app_state.ngrok_url}")
-                    app_state._log_callback(f"Ngrok tunnel started automatically: {app_state.ngrok_url}")
-                except Exception as exc:
-                    logger.error(f"Failed to start ngrok tunnel automatically: {exc}")
-                    app_state._log_callback(f"Failed to start ngrok tunnel automatically: {exc}")
-
-            await loop.run_in_executor(None, _connect)
-
-        await start_ngrok()
+    # Ngrok removed - using Linode server with public IP (172.105.50.83:8000)
+    # Old ngrok startup code commented out below:
+    # run_main = os.getenv("RUN_MAIN")
+    # if (
+    #     NGROK_AVAILABLE
+    #     and app_state.ngrok_tunnel is None
+    #     and (run_main is None or run_main == "true")
+    # ):
+    #     loop = asyncio.get_running_loop()
+    #     async def start_ngrok():
+    #         def _connect():
+    #             try:
+    #                 tunnel = ngrok.connect(app_state.ngrok_port)
+    #                 app_state.ngrok_tunnel = tunnel
+    #                 app_state.ngrok_url = tunnel.public_url
+    #                 logger.info(f"Ngrok tunnel started automatically: {app_state.ngrok_url}")
+    #                 app_state._log_callback(f"Ngrok tunnel started automatically: {app_state.ngrok_url}")
+    #             except Exception as exc:
+    #                 logger.error(f"Failed to start ngrok tunnel automatically: {exc}")
+    #                 app_state._log_callback(f"Failed to start ngrok tunnel automatically: {exc}")
+    #         await loop.run_in_executor(None, _connect)
+    #     await start_ngrok()
     
     logger.info("Server running on Linode: http://172.105.50.83:8000")
     app_state._log_callback("Server running on Linode: http://172.105.50.83:8000")
@@ -270,17 +290,17 @@ async def shutdown_event():
     logger = logging.getLogger(__name__)
     logger.info("VOCA API server shutting down...")
     
-    # Stop ngrok tunnel if running
-    if app_state.ngrok_tunnel is not None and NGROK_AVAILABLE:
-        try:
-            ngrok.disconnect(app_state.ngrok_tunnel.public_url)
-            logger.info("Ngrok tunnel stopped")
-            app_state._log_callback("Ngrok tunnel stopped")
-        except Exception as e:
-            logger.error(f"Error stopping ngrok tunnel: {e}")
-        finally:
-            app_state.ngrok_tunnel = None
-            app_state.ngrok_url = None
+    # Ngrok removed - no need to stop ngrok tunnel
+    # if app_state.ngrok_tunnel is not None and NGROK_AVAILABLE:
+    #     try:
+    #         ngrok.disconnect(app_state.ngrok_tunnel.public_url)
+    #         logger.info("Ngrok tunnel stopped")
+    #         app_state._log_callback("Ngrok tunnel stopped")
+    #     except Exception as e:
+    #         logger.error(f"Error stopping ngrok tunnel: {e}")
+    #     finally:
+    #         app_state.ngrok_tunnel = None
+    #         app_state.ngrok_url = None
 
 
 @app.get("/")
@@ -300,7 +320,7 @@ async def health():
 
 
 # OPTIONS handler - FastAPI CORS middleware should handle this automatically
-# But we add explicit handler as fallback for ngrok compatibility
+# Explicit handler for Twilio webhooks (using Linode server)
 @app.options("/{full_path:path}")
 async def options_handler(full_path: str, request: Request):
     """Handle OPTIONS requests for CORS preflight."""
@@ -559,10 +579,18 @@ async def get_twilio_call_status_summary(
     """Fetch categorized Twilio call records for the dashboard."""
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
-        raise HTTPException(
-            status_code=400,
-            detail="Twilio not configured. Please set up environment variables.",
-        )
+        # Check if Twilio config is valid to provide better error message
+        config = get_twilio_config()
+        if not config.validate():
+            raise HTTPException(
+                status_code=400,
+                detail="Twilio not configured. Please set up environment variables (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER).",
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Twilio configuration is valid but manager failed to initialize. Check server logs for details.",
+            )
 
     def _parse_iso8601(value: Optional[str], field_name: str) -> Optional[datetime]:
         if value is None:
@@ -626,116 +654,19 @@ async def get_twilio_webhook_urls():
     }
 
 
-# ==================== Ngrok Endpoints ====================
+# ==================== Server Info Endpoints ====================
+# Ngrok removed - using Linode server with public IP
 
-@app.post("/api/ngrok/start", response_model=Dict[str, Any])
-async def start_ngrok_tunnel():
-    """Start ngrok tunnel for the API server."""
-    if not NGROK_AVAILABLE:
-        raise HTTPException(
-            status_code=400,
-            detail="pyngrok not installed. Install it with: pip install pyngrok"
-        )
-    
-    if app_state.ngrok_tunnel is not None:
-        return {
-            "status": "already_running",
-            "url": app_state.ngrok_url,
-            "message": "Ngrok tunnel is already running"
-        }
-    
-    try:
-        # Start ngrok tunnel on API server port (8000)
-        app_state.ngrok_tunnel = ngrok.connect(app_state.ngrok_port)
-        app_state.ngrok_url = app_state.ngrok_tunnel.public_url
-        
-        app_state._log_callback(f"Ngrok tunnel started: {app_state.ngrok_url}")
-        
-        return {
-            "status": "success",
-            "url": app_state.ngrok_url,
-            "message": f"Ngrok tunnel started successfully. Frontend can connect to: {app_state.ngrok_url}"
-        }
-    except Exception as e:
-        app_state._log_callback(f"Failed to start ngrok tunnel: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start ngrok tunnel: {str(e)}")
-
-
-@app.post("/api/ngrok/stop", response_model=StatusResponse)
-async def stop_ngrok_tunnel():
-    """Stop ngrok tunnel."""
-    if not NGROK_AVAILABLE:
-        raise HTTPException(
-            status_code=400,
-            detail="pyngrok not installed"
-        )
-    
-    if app_state.ngrok_tunnel is None:
-        raise HTTPException(status_code=400, detail="Ngrok tunnel is not running")
-    
-    try:
-        ngrok.disconnect(app_state.ngrok_tunnel.public_url)
-        app_state._log_callback(f"Ngrok tunnel stopped: {app_state.ngrok_url}")
-        
-        old_url = app_state.ngrok_url
-        app_state.ngrok_tunnel = None
-        app_state.ngrok_url = None
-        
-        return StatusResponse(
-            status="success",
-            message=f"Ngrok tunnel stopped. Previous URL was: {old_url}"
-        )
-    except Exception as e:
-        app_state._log_callback(f"Failed to stop ngrok tunnel: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to stop ngrok tunnel: {str(e)}")
-
-
-@app.get("/api/ngrok/status", response_model=Dict[str, Any])
-async def get_ngrok_status():
-    """Get ngrok tunnel status and URL."""
-    if not NGROK_AVAILABLE:
-        return {
-            "available": False,
-            "running": False,
-            "url": None,
-            "message": "pyngrok not installed"
-        }
-    
-    if app_state.ngrok_tunnel is None:
-        return {
-            "available": True,
-            "running": False,
-            "url": None,
-            "message": "Ngrok tunnel is not running"
-        }
-    
+@app.get("/api/server/info", response_model=Dict[str, Any])
+async def get_server_info():
+    """Get server information (Linode server URL)."""
+    linode_url = "http://172.105.50.83:8000"
     return {
-        "available": True,
-        "running": True,
-        "url": app_state.ngrok_url,
-        "port": app_state.ngrok_port,
-        "message": f"Ngrok tunnel is active. Frontend URL: {app_state.ngrok_url}"
+        "status": "success",
+        "server_url": linode_url,
+        "port": 8000,
+        "message": f"Server running on Linode: {linode_url}"
     }
-
-
-@app.post("/api/ngrok/set-url", response_model=StatusResponse)
-async def set_ngrok_url(request: Dict[str, str]):
-    """Manually set ngrok URL if you're running ngrok separately."""
-    url = request.get("url")
-    if not url:
-        raise HTTPException(status_code=400, detail="URL is required")
-    
-    # Ensure URL has https:// prefix
-    if not url.startswith(("http://", "https://")):
-        url = f"https://{url}"
-    
-    app_state.ngrok_url = url
-    app_state._log_callback(f"Ngrok URL set manually: {url}")
-    
-    return StatusResponse(
-        status="success",
-        message=f"Ngrok URL set to: {url}"
-    )
 
 
 # ==================== Logs Endpoints ====================
@@ -808,7 +739,7 @@ async def log_broadcaster():
 
 
 # ==================== Twilio Webhook Endpoints ====================
-# These endpoints are needed for Twilio to handle calls through ngrok
+# These endpoints are needed for Twilio to handle calls (using Linode server with public IP)
 
 @app.post("/outbound")
 async def handle_outbound_call(request: Request):
@@ -935,7 +866,17 @@ async def handle_speech_webhook(call_sid: str, request: Request):
     speech_result = form_data.get('SpeechResult', '')
     confidence = form_data.get('Confidence', '0')
     
-    app_state._log_callback(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
+    # Clear logging for debugging - USER input
+    if speech_result:
+        app_state._log_callback("=" * 80)
+        app_state._log_callback(f"[USER] Call {call_sid} - Speech Recognized by Twilio:")
+        app_state._log_callback(f"[USER] Confidence: {confidence}")
+        app_state._log_callback(f"[USER] Text: \"{speech_result}\"")
+        app_state._log_callback("=" * 80)
+    else:
+        app_state._log_callback("=" * 80)
+        app_state._log_callback(f"[USER] Call {call_sid} - No speech recognized (confidence: {confidence})")
+        app_state._log_callback("=" * 80)
     
     if speech_result and float(confidence) > 0.5:
         try:
@@ -945,7 +886,11 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                 conversation_id=call_sid,
                 call_sid=call_sid,
             )
-            app_state._log_callback(f"AI Response: {ai_response}")
+            # Clear logging for debugging - AI response
+            app_state._log_callback("=" * 80)
+            app_state._log_callback(f"[AI] Call {call_sid} - AI Response Generated:")
+            app_state._log_callback(f"[AI] Response: \"{ai_response}\"")
+            app_state._log_callback("=" * 80)
             
             if not ai_response or len(ai_response.strip()) == 0:
                 ai_response = "I understand. Can you tell me more about that?"
@@ -1005,9 +950,45 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                 response.redirect(f'/process_speech/{call_sid}')
             return Response(content=str(response), media_type='text/xml')
     else:
+        # No speech or low confidence - handle unclear input
+        # Clear logging for debugging
+        app_state._log_callback("=" * 80)
+        app_state._log_callback(f"[USER] Call {call_sid} - Speech Recognition Failed:")
+        app_state._log_callback(f"[USER] SpeechResult: \"{speech_result or '(empty)'}\"")
+        app_state._log_callback(f"[USER] Confidence: {confidence} (below 0.5 threshold)")
+        app_state._log_callback("=" * 80)
+        
         response = VoiceResponse()
-        response.say("I didn't catch that. Please speak clearly.")
+        
+        # Track unclear attempts to prevent infinite loops
+        if call_sid and call_sid in voice_handler.active_calls:
+            voice_handler.active_calls[call_sid]['unclear_count'] = voice_handler.active_calls[call_sid].get('unclear_count', 0) + 1
+            unclear_count = voice_handler.active_calls[call_sid]['unclear_count']
+        else:
+            unclear_count = 1
+        
+        MAX_UNCLEAR_ATTEMPTS = 3
+        
+        if unclear_count >= MAX_UNCLEAR_ATTEMPTS:
+            response.say("I'm having trouble understanding you over the phone. Please try speaking more slowly and clearly, or call back if you continue to experience issues. Thank you!")
+            if call_sid:
+                response.hangup()
+            return Response(content=str(response), media_type='text/xml')
+        elif unclear_count >= 2:
+            response.say("I'm having trouble understanding. Could you please speak a bit slower and more clearly?")
+        else:
+            response.say("I didn't catch that. Please speak clearly.")
+        
         if call_sid:
+            # Always add gather element to give user a chance to respond
+            gather = response.gather(
+                input='speech',
+                timeout=10,
+                speech_timeout='auto',
+                action=f'/process_speech/{call_sid}',
+                method='POST'
+            )
+            gather.say("I'm listening...")
             response.redirect(f'/process_speech/{call_sid}')
         return Response(content=str(response), media_type='text/xml')
 
