@@ -631,8 +631,64 @@ async def start_twilio_server():
 
 
 @app.post("/api/twilio/make-call", response_model=Dict[str, Any])
-async def make_twilio_call(request: MakeCallRequest):
+async def make_twilio_call(request: Request):
     """Make an outbound call using Twilio."""
+    import json
+    
+    # Handle both JSON object and stringified JSON
+    body = None
+    try:
+        # First try to parse as JSON directly
+        body = await request.json()
+    except Exception:
+        # If JSON parsing fails, read raw body and parse manually
+        try:
+            body_bytes = await request.body()
+            body_str = body_bytes.decode('utf-8') if body_bytes else ''
+            
+            # Remove surrounding quotes if present (handles stringified JSON)
+            if body_str.startswith('"') and body_str.endswith('"'):
+                body_str = body_str[1:-1]
+                # Unescape JSON string
+                body_str = body_str.replace('\\"', '"').replace('\\n', '\n')
+            
+            # Try to parse as JSON
+            if body_str:
+                body = json.loads(body_str)
+            else:
+                body = {}
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse request body as JSON: {e}, body: {body_str[:100] if 'body_str' in locals() else 'N/A'}")
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid JSON format in request body. Expected: {\"phone_number\": \"+1234567890\"}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to read request body: {e}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"Failed to parse request body: {str(e)}"
+            )
+    
+    # Extract phone_number from parsed body
+    if isinstance(body, str):
+        # If body is still a string, try parsing it again
+        try:
+            body = json.loads(body)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid JSON format in request body"
+            )
+    
+    phone_number = body.get('phone_number') if isinstance(body, dict) else None
+    
+    if not phone_number:
+        raise HTTPException(
+            status_code=400,
+            detail="Phone number is required. Expected format: {\"phone_number\": \"+1234567890\"}"
+        )
+    
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         raise HTTPException(
@@ -640,16 +696,13 @@ async def make_twilio_call(request: MakeCallRequest):
             detail="Twilio not configured. Please set up environment variables."
         )
     
-    if not request.phone_number:
-        raise HTTPException(status_code=400, detail="Phone number is required")
-    
     def _worker():
         try:
-            call_sid = twilio_manager.make_call(request.phone_number)
+            call_sid = twilio_manager.make_call(phone_number)
             if call_sid:
-                app_state._log_callback(f"Call initiated to {request.phone_number}, SID: {call_sid}")
+                app_state._log_callback(f"Call initiated to {phone_number}, SID: {call_sid}")
             else:
-                app_state._log_callback(f"Failed to initiate call to {request.phone_number}")
+                app_state._log_callback(f"Failed to initiate call to {phone_number}")
         except Exception as e:
             app_state._log_callback(f"Call error: {e}")
     
@@ -657,7 +710,7 @@ async def make_twilio_call(request: MakeCallRequest):
     
     return {
         "status": "initiated",
-        "message": f"Call to {request.phone_number} is being initiated"
+        "message": f"Call to {phone_number} is being initiated"
     }
 
 
