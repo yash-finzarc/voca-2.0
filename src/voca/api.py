@@ -27,6 +27,7 @@ NGROK_AVAILABLE = False  # Ngrok disabled - using Linode server
 
 from src.voca.orchestrator import VocaOrchestrator
 from src.voca.twilio_voice import TwilioCallManager
+from src.voca.deepgram_twilio_handler import DeepgramCallManager
 from src.voca.twilio_config import get_twilio_config
 from src.voca.config import Config
 from src.voca.system_prompt import (
@@ -167,18 +168,107 @@ class AppState:
             self.orchestrator = VocaOrchestrator(on_log=self._log_callback)
         return self.orchestrator
     
-    def get_twilio_manager(self) -> Optional[TwilioCallManager]:
+    def get_twilio_manager(self):
+        """Get Twilio call manager, preferring Deepgram if API key is configured."""
         if self.twilio_manager is None:
             config = get_twilio_config()
-            if config.validate():
+            if not config.validate():
+                return None
+            
+            logger = logging.getLogger(__name__)
+            
+            # Diagnostic: Check if Deepgram API key is configured
+            import os
+            deepgram_key_env = os.getenv("DEEPGRAM_API_KEY", "")
+            deepgram_key_config = Config.deepgram_api_key
+            deepgram_key = deepgram_key_config or deepgram_key_env
+            
+            logger.info("=" * 80)
+            logger.info("🔍 Checking Deepgram Configuration...")
+            logger.info(f"   - os.getenv('DEEPGRAM_API_KEY'): {'YES' if deepgram_key_env else 'NO'} ({len(deepgram_key_env)} chars)")
+            logger.info(f"   - Config.deepgram_api_key: {'YES' if deepgram_key_config else 'NO'} ({len(deepgram_key_config)} chars)")
+            logger.info(f"   - Using key: {'YES' if deepgram_key else 'NO'}")
+            
+            if deepgram_key:
+                logger.info(f"   - Key length: {len(deepgram_key)} characters")
+                logger.info(f"   - Key preview: {'*' * 20}...{deepgram_key[-4:] if len(deepgram_key) > 4 else '****'}")
+            else:
+                logger.warning("   ⚠️  DEEPGRAM_API_KEY is empty or not set in .env file")
+                logger.warning("   💡 Make sure .env file is in the project root directory")
+                logger.warning("   💡 Check that the variable name is exactly: DEEPGRAM_API_KEY")
+                # Check if .env file exists
+                import pathlib
+                project_root = pathlib.Path(__file__).parent.parent.parent
+                env_file = project_root / '.env'
+                if env_file.exists():
+                    logger.info(f"   ✓ Found .env file at: {env_file}")
+                    # Check if DEEPGRAM_API_KEY is in the file
+                    try:
+                        with open(env_file, 'r') as f:
+                            content = f.read()
+                            if 'DEEPGRAM_API_KEY' in content:
+                                logger.warning("   ⚠️  DEEPGRAM_API_KEY found in .env but value is empty or has spaces")
+                                logger.warning("   💡 Make sure the format is: DEEPGRAM_API_KEY=your_key_here (no spaces around =)")
+                            else:
+                                logger.warning("   ⚠️  DEEPGRAM_API_KEY not found in .env file")
+                                logger.warning("   💡 Add this line to .env: DEEPGRAM_API_KEY=your_deepgram_api_key")
+                    except Exception as e:
+                        logger.error(f"   ❌ Error reading .env file: {e}")
+                else:
+                    logger.warning(f"   ⚠️  .env file not found at: {env_file}")
+                    logger.warning("   💡 Create a .env file in the project root with: DEEPGRAM_API_KEY=your_key")
+            logger.info("=" * 80)
+            
+            # Check if Deepgram API key is configured (use the combined value)
+            if deepgram_key and deepgram_key.strip():
+                # Update Config if we found it in environment but not in Config
+                if not Config.deepgram_api_key and deepgram_key_env:
+                    Config.deepgram_api_key = deepgram_key_env
+                    logger.info("   ✓ Loaded DEEPGRAM_API_KEY from environment")
+                
                 try:
+                    logger.info("=" * 80)
+                    logger.info("🔵 DEEPGRAM MODE: Using Deepgram STT and TTS")
+                    logger.info(f"   - Deepgram API Key: {'*' * 20}...{deepgram_key[-4:] if len(deepgram_key) > 4 else '****'}")
+                    if Config.deepgram_keyterms:
+                        keyterms_list = [k.strip() for k in Config.deepgram_keyterms.split(',') if k.strip()]
+                        logger.info(f"   - Keyterms configured: {len(keyterms_list)} terms")
+                        logger.info(f"   - Keyterms: {', '.join(keyterms_list[:5])}{'...' if len(keyterms_list) > 5 else ''}")
+                    else:
+                        logger.info("   - No keyterms configured")
+                    logger.info("=" * 80)
+                    self.twilio_manager = DeepgramCallManager(self.get_orchestrator())
+                except Exception as e:
+                    logger.error("=" * 80)
+                    logger.error(f"❌ Failed to create DeepgramCallManager: {e}")
+                    logger.warning("⚠️  Falling back to Twilio STT/TTS")
+                    logger.info("=" * 80)
+                    try:
+                        self.twilio_manager = TwilioCallManager(self.get_orchestrator())
+                    except Exception as e2:
+                        logger.error(f"Failed to create TwilioCallManager: {e2}")
+                        return None
+            else:
+                # No Deepgram API key, use Twilio STT/TTS
+                try:
+                    logger.info("=" * 80)
+                    logger.info("🟡 TWILIO MODE: Using Twilio STT and TTS")
+                    logger.info("   - No Deepgram API key found in environment")
+                    logger.info("   - To use Deepgram, set DEEPGRAM_API_KEY in .env file")
+                    logger.info("=" * 80)
                     self.twilio_manager = TwilioCallManager(self.get_orchestrator())
                 except Exception as e:
-                    logger = logging.getLogger(__name__)
                     logger.error(f"Failed to create TwilioCallManager: {e}")
                     return None
+        else:
+            # Manager already exists, log which type it is
+            logger = logging.getLogger(__name__)
+            manager_type = type(self.twilio_manager).__name__
+            if manager_type == "DeepgramCallManager":
+                logger.debug("🔵 Using existing DeepgramCallManager (Deepgram STT/TTS)")
             else:
-                return None
+                logger.debug("🟡 Using existing TwilioCallManager (Twilio STT/TTS)")
+        
         return self.twilio_manager
     
     def _log_callback(self, message: str):
@@ -253,7 +343,36 @@ async def broadcast_log(log_entry: Dict[str, str]):
 async def startup_event():
     """Initialize components on startup."""
     logger = logging.getLogger(__name__)
+    logger.info("=" * 80)
+    logger.info("🚀 VOCA API Server Startup")
+    logger.info("=" * 80)
+    
+    # Check and log which service will be used
+    try:
+        twilio_manager = app_state.get_twilio_manager()
+        if twilio_manager:
+            manager_type = type(twilio_manager).__name__
+            if manager_type == "DeepgramCallManager":
+                logger.info("✅ Service Mode: DEEPGRAM STT/TTS")
+                logger.info("   📊 Service Details:")
+                logger.info("      - Speech-to-Text: Deepgram Nova-2")
+                logger.info("      - Text-to-Speech: Deepgram Aura")
+                if Config.deepgram_keyterms:
+                    keyterms_list = [k.strip() for k in Config.deepgram_keyterms.split(',') if k.strip()]
+                    logger.info(f"      - Keyterms: {len(keyterms_list)} configured")
+            else:
+                logger.info("✅ Service Mode: TWILIO STT/TTS")
+                logger.info("   📊 Service Details:")
+                logger.info("      - Speech-to-Text: Twilio Speech Recognition (TwiML)")
+                logger.info("      - Text-to-Speech: Twilio Text-to-Speech (TwiML)")
+        else:
+            logger.warning("⚠️  Twilio manager not available (Twilio not configured)")
+    except Exception as e:
+        logger.error(f"❌ Error checking service mode: {e}")
+    
+    logger.info("=" * 80)
     logger.info("VOCA API server starting up...")
+    
     # Start log broadcaster task
     asyncio.create_task(log_broadcaster())
     
@@ -320,43 +439,22 @@ async def health():
 
 
 # OPTIONS handler - FastAPI CORS middleware should handle this automatically
-# But we add explicit handler to ensure it works correctly
+# Explicit handler for Twilio webhooks (using Linode server)
 @app.options("/{full_path:path}")
 async def options_handler(full_path: str, request: Request):
     """Handle OPTIONS requests for CORS preflight."""
-    origin = request.headers.get("origin")
+    origin = request.headers.get("origin", "*")
     
-    # Check if origin is in allowed origins
-    allowed_origin = None
-    if origin:
-        for allowed in _cors_origins:
-            if origin == allowed or allowed == "*":
-                allowed_origin = origin
-                break
-    else:
-        # If no origin header, allow it (for same-origin requests)
-        allowed_origin = "*"
-    
-    # If origin is allowed, return CORS headers, otherwise deny
-    if allowed_origin:
-        response = Response(
-            content="",
-            status_code=200,
-            headers={
-                "Access-Control-Allow-Origin": allowed_origin,
-                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With",
-                "Access-Control-Allow-Credentials": "true",
-                "Access-Control-Max-Age": "3600",
-            }
-        )
-    else:
-        # Origin not allowed
-        response = Response(
-            content="CORS policy: Origin not allowed",
-            status_code=403
-        )
-    
+    response = Response(
+        content="",
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": origin if origin else "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
     return response
 
 
@@ -483,6 +581,8 @@ async def get_country_codes():
 @app.post("/api/twilio/start-server", response_model=StatusResponse)
 async def start_twilio_server():
     """Start the Twilio webhook server."""
+    logger = logging.getLogger(__name__)
+    
     if app_state.is_twilio_server_running:
         return StatusResponse(status="success", message="Twilio server is already running")
     
@@ -493,11 +593,23 @@ async def start_twilio_server():
             detail="Twilio not configured. Please set up environment variables."
         )
     
+    # Log which service is being used
+    manager_type = type(twilio_manager).__name__
+    if manager_type == "DeepgramCallManager":
+        logger.info("🚀 Starting server with Deepgram STT/TTS")
+        app_state._log_callback("🚀 Starting server with Deepgram STT/TTS")
+    else:
+        logger.info("🚀 Starting server with Twilio STT/TTS")
+        app_state._log_callback("🚀 Starting server with Twilio STT/TTS")
+    
     def _worker():
         try:
             twilio_manager.start(host='0.0.0.0', port=5000)
             app_state.is_twilio_server_running = True
-            app_state._log_callback("Twilio server started successfully")
+            if manager_type == "DeepgramCallManager":
+                app_state._log_callback("✅ Twilio server started with Deepgram STT/TTS")
+            else:
+                app_state._log_callback("✅ Twilio server started with Twilio STT/TTS")
         except Exception as e:
             app_state._log_callback(f"Failed to start Twilio server: {e}")
             app_state.is_twilio_server_running = False
@@ -808,14 +920,11 @@ async def handle_outbound_call(request: Request):
             input='speech',
             timeout=10,
             speech_timeout='auto',
-            language='en-US',
-            enhanced=True,
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
         gather.say("I'm listening...")
-        # Don't redirect - gather will POST to action URL when user speaks or times out
-        # Removing redirect prevents infinite loop on initial greeting timeout
+        response.redirect(f'/process_speech/{call_sid}')
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -863,14 +972,11 @@ async def handle_incoming_call_webhook(request: Request):
             input='speech',
             timeout=10,
             speech_timeout='auto',
-            language='en-US',
-            enhanced=True,
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
         gather.say("I'm listening...")
-        # Don't redirect - gather will POST to action URL when user speaks or times out
-        # Removing redirect prevents infinite loop - let gather handle timeout naturally
+        response.redirect(f'/process_speech/{call_sid}')
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -890,19 +996,8 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         raise HTTPException(status_code=404, detail="Call not found")
     
     form_data = await request.form()
-    
-    # Log ALL form data received from Twilio for debugging
-    form_dict = dict(form_data)
-    app_state._log_callback("=" * 80)
-    app_state._log_callback(f"[DEBUG] Call {call_sid} - All Form Data Received:")
-    for key, value in form_dict.items():
-        app_state._log_callback(f"[DEBUG] {key}: {value}")
-    app_state._log_callback("=" * 80)
-    
     speech_result = form_data.get('SpeechResult', '')
     confidence = form_data.get('Confidence', '0')
-    speech_error = form_data.get('SpeechError', '')
-    digits = form_data.get('Digits', '')
     
     # Clear logging for debugging - USER input
     if speech_result:
@@ -910,25 +1005,13 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         app_state._log_callback(f"[USER] Call {call_sid} - Speech Recognized by Twilio:")
         app_state._log_callback(f"[USER] Confidence: {confidence}")
         app_state._log_callback(f"[USER] Text: \"{speech_result}\"")
-        if speech_error:
-            app_state._log_callback(f"[USER] Speech Error: {speech_error}")
         app_state._log_callback("=" * 80)
     else:
         app_state._log_callback("=" * 80)
-        app_state._log_callback(f"[USER] Call {call_sid} - No speech recognized")
-        app_state._log_callback(f"[USER] Confidence: {confidence}")
-        if speech_error:
-            app_state._log_callback(f"[USER] Speech Error: {speech_error}")
-        if digits:
-            app_state._log_callback(f"[USER] Digits received instead: {digits}")
+        app_state._log_callback(f"[USER] Call {call_sid} - No speech recognized (confidence: {confidence})")
         app_state._log_callback("=" * 80)
     
-    # Lower confidence threshold from 0.5 to 0.3 to catch more speech
-    # Also accept speech even with empty confidence if speech_result is not empty
-    confidence_value = float(confidence) if confidence else 0.0
-    has_valid_speech = speech_result and (confidence_value > 0.3 or confidence_value == 0.0)
-    
-    if has_valid_speech:
+    if speech_result and float(confidence) > 0.5:
         try:
             # User message and AI response are logged in orchestrator.generate_reply
             ai_response = voice_handler.orchestrator.generate_reply(
@@ -984,15 +1067,11 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                     input='speech',
                     timeout=10,
                     speech_timeout='auto',
-                    language='en-US',
-                    enhanced=True,
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
                 gather.say("I'm listening...")
-                
-                # Don't redirect immediately - let gather wait for user input
-                # If gather times out, it will POST to action with empty result
+                response.redirect(f'/process_speech/{call_sid}')
             
             return Response(content=str(response), media_type='text/xml')
             
@@ -1001,18 +1080,7 @@ async def handle_speech_webhook(call_sid: str, request: Request):
             response = VoiceResponse()
             response.say("I'm sorry, I had trouble processing that. Please try again.")
             if call_sid:
-                # Add gather to wait for user input - don't redirect immediately
-                gather = response.gather(
-                    input='speech',
-                    timeout=10,
-                    speech_timeout='auto',
-                    language='en-US',
-                    enhanced=True,
-                    action=f'/process_speech/{call_sid}',
-                    method='POST'
-                )
-                gather.say("I'm listening...")
-                # Don't redirect - let gather handle the next request
+                response.redirect(f'/process_speech/{call_sid}')
             return Response(content=str(response), media_type='text/xml')
     else:
         # No speech or low confidence - handle unclear input
@@ -1046,24 +1114,15 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         
         if call_sid:
             # Always add gather element to give user a chance to respond
-            # Don't redirect immediately - let gather wait for user input
-            # The action on gather will handle the next request
             gather = response.gather(
                 input='speech',
                 timeout=10,
                 speech_timeout='auto',
-                language='en-US',
-                enhanced=True,
                 action=f'/process_speech/{call_sid}',
                 method='POST'
             )
             gather.say("I'm listening...")
-            
-            # Don't redirect immediately - let the gather timeout handle it
-            # If gather times out without input, it will POST to /process_speech/{call_sid} with empty result
-            # That will increment unclear_count and handle appropriately
-            return Response(content=str(response), media_type='text/xml')
-        
+            response.redirect(f'/process_speech/{call_sid}')
         return Response(content=str(response), media_type='text/xml')
 
 

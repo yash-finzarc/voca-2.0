@@ -557,22 +557,28 @@ class TwilioCallManager:
     
     def start(self, host='0.0.0.0', port=5000):
         """Start the Twilio call manager with real-time AI processing."""
-        self.logger.info("Starting Twilio Call Manager with VOCA AI...")
+        self.logger.info("=" * 80)
+        self.logger.info("🟡 Starting Twilio Call Manager with VOCA AI...")
+        self.logger.info("=" * 80)
         
         # Ensure models are loaded
         try:
             self.orchestrator.ensure_models_loaded()
-            self.logger.info("VOCA models loaded successfully")
+            self.logger.info("✓ VOCA models loaded successfully")
         except Exception as e:
-            self.logger.error(f"Failed to load VOCA models: {e}")
+            self.logger.error(f"❌ Failed to load VOCA models: {e}")
             raise
         
         # Start webhook server
         self.voice_handler.start_webhook_server(host, port)
         
-        self.logger.info("Twilio Call Manager started successfully")
-        self.logger.info(f"Webhook URL: http://{host}:{port}/webhook/voice")
-        self.logger.info("Ready to receive calls with real-time AI processing!")
+        self.logger.info("=" * 80)
+        self.logger.info("✅ Twilio Call Manager started successfully")
+        self.logger.info(f"   Webhook URL: http://{host}:{port}/webhook/voice")
+        self.logger.info("   STT: Twilio Speech Recognition (TwiML)")
+        self.logger.info("   TTS: Twilio Text-to-Speech (TwiML)")
+        self.logger.info("   Ready to receive calls with Twilio STT/TTS!")
+        self.logger.info("=" * 80)
     
     def make_call(self, phone_number: str, message: str = None) -> Optional[str]:
         """Make an outbound call with AI assistant."""
