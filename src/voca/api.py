@@ -355,7 +355,7 @@ async def startup_event():
             if manager_type == "DeepgramCallManager":
                 logger.info("✅ Service Mode: DEEPGRAM STT/TTS")
                 logger.info("   📊 Service Details:")
-                logger.info("      - Speech-to-Text: Deepgram Nova-2")
+                logger.info("      - Speech-to-Text: Deepgram Nova-3 (Multilingual: English India + Hindi)")
                 logger.info("      - Text-to-Speech: Deepgram Aura")
                 if Config.deepgram_keyterms:
                     keyterms_list = [k.strip() for k in Config.deepgram_keyterms.split(',') if k.strip()]

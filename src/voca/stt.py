@@ -203,7 +203,7 @@ class DeepgramSTT:
             raise RuntimeError("Deepgram SDK not installed. Install 'deepgram-sdk'.")
         if not self.api_key:
             raise RuntimeError("Deepgram API key not configured. Set DEEPGRAM_API_KEY environment variable.")
-        self.log.info("Initializing Deepgram STT client")
+        self.log.info("Initializing Deepgram STT client with Nova-3 multilingual model (English India + Hindi)")
         # Deepgram SDK v5.x uses api_key as a keyword argument
         try:
             self._client = DeepgramClient(api_key=self.api_key)
@@ -240,9 +240,11 @@ class DeepgramSTT:
             }
             
             # Configure options for Deepgram SDK v5.x
+            # Using nova-3 multilingual model with English (India) and Hindi support
             options_dict = {
-                "model": "nova-2",
-                "language": "en-US",
+                "model": "nova-3",
+                "language": "en-IN",  # English (India) as primary language
+                "detect_language": True,  # Enable automatic detection for Hindi and code-switching
                 "smart_format": True,
                 "encoding": "linear16",
                 "sample_rate": self.sample_rate,
@@ -278,9 +280,11 @@ class DeepgramSTT:
             raise RuntimeError("Deepgram client not loaded")
         
         # Configure options for Deepgram SDK v5.x
+        # Using nova-3 multilingual model with English (India) and Hindi support
         options_dict = {
-            "model": "nova-2",
-            "language": "en-US",
+            "model": "nova-3",
+            "language": "en-IN",  # English (India) as primary language
+            "detect_language": True,  # Enable automatic detection for Hindi and code-switching
             "smart_format": True,
             "encoding": "linear16",
             "sample_rate": self.sample_rate,
