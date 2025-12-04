@@ -1470,8 +1470,14 @@ async def update_system_prompt(
                         prompt_id=generated_id
                     )
                 else:
-                    logger.error(f"create_prompt returned False or no UUID. success={success}, generated_id={generated_id}")
-                    raise HTTPException(status_code=500, detail="Failed to create system prompt. Check backend logs for details.")
+                    error_detail = f"create_prompt returned False or no UUID. success={success}, generated_id={generated_id}"
+                    logger.error(error_detail)
+                    logger.error("This usually means:")
+                    logger.error("1. RLS policy blocked the insert (most common)")
+                    logger.error("2. Supabase insert returned no data")
+                    logger.error("3. Supabase did not generate a UUID")
+                    logger.error("4. Verification step failed")
+                    raise HTTPException(status_code=500, detail=f"Failed to create system prompt: {error_detail}. Check backend logs and RLS policies.")
             except HTTPException:
                 raise
             except Exception as create_error:

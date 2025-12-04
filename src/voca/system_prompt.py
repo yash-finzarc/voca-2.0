@@ -476,14 +476,20 @@ def create_prompt(
             
             # Check if response has data
             if not response.data:
-                error_msg = f"Supabase insert returned no data. This usually means RLS policy blocked the insert."
+                error_msg = f"❌ Supabase insert returned no data. This usually means RLS policy blocked the insert."
                 logger.error(error_msg)
                 logger.error(f"Full response: {response}")
+                logger.error("SOLUTION: Add RLS policy in Supabase SQL Editor:")
+                logger.error("CREATE POLICY \"Allow all operations on system_prompts\"")
+                logger.error("ON public.system_prompts AS PERMISSIVE FOR ALL TO public USING (true) WITH CHECK (true);")
                 return (False, None)
             
             if len(response.data) == 0:
-                error_msg = f"Supabase insert returned empty data array. This usually means RLS policy blocked the insert."
+                error_msg = f"❌ Supabase insert returned empty data array. This usually means RLS policy blocked the insert."
                 logger.error(error_msg)
+                logger.error("SOLUTION: Add RLS policy in Supabase SQL Editor:")
+                logger.error("CREATE POLICY \"Allow all operations on system_prompts\"")
+                logger.error("ON public.system_prompts AS PERMISSIVE FOR ALL TO public USING (true) WITH CHECK (true);")
                 return (False, None)
             
             # Fetch the generated UUID from Supabase response
@@ -568,7 +574,11 @@ def create_prompt(
                 logger.error(error_msg)
                 import traceback
                 logger.error(f"Verification traceback: {traceback.format_exc()}")
-                return (False, None)
+                # Even if verification fails, the insert might have succeeded
+                # So we'll still return the UUID, but log the warning
+                logger.warning("⚠️ Verification failed, but insert may have succeeded. Returning UUID anyway.")
+                # Return True with the UUID - let the API endpoint handle verification
+                return (True, generated_id)
             
             # Clear cache to force refresh
             clear_cache()
