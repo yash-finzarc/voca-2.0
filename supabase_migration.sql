@@ -3,9 +3,9 @@
 -- NOTE: This matches the table structure you created
 
 -- Create the system_prompts table (if not already created)
+-- NOTE: Using id (UUID) as primary key, no key column needed
 CREATE TABLE IF NOT EXISTS system_prompts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  key TEXT UNIQUE NOT NULL DEFAULT 'default',
   name TEXT,
   prompt TEXT NOT NULL,
   is_default BOOLEAN DEFAULT false,
@@ -24,18 +24,21 @@ ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS welcome_message TEXT;
 -- Add is_active column if table already exists (for existing installations)
 ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
 
--- Insert default prompt if it doesn't exist
-INSERT INTO system_prompts (key, name, prompt, is_default) 
-VALUES (
-  'default',
+-- Remove key column if it exists (no longer needed - using id as primary identifier)
+ALTER TABLE system_prompts DROP COLUMN IF EXISTS key;
+
+-- Remove any indexes or constraints related to key column
+DROP INDEX IF EXISTS system_prompts_key_idx;
+ALTER TABLE system_prompts DROP CONSTRAINT IF EXISTS system_prompts_key_key;
+
+-- Insert default prompt if it doesn't exist (only if no prompts exist)
+INSERT INTO system_prompts (name, prompt, is_default, is_active) 
+SELECT 
   'Default',
   'You are Voca, a helpful voice assistant. Respond concisely and naturally. If asked how you can help, say: ''I can assist you with the information that is available to me.'' Keep responses brief and conversational.',
+  true,
   true
-)
-ON CONFLICT (key) DO NOTHING;
-
--- Create an index on key for faster lookups
-CREATE UNIQUE INDEX IF NOT EXISTS system_prompts_key_idx ON system_prompts(key);
+WHERE NOT EXISTS (SELECT 1 FROM system_prompts);
 
 -- ===============================================================
 -- Multi-tenant data model (organizations, prompts, conversations)

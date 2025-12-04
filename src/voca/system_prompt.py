@@ -203,7 +203,7 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
         try:
             response = (
                 client.table("system_prompts")
-                .select("prompt, name, welcome_message, key")
+                .select("prompt, name, welcome_message")
                 .eq("is_active", True)
                 .order("updated_at", desc=True)
                 .limit(1)
@@ -213,7 +213,7 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
             # If is_active column doesn't exist, try is_default
             response = (
                 client.table("system_prompts")
-                .select("prompt, name, welcome_message, key")
+                .select("prompt, name, welcome_message")
                 .eq("is_default", True)
                 .order("updated_at", desc=True)
                 .limit(1)
@@ -228,26 +228,7 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
             logger.debug("System prompt fetched from Supabase")
             return {"prompt": prompt, "name": name, "welcome_message": welcome_message}
     except Exception as e:
-        logger.warning("Error fetching default prompt, trying fallback: %s", e)
-        # Fallback: try to get prompt with key="default"
-        try:
-            response = (
-                client.table("system_prompts")
-                .select("prompt, name, welcome_message")
-                .eq("key", "default")
-                .order("updated_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            if response.data:
-                data = response.data[0]
-                prompt = data.get("prompt", DEFAULT_SYSTEM_PROMPT)
-                name = data.get("name", "Default")
-                welcome_message = data.get("welcome_message")
-                logger.debug("System prompt fetched from Supabase (fallback)")
-                return {"prompt": prompt, "name": name, "welcome_message": welcome_message}
-        except Exception as e2:
-            logger.warning("Fallback fetch also failed: %s", e2)
+        logger.warning("Error fetching default prompt: %s", e)
 
     logger.info("No system prompt rows found, initializing with default")
     _initialize_default_prompt(client)
@@ -263,8 +244,7 @@ def _update_default_prompt(client, prompt: str, name: Optional[str], welcome_mes
     try:
         # Try to deactivate using is_active column if it exists
         try:
-            # Deactivate all prompts that are default (either is_default=True or key starts with "default")
-            # First try to deactivate by is_default flag
+            # Deactivate all prompts that are default by is_default flag
             client.table("system_prompts").update({"is_active": False}).eq("is_default", True).eq("is_active", True).execute()
         except Exception:
             # If is_active column doesn't exist, try to update is_default instead
@@ -272,12 +252,8 @@ def _update_default_prompt(client, prompt: str, name: Optional[str], welcome_mes
             client.table("system_prompts").update({"is_default": False}).eq("is_default", True).execute()
     except Exception as e:
         logger.warning("Failed to deactivate previous default prompts: %s", e)
-
-    # Generate a unique key for this prompt (using timestamp to ensure uniqueness)
-    unique_key = f"default_{uuid.uuid4().hex[:8]}_{int(time.time())}"
     
     insert_data = {
-        "key": unique_key,  # Use unique key instead of "default" to allow multiple prompts
         "prompt": prompt,
         "name": name.strip() if name and name.strip() else None,
         "is_default": True,
@@ -301,42 +277,43 @@ def _update_default_prompt(client, prompt: str, name: Optional[str], welcome_mes
             _write_cache(cache_key, prompt, name.strip() if name and name.strip() else None, welcome_message)
             logger.info("New default system prompt created in Supabase (preserving history)")
             return True
+        else:
+            logger.error("Insert succeeded but no data returned")
+            return False
     except Exception as e:
-        logger.error("Failed to insert new default prompt: %s", e)
-        # Fallback: try updating the existing "default" key if insert fails
-        logger.info("Falling back to update existing default prompt")
+        logger.error("Failed to insert new default prompt: %s", e, exc_info=True)
+        # DO NOT fall back to updating existing prompt - that would overwrite history!
+        # Instead, try to initialize a new prompt with a different approach
+        logger.info("Attempting alternative insert method")
         try:
-            update_data = {
+            # Try inserting without some optional fields if they're causing issues
+            minimal_insert = {
                 "prompt": prompt,
+                "is_default": True,
+                "is_active": True,
                 "updated_at": datetime.utcnow().isoformat(),
             }
-            if name is not None:
-                update_data["name"] = name.strip() if name.strip() else None
-            if welcome_message is not None:
-                update_data["welcome_message"] = welcome_message.strip() if welcome_message.strip() else None
-
-            response = (
-                client.table("system_prompts")
-                .update(update_data)
-                .eq("key", "default")
-                .limit(1)  # Only update one row
-                .execute()
-            )
-
-            cache_key = _cache_key(None)
-            if response.data:
-                _write_cache(cache_key, prompt, update_data.get("name"), welcome_message)
-                logger.info("Default system prompt updated in Supabase (fallback mode)")
+            if name:
+                minimal_insert["name"] = name.strip()
+            if welcome_message:
+                minimal_insert["welcome_message"] = welcome_message.strip()
+            
+            response = client.table("system_prompts").insert(minimal_insert).execute()
+            if response.data and len(response.data) > 0:
+                cache_key = _cache_key(None)
+                _write_cache(cache_key, prompt, name.strip() if name and name.strip() else None, welcome_message)
+                logger.info("New default system prompt created via alternative method")
                 return True
         except Exception as e2:
-            logger.error("Failed to update default prompt: %s", e2)
-
-    logger.info("Default prompt row missing, creating new row")
-    created = _initialize_prompt(client, prompt, name, welcome_message)
-    if created:
-        cache_key = _cache_key(None)
-        _write_cache(cache_key, prompt, name, welcome_message)
-    return created
+            logger.error("Alternative insert method also failed: %s", e2, exc_info=True)
+        
+        # Last resort: try _initialize_prompt but don't update existing rows
+        logger.warning("All insert methods failed, attempting initialization")
+        created = _initialize_prompt(client, prompt, name, welcome_message)
+        if created:
+            cache_key = _cache_key(None)
+            _write_cache(cache_key, prompt, name, welcome_message)
+        return created
 
 
 def _initialize_default_prompt(client) -> bool:
@@ -346,11 +323,8 @@ def _initialize_default_prompt(client) -> bool:
 
 def _initialize_prompt(client, prompt: str, name: Optional[str] = None, welcome_message: Optional[str] = None) -> bool:
     """Initialize the system_prompts table with given prompt and optional name."""
-    unique_key = f"default_{uuid.uuid4().hex[:8]}_{int(time.time())}"
-    
     try:
         insert_data = {
-            "key": unique_key,
             "prompt": prompt,
             "is_default": True,
             "updated_at": datetime.utcnow().isoformat(),
@@ -377,34 +351,9 @@ def _initialize_prompt(client, prompt: str, name: Optional[str] = None, welcome_
         logger.error("Failed to initialize system prompt in Supabase")
         return False
     except Exception as e:
-        logger.warning(f"Insert failed, trying update: {e}")
-        try:
-            # Fallback: try to update existing "default" key if unique constraint fails
-            update_data = {
-                "prompt": prompt,
-                "updated_at": datetime.utcnow().isoformat(),
-            }
-            if name is not None:
-                update_data["name"] = name.strip() if name.strip() else None
-            if welcome_message is not None:
-                update_data["welcome_message"] = welcome_message.strip() if welcome_message.strip() else None
-
-            response = (
-                client.table("system_prompts")
-                .update(update_data)
-                .eq("key", "default")
-                .limit(1)
-                .execute()
-            )
-
-            if response.data and len(response.data) > 0:
-                cache_key = _cache_key(None)
-                _write_cache(cache_key, prompt, name.strip() if name and name.strip() else None, welcome_message)
-                logger.info("System prompt initialized via update in Supabase")
-                return True
-        except Exception as e2:
-            logger.error(f"Failed to initialize system prompt: {e2}")
-
+        logger.error(f"Insert failed in _initialize_prompt: {e}", exc_info=True)
+        # DO NOT fall back to updating existing prompt - that would overwrite history!
+        # Just return False and let the caller handle it
         return False
 
 
@@ -455,6 +404,249 @@ def get_welcome_message(organization_id: Optional[str] = None) -> Optional[str]:
     """
     prompt_data = get_prompt_with_name(organization_id=organization_id)
     return prompt_data.get("welcome_message")
+
+
+def create_prompt_with_id(
+    prompt_id: str,
+    prompt: str,
+    name: Optional[str] = None,
+    welcome_message: Optional[str] = None,
+) -> bool:
+    """
+    Create a new system prompt with a specific UUID (from frontend).
+    This deactivates all previous default prompts and creates a new one.
+    
+    Args:
+        prompt_id: UUID generated by frontend (crypto.randomUUID())
+        prompt: The prompt text
+        name: Optional name for the prompt
+        welcome_message: Optional welcome message
+    
+    Returns:
+        True if successful, False otherwise
+    
+    This function aligns with frontend behavior where:
+    - Frontend generates UUID using crypto.randomUUID()
+    - Frontend calls create() with the UUID
+    - New prompt is created and all others are deactivated
+    """
+    if not prompt or not prompt.strip():
+        logger.error("Cannot create prompt with empty text")
+        return False
+
+    if not is_supabase_configured():
+        logger.error("Supabase not configured, cannot create prompt")
+        return False
+
+    client = get_supabase_client()
+    if client is None:
+        logger.error("Supabase client unavailable, cannot create prompt")
+        return False
+
+    try:
+        # Deactivate all previous default prompts (aligns with frontend auto-activation)
+        try:
+            client.table("system_prompts").update({"is_active": False}).eq("is_default", True).execute()
+            logger.debug("Deactivated all previous default prompts")
+        except Exception as e:
+            logger.warning(f"Failed to deactivate previous prompts: {e}")
+
+        # Create the new prompt with the UUID provided by frontend
+        # Build insert_data with only non-None values to avoid issues
+        insert_data = {
+            "id": prompt_id,  # Use the UUID from frontend as the id
+            "prompt": prompt.strip(),
+            "is_default": True,
+            "is_active": True,  # New prompt is automatically active
+        }
+        
+        # Add optional fields only if they have values (don't include None values)
+        if name is not None and name.strip():
+            insert_data["name"] = name.strip()
+        
+        if welcome_message is not None and welcome_message.strip():
+            insert_data["welcome_message"] = welcome_message.strip()
+        
+        # Note: created_at has a default, updated_at we'll set explicitly
+        insert_data["updated_at"] = datetime.utcnow().isoformat()
+
+        logger.info(f"Creating prompt with UUID: {prompt_id}, name: {name}, prompt length: {len(prompt.strip())}")
+        logger.debug(f"Insert data: {insert_data}")
+        
+        try:
+            response = client.table("system_prompts").insert(insert_data).execute()
+            
+            if response.data and len(response.data) > 0:
+                # Clear cache to force refresh
+                clear_cache()
+                logger.info(f"New prompt created with UUID {prompt_id} (preserving all previous prompts)")
+                return True
+            else:
+                error_msg = f"Failed to create prompt - no data returned. Response: {response}"
+                logger.error(error_msg)
+                # Return error message that can be used by caller
+                raise ValueError(error_msg)
+
+        except Exception as insert_error:
+            error_msg = f"Supabase insert error: {str(insert_error)}"
+            logger.error(error_msg)
+            logger.error(f"Insert data that failed: {insert_data}")
+            logger.error(f"Error type: {type(insert_error).__name__}")
+            # Re-raise with more context
+            raise RuntimeError(f"Failed to insert prompt into database: {str(insert_error)}") from insert_error
+
+    except ValueError as ve:
+        # Re-raise ValueError as-is (already formatted)
+        raise
+    except RuntimeError as re:
+        # Re-raise RuntimeError as-is (already formatted)
+        raise
+    except Exception as e:
+        error_msg = f"Unexpected error creating prompt with UUID {prompt_id}: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        # Log the full exception details for debugging
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        raise RuntimeError(error_msg) from e
+
+
+def update_prompt_by_id(
+    prompt_id: str,
+    prompt: str,
+    name: Optional[str] = None,
+    welcome_message: Optional[str] = None,
+) -> bool:
+    """
+    Update an existing prompt by its UUID.
+    
+    Args:
+        prompt_id: UUID of the prompt to update
+        prompt: New prompt text
+        name: Optional new name
+        welcome_message: Optional new welcome message
+    
+    Returns:
+        True if successful, False otherwise
+    
+    This function aligns with frontend behavior where:
+    - Frontend calls update() with UUID and new data
+    - Only the specified prompt is updated
+    """
+    if not prompt or not prompt.strip():
+        logger.error("Cannot update with empty prompt")
+        return False
+
+    if not is_supabase_configured():
+        logger.error("Supabase not configured, cannot update prompt")
+        return False
+
+    client = get_supabase_client()
+    if client is None:
+        logger.error("Supabase client unavailable, cannot update prompt")
+        return False
+
+    try:
+        update_data = {
+            "prompt": prompt.strip(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        if name is not None:
+            update_data["name"] = name.strip() if name.strip() else None
+        if welcome_message is not None:
+            update_data["welcome_message"] = welcome_message.strip() if welcome_message.strip() else None
+
+        response = (
+            client.table("system_prompts")
+            .update(update_data)
+            .eq("id", prompt_id)
+            .execute()
+        )
+
+        if response.data and len(response.data) > 0:
+            # Clear cache to force refresh
+            clear_cache()
+            logger.info(f"Prompt {prompt_id} updated successfully")
+            return True
+        else:
+            logger.warning(f"Prompt {prompt_id} not found")
+            return False
+    except Exception as e:
+        logger.error(f"Error updating prompt {prompt_id}: {e}", exc_info=True)
+        return False
+
+
+def activate_prompt_by_id(prompt_id: str) -> bool:
+    """
+    Activate a prompt by UUID and deactivate all other default prompts.
+    
+    Args:
+        prompt_id: UUID of the prompt to activate
+    
+    Returns:
+        True if successful, False otherwise
+    
+    This function aligns with frontend behavior where:
+    - Frontend calls activate() when a prompt is selected
+    - Selected prompt becomes active (is_active: true)
+    - All other prompts are deactivated (is_active: false)
+    - This happens automatically when user selects a prompt in dropdown
+    """
+    if not is_supabase_configured():
+        logger.error("Supabase not configured, cannot activate prompt")
+        return False
+
+    client = get_supabase_client()
+    if client is None:
+        logger.error("Supabase client unavailable, cannot activate prompt")
+        return False
+
+    try:
+        # First, verify the prompt exists and is a default prompt
+        check_response = (
+            client.table("system_prompts")
+            .select("id, is_default")
+            .eq("id", prompt_id)
+            .limit(1)
+            .execute()
+        )
+
+        if not check_response.data or len(check_response.data) == 0:
+            logger.error(f"Prompt {prompt_id} not found")
+            return False
+
+        prompt_data = check_response.data[0]
+        is_default = prompt_data.get("is_default", False)
+
+        if not is_default:
+            logger.warning(f"Prompt {prompt_id} is not a default prompt, cannot activate")
+            return False
+
+        # Deactivate all other default prompts (aligns with frontend auto-deactivation)
+        try:
+            client.table("system_prompts").update({"is_active": False}).eq("is_default", True).neq("id", prompt_id).execute()
+            logger.debug(f"Deactivated all other default prompts (keeping {prompt_id} active)")
+        except Exception as e:
+            logger.warning(f"Failed to deactivate other prompts: {e}")
+
+        # Activate the specified prompt
+        response = (
+            client.table("system_prompts")
+            .update({"is_active": True})
+            .eq("id", prompt_id)
+            .execute()
+        )
+
+        if response.data:
+            # Clear cache to force refresh
+            clear_cache()
+            logger.info(f"Prompt {prompt_id} activated successfully (all others deactivated)")
+            return True
+        else:
+            logger.warning(f"Failed to activate prompt {prompt_id}")
+            return False
+    except Exception as e:
+        logger.error(f"Error activating prompt {prompt_id}: {e}", exc_info=True)
+        return False
 
 
 def clear_cache():
