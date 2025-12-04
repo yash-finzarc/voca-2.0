@@ -555,6 +555,9 @@ def activate_prompt_by_id(prompt_id: str) -> bool:
     Returns:
         True if successful, False otherwise
     
+    Raises:
+        RuntimeError: If there's an error that should be propagated to the caller
+    
     This function aligns with frontend behavior where:
     - Frontend calls activate() when a prompt is selected
     - Selected prompt becomes active (is_active: true)
@@ -562,61 +565,74 @@ def activate_prompt_by_id(prompt_id: str) -> bool:
     - This happens automatically when user selects a prompt in dropdown
     """
     if not is_supabase_configured():
-        logger.error("Supabase not configured, cannot activate prompt")
-        return False
+        error_msg = "Supabase not configured, cannot activate prompt"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     client = get_supabase_client()
     if client is None:
-        logger.error("Supabase client unavailable, cannot activate prompt")
-        return False
+        error_msg = "Supabase client unavailable, cannot activate prompt"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     try:
-        # First, verify the prompt exists and is a default prompt
+        # First, verify the prompt exists
+        logger.info(f"Checking if prompt {prompt_id} exists...")
         check_response = (
             client.table("system_prompts")
-            .select("id, is_default")
+            .select("id, is_default, is_active")
             .eq("id", prompt_id)
             .limit(1)
             .execute()
         )
 
         if not check_response.data or len(check_response.data) == 0:
-            logger.error(f"Prompt {prompt_id} not found")
-            return False
+            error_msg = f"Prompt {prompt_id} not found in database"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
         prompt_data = check_response.data[0]
         is_default = prompt_data.get("is_default", False)
+        current_is_active = prompt_data.get("is_active", False)
 
-        if not is_default:
-            logger.warning(f"Prompt {prompt_id} is not a default prompt, cannot activate")
-            return False
+        logger.info(f"Prompt {prompt_id} found. is_default={is_default}, current is_active={current_is_active}")
 
-        # Deactivate all other default prompts (aligns with frontend auto-deactivation)
+        # Deactivate all other prompts (both default and non-default) to ensure only one is active
+        # This aligns with frontend behavior where selecting one deactivates all others
         try:
-            client.table("system_prompts").update({"is_active": False}).eq("is_default", True).neq("id", prompt_id).execute()
-            logger.debug(f"Deactivated all other default prompts (keeping {prompt_id} active)")
+            deactivate_response = client.table("system_prompts").update({"is_active": False}).neq("id", prompt_id).execute()
+            logger.debug(f"Deactivated all other prompts (keeping {prompt_id} active). Updated {len(deactivate_response.data) if deactivate_response.data else 0} prompts")
         except Exception as e:
-            logger.warning(f"Failed to deactivate other prompts: {e}")
+            logger.warning(f"Failed to deactivate other prompts (non-critical): {e}")
 
         # Activate the specified prompt
+        logger.info(f"Activating prompt {prompt_id}...")
         response = (
             client.table("system_prompts")
-            .update({"is_active": True})
+            .update({"is_active": True, "updated_at": datetime.utcnow().isoformat()})
             .eq("id", prompt_id)
             .execute()
         )
 
-        if response.data:
+        if response.data and len(response.data) > 0:
             # Clear cache to force refresh
             clear_cache()
             logger.info(f"Prompt {prompt_id} activated successfully (all others deactivated)")
             return True
         else:
-            logger.warning(f"Failed to activate prompt {prompt_id}")
-            return False
+            error_msg = f"Failed to activate prompt {prompt_id} - update returned no data. Response: {response}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+    except ValueError as ve:
+        # Re-raise ValueError (prompt not found)
+        raise
+    except RuntimeError as re:
+        # Re-raise RuntimeError
+        raise
     except Exception as e:
-        logger.error(f"Error activating prompt {prompt_id}: {e}", exc_info=True)
-        return False
+        error_msg = f"Unexpected error activating prompt {prompt_id}: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        raise RuntimeError(error_msg) from e
 
 
 def clear_cache():

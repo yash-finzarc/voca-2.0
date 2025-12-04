@@ -128,6 +128,7 @@ class SystemPromptListItem(BaseModel):
     prompt: str
     welcome_message: Optional[str] = None
     is_default: Optional[bool] = None
+    is_active: Optional[bool] = None  # Added to show which prompt is currently active
     organization_id: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -1254,6 +1255,7 @@ async def list_system_prompts(
                                     prompt=item.get("prompt", ""),
                                     welcome_message=item.get("welcome_message"),
                                     is_default=is_default,
+                                    is_active=item.get("is_active", False),  # Include is_active status
                                     created_at=item.get("created_at"),
                                     updated_at=item.get("updated_at"),
                                 )
@@ -1590,17 +1592,31 @@ async def activate_system_prompt(
         logger = logging.getLogger(__name__)
         logger.info(f"Activating prompt with UUID: {resolved_prompt_id}")
         
-        success = activate_prompt_by_id(resolved_prompt_id)
-        if success:
-            app_state._log_callback(f"System prompt {resolved_prompt_id} activated via API")
-            return StatusResponse(status="success", message=f"System prompt {resolved_prompt_id} activated successfully")
-        else:
-            raise HTTPException(status_code=500, detail="Failed to activate system prompt. Check backend logs for details.")
+        try:
+            success = activate_prompt_by_id(resolved_prompt_id)
+            if success:
+                app_state._log_callback(f"System prompt {resolved_prompt_id} activated via API")
+                return StatusResponse(status="success", message=f"System prompt {resolved_prompt_id} activated successfully")
+            else:
+                # This shouldn't happen now since we raise exceptions, but keep for safety
+                logger.error(f"activate_prompt_by_id returned False for UUID {resolved_prompt_id}")
+                raise HTTPException(status_code=500, detail="Failed to activate system prompt. Function returned False.")
+        except ValueError as ve:
+            # Prompt not found
+            logger.error(f"ValueError in activate_prompt_by_id: {ve}", exc_info=True)
+            raise HTTPException(status_code=404, detail=str(ve))
+        except RuntimeError as re:
+            # RuntimeError from activate_prompt_by_id contains detailed error
+            logger.error(f"RuntimeError in activate_prompt_by_id: {re}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(re))
+        except Exception as activate_error:
+            logger.error(f"Unexpected exception in activate_prompt_by_id: {activate_error}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to activate system prompt: {str(activate_error)}")
     except HTTPException:
         raise
     except Exception as e:
         logger = logging.getLogger(__name__)
-        logger.error(f"Error activating system prompt: {e}", exc_info=True)
+        logger.error(f"Error in activate endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to activate system prompt: {str(e)}")
 
 
