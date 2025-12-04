@@ -11,6 +11,7 @@ from queue import Queue, Empty
 
 import os
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Query, Header
+from fastapi import Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
@@ -1523,6 +1524,21 @@ async def update_welcome_message(
         logger = logging.getLogger(__name__)
         logger.error(f"Error updating welcome message: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to update welcome message: {str(e)}")
+
+
+@app.options("/api/system-prompt/activate")
+async def activate_system_prompt_options(request: Request):
+    """Handle CORS preflight for activate endpoint."""
+    return Response(
+        content="",
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
 
 
 @app.post("/api/system-prompt/activate", response_model=StatusResponse)
