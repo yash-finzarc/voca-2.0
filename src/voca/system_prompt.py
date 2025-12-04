@@ -444,14 +444,40 @@ def create_prompt(
         logger.debug(f"Insert data: {insert_data}")
 
         try:
+            logger.info(f"Attempting to insert prompt into Supabase...")
+            logger.debug(f"Insert data: {insert_data}")
+            
             response = client.table("system_prompts").insert(insert_data).execute()
-
+            
+            # Log the full response for debugging
+            logger.debug(f"Supabase response: {response}")
+            logger.debug(f"Response data: {response.data}")
+            logger.debug(f"Response status code: {getattr(response, 'status_code', 'N/A')}")
+            
+            # Check for errors in response
+            if hasattr(response, 'error') and response.error:
+                error_msg = f"Supabase returned an error: {response.error}"
+                logger.error(error_msg)
+                return (False, None)
+            
             if response.data and len(response.data) > 0:
                 # Fetch the generated UUID from Supabase response
                 generated_id = response.data[0].get("id")
                 if not generated_id:
                     logger.error("Supabase did not return an ID in the response")
+                    logger.error(f"Response data structure: {response.data}")
                     return (False, None)
+                
+                # Verify the prompt was actually created by fetching it back
+                try:
+                    verify_response = client.table("system_prompts").select("id").eq("id", generated_id).limit(1).execute()
+                    if not verify_response.data or len(verify_response.data) == 0:
+                        logger.error(f"Prompt {generated_id} was not found after creation - insert may have failed silently")
+                        return (False, None)
+                    logger.info(f"Verified prompt {generated_id} exists in database")
+                except Exception as verify_error:
+                    logger.warning(f"Could not verify prompt creation: {verify_error}")
+                    # Continue anyway - the insert might have succeeded
                 
                 # Clear cache to force refresh
                 clear_cache()
@@ -460,6 +486,9 @@ def create_prompt(
             else:
                 error_msg = f"Failed to create prompt - no data returned. Response: {response}"
                 logger.error(error_msg)
+                # Check if there's error information in the response
+                if hasattr(response, 'error'):
+                    logger.error(f"Supabase error details: {response.error}")
                 return (False, None)
 
         except Exception as insert_error:
@@ -467,6 +496,8 @@ def create_prompt(
             logger.error(error_msg)
             logger.error(f"Insert data that failed: {insert_data}")
             logger.error(f"Error type: {type(insert_error).__name__}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return (False, None)
 
     except Exception as e:

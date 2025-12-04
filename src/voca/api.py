@@ -1446,6 +1446,23 @@ async def update_system_prompt(
                     request.welcome_message
                 )
                 if success and generated_id:
+                    # Verify the prompt was actually created by fetching it
+                    try:
+                        from src.voca.supabase_client import get_supabase_client, is_supabase_configured
+                        if is_supabase_configured():
+                            verify_client = get_supabase_client()
+                            if verify_client:
+                                verify_result = verify_client.table("system_prompts").select("id, prompt, name").eq("id", generated_id).limit(1).execute()
+                                if not verify_result.data or len(verify_result.data) == 0:
+                                    logger.error(f"Prompt {generated_id} was created but not found in database - RLS or permission issue")
+                                    raise HTTPException(status_code=500, detail="Prompt was created but cannot be verified in database. Check RLS policies.")
+                                logger.info(f"Verified prompt {generated_id} exists: {verify_result.data[0]}")
+                    except HTTPException:
+                        raise
+                    except Exception as verify_error:
+                        logger.warning(f"Could not verify prompt creation: {verify_error}")
+                        # Continue anyway - the insert might have succeeded
+                    
                     app_state._log_callback(f"System prompt {generated_id} created via API (auto-generated UUID)")
                     return StatusResponse(
                         status="success", 
@@ -1453,8 +1470,8 @@ async def update_system_prompt(
                         prompt_id=generated_id
                     )
                 else:
-                    logger.error(f"create_prompt returned False or no UUID")
-                    raise HTTPException(status_code=500, detail="Failed to create system prompt. No UUID generated.")
+                    logger.error(f"create_prompt returned False or no UUID. success={success}, generated_id={generated_id}")
+                    raise HTTPException(status_code=500, detail="Failed to create system prompt. Check backend logs for details.")
             except HTTPException:
                 raise
             except Exception as create_error:
