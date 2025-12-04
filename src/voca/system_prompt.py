@@ -413,6 +413,17 @@ def create_prompt(
     if client is None:
         logger.error("Supabase client unavailable, cannot create prompt")
         return (False, None)
+    
+    # Log which key type we're using (for debugging RLS issues)
+    from src.voca.config import Config
+    supabase_key = Config.supabase_key
+    if supabase_key:
+        # Service role keys are typically longer and start with 'eyJ'
+        # Anon keys are shorter. This is just for logging.
+        key_length = len(supabase_key)
+        logger.debug(f"Using Supabase key (length: {key_length}). If using anon key, RLS policies must allow INSERT.")
+    else:
+        logger.warning("No Supabase key configured!")
 
     try:
         # Deactivate all previous default prompts (aligns with frontend auto-activation)
@@ -445,14 +456,17 @@ def create_prompt(
 
         try:
             logger.info(f"Attempting to insert prompt into Supabase...")
-            logger.debug(f"Insert data: {insert_data}")
+            logger.info(f"Insert data keys: {list(insert_data.keys())}")
+            logger.info(f"Insert data - name: {insert_data.get('name')}, prompt length: {len(insert_data.get('prompt', ''))}")
             
+            # Insert the new prompt - Supabase will generate UUID
             response = client.table("system_prompts").insert(insert_data).execute()
             
             # Log the full response for debugging
-            logger.debug(f"Supabase response: {response}")
+            logger.info(f"Supabase insert response received")
+            logger.debug(f"Full response object: {response}")
+            logger.debug(f"Response data type: {type(response.data)}")
             logger.debug(f"Response data: {response.data}")
-            logger.debug(f"Response status code: {getattr(response, 'status_code', 'N/A')}")
             
             # Check for errors in response
             if hasattr(response, 'error') and response.error:
@@ -460,36 +474,106 @@ def create_prompt(
                 logger.error(error_msg)
                 return (False, None)
             
-            if response.data and len(response.data) > 0:
-                # Fetch the generated UUID from Supabase response
-                generated_id = response.data[0].get("id")
-                if not generated_id:
-                    logger.error("Supabase did not return an ID in the response")
-                    logger.error(f"Response data structure: {response.data}")
+            # Check if response has data
+            if not response.data:
+                error_msg = f"Supabase insert returned no data. This usually means RLS policy blocked the insert."
+                logger.error(error_msg)
+                logger.error(f"Full response: {response}")
+                return (False, None)
+            
+            if len(response.data) == 0:
+                error_msg = f"Supabase insert returned empty data array. This usually means RLS policy blocked the insert."
+                logger.error(error_msg)
+                return (False, None)
+            
+            # Fetch the generated UUID from Supabase response
+            generated_id = response.data[0].get("id")
+            if not generated_id:
+                error_msg = "Supabase did not return an ID in the response"
+                logger.error(error_msg)
+                logger.error(f"Response data structure: {response.data}")
+                return (False, None)
+            
+            logger.info(f"Supabase generated UUID: {generated_id}")
+            
+            # CRITICAL: Verify this is actually a NEW prompt, not an existing one
+            # Check the created_at timestamp from the response - it should be very recent
+            response_prompt = response.data[0]
+            response_created_at = response_prompt.get('created_at')
+            response_name = response_prompt.get('name')
+            response_prompt_text = response_prompt.get('prompt', '')
+            
+            logger.info(f"Response prompt - name: {response_name}, created_at: {response_created_at}")
+            logger.info(f"Requested prompt - name: {name}, prompt length: {len(prompt.strip())}")
+            
+            # Verify the prompt was actually created by fetching it back with more details
+            try:
+                verify_response = client.table("system_prompts").select("id, name, prompt, created_at, updated_at").eq("id", generated_id).limit(1).execute()
+                if not verify_response.data or len(verify_response.data) == 0:
+                    error_msg = f"Prompt {generated_id} was not found after creation - insert may have failed silently due to RLS"
+                    logger.error(error_msg)
                     return (False, None)
                 
-                # Verify the prompt was actually created by fetching it back
-                try:
-                    verify_response = client.table("system_prompts").select("id").eq("id", generated_id).limit(1).execute()
-                    if not verify_response.data or len(verify_response.data) == 0:
-                        logger.error(f"Prompt {generated_id} was not found after creation - insert may have failed silently")
-                        return (False, None)
-                    logger.info(f"Verified prompt {generated_id} exists in database")
-                except Exception as verify_error:
-                    logger.warning(f"Could not verify prompt creation: {verify_error}")
-                    # Continue anyway - the insert might have succeeded
+                verified_prompt = verify_response.data[0]
+                logger.info(f"Verified prompt {generated_id} exists in database")
+                logger.info(f"Verified prompt - name: {verified_prompt.get('name')}, created_at: {verified_prompt.get('created_at')}, updated_at: {verified_prompt.get('updated_at')}")
                 
-                # Clear cache to force refresh
-                clear_cache()
-                logger.info(f"New prompt created with UUID {generated_id} (generated by Supabase, preserving all previous prompts)")
-                return (True, generated_id)
-            else:
-                error_msg = f"Failed to create prompt - no data returned. Response: {response}"
+                # Double-check: Make sure this is a NEW prompt, not an existing one
+                # Check if the created_at and updated_at timestamps are very recent (within last 10 seconds)
+                from datetime import datetime, timezone
+                created_at_str = verified_prompt.get('created_at')
+                updated_at_str = verified_prompt.get('updated_at')
+                
+                if created_at_str:
+                    try:
+                        # Handle different datetime formats
+                        if isinstance(created_at_str, str):
+                            if 'Z' in created_at_str:
+                                created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                            else:
+                                created_at = datetime.fromisoformat(created_at_str)
+                        else:
+                            created_at = created_at_str
+                            
+                        # Ensure timezone-aware
+                        if created_at.tzinfo is None:
+                            created_at = created_at.replace(tzinfo=timezone.utc)
+                        
+                        now = datetime.now(timezone.utc)
+                        time_diff = (now - created_at).total_seconds()
+                        
+                        logger.info(f"Time difference: {time_diff} seconds between now and created_at")
+                        
+                        if abs(time_diff) > 10:
+                            error_msg = f"⚠️ WARNING: Prompt {generated_id} was created {abs(time_diff)} seconds ago - this might be an EXISTING prompt, not a new one! The insert may have failed and returned an existing row."
+                            logger.error(error_msg)
+                            logger.error(f"This usually means RLS policy blocked the insert, or there's a unique constraint issue")
+                            # Don't return False here - let it through but log the warning
+                            # The frontend will see the wrong UUID and can handle it
+                    except Exception as time_check_error:
+                        logger.warning(f"Could not verify creation time: {time_check_error}")
+                        import traceback
+                        logger.debug(f"Time check traceback: {traceback.format_exc()}")
+                
+                # Also verify the prompt text matches what we tried to insert
+                if response_prompt_text and prompt.strip():
+                    if response_prompt_text.strip() != prompt.strip():
+                        error_msg = f"⚠️ WARNING: Inserted prompt text doesn't match requested text! This might be an existing prompt."
+                        logger.error(error_msg)
+                        logger.error(f"Requested: {prompt.strip()[:100]}...")
+                        logger.error(f"Got back: {response_prompt_text.strip()[:100]}...")
+                
+            except Exception as verify_error:
+                error_msg = f"Could not verify prompt creation: {verify_error}"
                 logger.error(error_msg)
-                # Check if there's error information in the response
-                if hasattr(response, 'error'):
-                    logger.error(f"Supabase error details: {response.error}")
+                import traceback
+                logger.error(f"Verification traceback: {traceback.format_exc()}")
                 return (False, None)
+            
+            # Clear cache to force refresh
+            clear_cache()
+            logger.info(f"✅ New prompt created successfully with UUID {generated_id} (generated by Supabase)")
+            return (True, generated_id)
 
         except Exception as insert_error:
             error_msg = f"Supabase insert error: {str(insert_error)}"
