@@ -4,7 +4,7 @@ Handles fetching, updating, and resetting the system prompt.
 """
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
 
 from src.voca.supabase_client import get_supabase_client, is_supabase_configured
@@ -526,7 +526,7 @@ def create_prompt(
                 
                 # Double-check: Make sure this is a NEW prompt, not an existing one
                 # Check if the created_at and updated_at timestamps are very recent (within last 10 seconds)
-                from datetime import datetime, timezone
+                # Note: datetime is already imported at the top of the file
                 created_at_str = verified_prompt.get('created_at')
                 updated_at_str = verified_prompt.get('updated_at')
                 
