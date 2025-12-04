@@ -4,7 +4,6 @@ Handles fetching, updating, and resetting the system prompt.
 """
 import logging
 import time
-import uuid
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -219,16 +218,17 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
                 .limit(1)
                 .execute()
             )
-        
-        if response.data:
-            data = response.data[0]
-            prompt = data.get("prompt", DEFAULT_SYSTEM_PROMPT)
-            name = data.get("name", "Default")
-            welcome_message = data.get("welcome_message")
-            logger.debug("System prompt fetched from Supabase")
-            return {"prompt": prompt, "name": name, "welcome_message": welcome_message}
     except Exception as e:
         logger.warning("Error fetching default prompt: %s", e)
+        response = type('obj', (object,), {'data': None})()
+
+    if response.data:
+        data = response.data[0]
+        prompt = data.get("prompt", DEFAULT_SYSTEM_PROMPT)
+        name = data.get("name", "Default")
+        welcome_message = data.get("welcome_message")
+        logger.debug("System prompt fetched from Supabase")
+        return {"prompt": prompt, "name": name, "welcome_message": welcome_message}
 
     logger.info("No system prompt rows found, initializing with default")
     _initialize_default_prompt(client)
@@ -242,13 +242,9 @@ def _update_default_prompt(client, prompt: str, name: Optional[str], welcome_mes
     """
     # First, deactivate all previous default prompts
     try:
-        # Try to deactivate using is_active column if it exists
         try:
-            # Deactivate all prompts that are default by is_default flag
             client.table("system_prompts").update({"is_active": False}).eq("is_default", True).eq("is_active", True).execute()
         except Exception:
-            # If is_active column doesn't exist, try to update is_default instead
-            # Set all previous defaults to is_default=False
             client.table("system_prompts").update({"is_default": False}).eq("is_default", True).execute()
     except Exception as e:
         logger.warning("Failed to deactivate previous default prompts: %s", e)
@@ -259,16 +255,13 @@ def _update_default_prompt(client, prompt: str, name: Optional[str], welcome_mes
         "is_default": True,
         "updated_at": datetime.utcnow().isoformat(),
     }
-    
-    # Add welcome_message if column exists (will be handled gracefully if column doesn't exist)
     if welcome_message is not None:
         insert_data["welcome_message"] = welcome_message.strip() if welcome_message.strip() else None
     
-    # Try to add is_active if column exists
     try:
         insert_data["is_active"] = True
     except Exception:
-        pass  # Column might not exist, that's okay
+        pass
 
     try:
         response = client.table("system_prompts").insert(insert_data).execute()
@@ -282,38 +275,24 @@ def _update_default_prompt(client, prompt: str, name: Optional[str], welcome_mes
             return False
     except Exception as e:
         logger.error("Failed to insert new default prompt: %s", e, exc_info=True)
-        # DO NOT fall back to updating existing prompt - that would overwrite history!
-        # Instead, try to initialize a new prompt with a different approach
-        logger.info("Attempting alternative insert method")
-        try:
-            # Try inserting without some optional fields if they're causing issues
-            minimal_insert = {
-                "prompt": prompt,
-                "is_default": True,
-                "is_active": True,
-                "updated_at": datetime.utcnow().isoformat(),
-            }
-            if name:
-                minimal_insert["name"] = name.strip()
-            if welcome_message:
-                minimal_insert["welcome_message"] = welcome_message.strip()
-            
-            response = client.table("system_prompts").insert(minimal_insert).execute()
-            if response.data and len(response.data) > 0:
-                cache_key = _cache_key(None)
-                _write_cache(cache_key, prompt, name.strip() if name and name.strip() else None, welcome_message)
-                logger.info("New default system prompt created via alternative method")
-                return True
-        except Exception as e2:
-            logger.error("Alternative insert method also failed: %s", e2, exc_info=True)
-        
-        # Last resort: try _initialize_prompt but don't update existing rows
         logger.warning("All insert methods failed, attempting initialization")
         created = _initialize_prompt(client, prompt, name, welcome_message)
         if created:
             cache_key = _cache_key(None)
             _write_cache(cache_key, prompt, name, welcome_message)
         return created
+
+    cache_key = _cache_key(None)
+    if response.data:
+        _write_cache(cache_key, prompt, update_data.get("name"))
+        logger.info("Default system prompt updated in Supabase")
+        return True
+
+    logger.info("Default prompt row missing, creating new row")
+    created = _initialize_prompt(client, prompt, name)
+    if created:
+        _write_cache(cache_key, prompt, name)
+    return created
 
 
 def _initialize_default_prompt(client) -> bool:
@@ -334,11 +313,10 @@ def _initialize_prompt(client, prompt: str, name: Optional[str] = None, welcome_
         if welcome_message is not None:
             insert_data["welcome_message"] = welcome_message.strip() if welcome_message.strip() else None
         
-        # Try to add is_active if column exists
         try:
             insert_data["is_active"] = True
         except Exception:
-            pass  # Column might not exist, that's okay
+            pass
 
         response = client.table("system_prompts").insert(insert_data).execute()
 
@@ -352,8 +330,6 @@ def _initialize_prompt(client, prompt: str, name: Optional[str] = None, welcome_
         return False
     except Exception as e:
         logger.error(f"Insert failed in _initialize_prompt: {e}", exc_info=True)
-        # DO NOT fall back to updating existing prompt - that would overwrite history!
-        # Just return False and let the caller handle it
         return False
 
 
@@ -452,30 +428,29 @@ def create_prompt_with_id(
             logger.warning(f"Failed to deactivate previous prompts: {e}")
 
         # Create the new prompt with the UUID provided by frontend
-        # Build insert_data with only non-None values to avoid issues
         insert_data = {
             "id": prompt_id,  # Use the UUID from frontend as the id
             "prompt": prompt.strip(),
             "is_default": True,
             "is_active": True,  # New prompt is automatically active
         }
-        
+
         # Add optional fields - explicitly set to None if empty (consistent with update_prompt_by_id)
         if name is not None:
             insert_data["name"] = name.strip() if name.strip() else None
-        
+
         if welcome_message is not None:
             insert_data["welcome_message"] = welcome_message.strip() if welcome_message.strip() else None
-        
+
         # Note: created_at has a default, updated_at we'll set explicitly
         insert_data["updated_at"] = datetime.utcnow().isoformat()
 
         logger.info(f"Creating prompt with UUID: {prompt_id}, name: {name}, prompt length: {len(prompt.strip())}")
         logger.debug(f"Insert data: {insert_data}")
-        
+
         try:
             response = client.table("system_prompts").insert(insert_data).execute()
-            
+
             if response.data and len(response.data) > 0:
                 # Clear cache to force refresh
                 clear_cache()
@@ -484,7 +459,6 @@ def create_prompt_with_id(
             else:
                 error_msg = f"Failed to create prompt - no data returned. Response: {response}"
                 logger.error(error_msg)
-                # Return error message that can be used by caller
                 raise ValueError(error_msg)
 
         except Exception as insert_error:
@@ -492,19 +466,15 @@ def create_prompt_with_id(
             logger.error(error_msg)
             logger.error(f"Insert data that failed: {insert_data}")
             logger.error(f"Error type: {type(insert_error).__name__}")
-            # Re-raise with more context
             raise RuntimeError(f"Failed to insert prompt into database: {str(insert_error)}") from insert_error
 
     except ValueError as ve:
-        # Re-raise ValueError as-is (already formatted)
         raise
     except RuntimeError as re:
-        # Re-raise RuntimeError as-is (already formatted)
         raise
     except Exception as e:
         error_msg = f"Unexpected error creating prompt with UUID {prompt_id}: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        # Log the full exception details for debugging
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
         raise RuntimeError(error_msg) from e
@@ -656,4 +626,3 @@ def clear_cache():
     _cached_welcome_messages.clear()
     _cache_timestamps.clear()
     logger.debug("System prompt cache cleared")
-
