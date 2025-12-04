@@ -460,12 +460,12 @@ def create_prompt_with_id(
             "is_active": True,  # New prompt is automatically active
         }
         
-        # Add optional fields only if they have values (don't include None values)
-        if name is not None and name.strip():
-            insert_data["name"] = name.strip()
+        # Add optional fields - explicitly set to None if empty (consistent with update_prompt_by_id)
+        if name is not None:
+            insert_data["name"] = name.strip() if name.strip() else None
         
-        if welcome_message is not None and welcome_message.strip():
-            insert_data["welcome_message"] = welcome_message.strip()
+        if welcome_message is not None:
+            insert_data["welcome_message"] = welcome_message.strip() if welcome_message.strip() else None
         
         # Note: created_at has a default, updated_at we'll set explicitly
         insert_data["updated_at"] = datetime.utcnow().isoformat()

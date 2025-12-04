@@ -1526,8 +1526,12 @@ async def update_welcome_message(
 
 
 @app.post("/api/system-prompt/activate", response_model=StatusResponse)
+@app.put("/api/system-prompt/activate", response_model=StatusResponse)
+@app.patch("/api/system-prompt/activate", response_model=StatusResponse)
+@app.get("/api/system-prompt/activate", response_model=StatusResponse)
 async def activate_system_prompt(
-    prompt_id: str = Query(..., description="UUID of the prompt to activate"),
+    request: Request,
+    prompt_id: Optional[str] = Query(None, description="UUID of the prompt to activate (query parameter)"),
 ):
     """Activate a system prompt by UUID and deactivate all others.
     
@@ -1535,22 +1539,52 @@ async def activate_system_prompt(
     When a prompt is selected in the dropdown, frontend calls this endpoint to:
     - Activate the selected prompt (is_active: true)
     - Deactivate all other prompts (is_active: false)
+    
+    Accepts prompt_id as:
+    - Query parameter: ?prompt_id=<uuid>
+    - Request body JSON: {"prompt_id": "<uuid>"} or {"id": "<uuid>"}
     """
     try:
-        if not prompt_id or not prompt_id.strip():
-            raise HTTPException(status_code=400, detail="Prompt ID (UUID) is required")
+        resolved_prompt_id = None
         
-        success = activate_prompt_by_id(prompt_id.strip())
+        # Try to get prompt_id from query parameter first
+        if prompt_id:
+            resolved_prompt_id = prompt_id.strip()
+        
+        # If not in query, try to get from request body
+        if not resolved_prompt_id and request:
+            try:
+                body = await request.json()
+                resolved_prompt_id = body.get("prompt_id") or body.get("id")
+                if resolved_prompt_id:
+                    resolved_prompt_id = str(resolved_prompt_id).strip()
+            except Exception:
+                # Not JSON, try form data
+                try:
+                    form_data = await request.form()
+                    resolved_prompt_id = form_data.get("prompt_id") or form_data.get("id")
+                    if resolved_prompt_id:
+                        resolved_prompt_id = str(resolved_prompt_id).strip()
+                except Exception:
+                    pass
+        
+        if not resolved_prompt_id:
+            raise HTTPException(status_code=400, detail="Prompt ID (UUID) is required. Provide it as query parameter 'prompt_id' or in request body as 'prompt_id' or 'id'")
+        
+        logger = logging.getLogger(__name__)
+        logger.info(f"Activating prompt with UUID: {resolved_prompt_id}")
+        
+        success = activate_prompt_by_id(resolved_prompt_id)
         if success:
-            app_state._log_callback(f"System prompt {prompt_id} activated via API")
-            return StatusResponse(status="success", message=f"System prompt {prompt_id} activated successfully")
+            app_state._log_callback(f"System prompt {resolved_prompt_id} activated via API")
+            return StatusResponse(status="success", message=f"System prompt {resolved_prompt_id} activated successfully")
         else:
             raise HTTPException(status_code=500, detail="Failed to activate system prompt. Check backend logs for details.")
     except HTTPException:
         raise
     except Exception as e:
         logger = logging.getLogger(__name__)
-        logger.error(f"Error activating system prompt: {e}")
+        logger.error(f"Error activating system prompt: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to activate system prompt: {str(e)}")
 
 
