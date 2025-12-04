@@ -4,8 +4,9 @@ Handles fetching, updating, and resetting the system prompt.
 """
 import logging
 import time
+import uuid
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from src.voca.supabase_client import get_supabase_client, is_supabase_configured
 
@@ -380,6 +381,31 @@ def get_welcome_message(organization_id: Optional[str] = None) -> Optional[str]:
     """
     prompt_data = get_prompt_with_name(organization_id=organization_id)
     return prompt_data.get("welcome_message")
+
+
+def create_prompt(
+    prompt: str,
+    name: Optional[str] = None,
+    welcome_message: Optional[str] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Create a new system prompt with auto-generated UUID.
+    This deactivates all previous default prompts and creates a new one.
+    
+    Args:
+        prompt: The prompt text
+        name: Optional name for the prompt
+        welcome_message: Optional welcome message
+    
+    Returns:
+        Tuple of (success: bool, prompt_id: Optional[str])
+        - If successful, returns (True, generated_uuid)
+        - If failed, returns (False, None)
+    """
+    # Generate UUID in backend
+    prompt_id = str(uuid.uuid4())
+    success = create_prompt_with_id(prompt_id, prompt, name, welcome_message)
+    return (success, prompt_id if success else None)
 
 
 def create_prompt_with_id(
