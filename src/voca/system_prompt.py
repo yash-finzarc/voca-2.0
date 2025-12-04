@@ -460,13 +460,26 @@ def create_prompt(
             logger.info(f"Insert data - name: {insert_data.get('name')}, prompt length: {len(insert_data.get('prompt', ''))}")
             
             # Insert the new prompt - Supabase will generate UUID
-            response = client.table("system_prompts").insert(insert_data).execute()
+            # CRITICAL: Use .select() to explicitly request the inserted row back
+            # Without .select(), Supabase might return empty or wrong data
+            logger.info(f"Executing insert with .select('*') to get inserted row back...")
+            response = client.table("system_prompts").insert(insert_data).select("*").execute()
             
             # Log the full response for debugging
             logger.info(f"Supabase insert response received")
+            logger.info(f"Response has data: {bool(response.data)}")
+            logger.info(f"Response data length: {len(response.data) if response.data else 0}")
             logger.debug(f"Full response object: {response}")
             logger.debug(f"Response data type: {type(response.data)}")
             logger.debug(f"Response data: {response.data}")
+            
+            # Check response status if available
+            if hasattr(response, 'status_code'):
+                logger.info(f"Response status code: {response.status_code}")
+                if response.status_code not in [200, 201]:
+                    error_msg = f"Supabase insert returned status code {response.status_code}, expected 200/201"
+                    logger.error(error_msg)
+                    return (False, None)
             
             # Check for errors in response
             if hasattr(response, 'error') and response.error:
@@ -512,6 +525,15 @@ def create_prompt(
             logger.info(f"Response prompt - name: {response_name}, created_at: {response_created_at}")
             logger.info(f"Requested prompt - name: {name}, prompt length: {len(prompt.strip())}")
             
+            # IMMEDIATE CHECK: If the name doesn't match, this is definitely wrong
+            if name and response_name and name.strip() != response_name.strip():
+                error_msg = f"❌ CRITICAL: Response name '{response_name}' doesn't match requested name '{name}'. RLS blocked insert and returned existing prompt."
+                logger.error(error_msg)
+                logger.error("SOLUTION: Add RLS policy in Supabase SQL Editor:")
+                logger.error("CREATE POLICY \"Allow all operations on system_prompts\"")
+                logger.error("ON public.system_prompts AS PERMISSIVE FOR ALL TO public USING (true) WITH CHECK (true);")
+                return (False, None)
+            
             # Verify the prompt was actually created by fetching it back with more details
             try:
                 verify_response = client.table("system_prompts").select("id, name, prompt, created_at, updated_at").eq("id", generated_id).limit(1).execute()
@@ -551,11 +573,13 @@ def create_prompt(
                         logger.info(f"Time difference: {time_diff} seconds between now and created_at")
                         
                         if abs(time_diff) > 10:
-                            error_msg = f"⚠️ WARNING: Prompt {generated_id} was created {abs(time_diff)} seconds ago - this might be an EXISTING prompt, not a new one! The insert may have failed and returned an existing row."
+                            error_msg = f"❌ CRITICAL: Prompt {generated_id} was created {abs(time_diff)} seconds ago - this is an EXISTING prompt, not a new one! The insert was blocked by RLS and Supabase returned an existing row."
                             logger.error(error_msg)
-                            logger.error(f"This usually means RLS policy blocked the insert, or there's a unique constraint issue")
-                            # Don't return False here - let it through but log the warning
-                            # The frontend will see the wrong UUID and can handle it
+                            logger.error(f"This means RLS policy blocked the insert. The new prompt was NOT created.")
+                            logger.error("SOLUTION: Add RLS policy in Supabase SQL Editor:")
+                            logger.error("CREATE POLICY \"Allow all operations on system_prompts\"")
+                            logger.error("ON public.system_prompts AS PERMISSIVE FOR ALL TO public USING (true) WITH CHECK (true);")
+                            return (False, None)  # Return False - the insert failed
                     except Exception as time_check_error:
                         logger.warning(f"Could not verify creation time: {time_check_error}")
                         import traceback
@@ -564,10 +588,15 @@ def create_prompt(
                 # Also verify the prompt text matches what we tried to insert
                 if response_prompt_text and prompt.strip():
                     if response_prompt_text.strip() != prompt.strip():
-                        error_msg = f"⚠️ WARNING: Inserted prompt text doesn't match requested text! This might be an existing prompt."
+                        error_msg = f"❌ CRITICAL: Inserted prompt text doesn't match requested text! The insert was blocked by RLS and Supabase returned an existing prompt."
                         logger.error(error_msg)
-                        logger.error(f"Requested: {prompt.strip()[:100]}...")
-                        logger.error(f"Got back: {response_prompt_text.strip()[:100]}...")
+                        logger.error(f"Requested name: {name}, Requested prompt: {prompt.strip()[:100]}...")
+                        logger.error(f"Got back name: {response_name}, Got back prompt: {response_prompt_text.strip()[:100]}...")
+                        logger.error("This means RLS policy blocked the insert. The new prompt was NOT created.")
+                        logger.error("SOLUTION: Add RLS policy in Supabase SQL Editor:")
+                        logger.error("CREATE POLICY \"Allow all operations on system_prompts\"")
+                        logger.error("ON public.system_prompts AS PERMISSIVE FOR ALL TO public USING (true) WITH CHECK (true);")
+                        return (False, None)  # Return False - the insert failed
                 
             except Exception as verify_error:
                 error_msg = f"Could not verify prompt creation: {verify_error}"
