@@ -1336,200 +1336,22 @@ async def update_system_prompt(
     request: SystemPromptRequest,
     x_organization_id: Optional[str] = Header(None),
 ):
-    """Create or update the system prompt.
-    
-    If `id` (UUID) is provided:
-    - If prompt with that UUID exists: updates it
-    - If prompt with that UUID doesn't exist: creates new prompt with that UUID
-    
-    If `id` is NOT provided:
-    - Creates a new prompt with auto-generated UUID (backend generates it)
-    - Returns the generated UUID in the response
-    
-    If neither `id` nor `organization_id` is provided, falls back to legacy behavior.
-    
-    New approach (recommended):
-    - Frontend does NOT generate UUID
-    - Backend generates UUID automatically
-    - Frontend receives UUID in response and uses it for future updates/activations
     """
-    try:
-        # If UUID is provided, use UUID-based operations (update existing or create with specific UUID)
-        if request.id:
-            if not request.prompt or not request.prompt.strip():
-                raise HTTPException(status_code=400, detail="Prompt text is required")
-            
-            # Check if prompt with this UUID already exists
-            from src.voca.supabase_client import get_supabase_client, is_supabase_configured
-            logger = logging.getLogger(__name__)
-            
-            if not is_supabase_configured():
-                raise HTTPException(status_code=500, detail="Supabase not configured")
-            
-            client = get_supabase_client()
-            if not client:
-                raise HTTPException(status_code=500, detail="Supabase client unavailable")
-            
-            try:
-                logger.info(f"Checking if prompt with UUID {request.id} exists...")
-                existing = client.table("system_prompts").select("id").eq("id", request.id).limit(1).execute()
-                
-                if existing.data and len(existing.data) > 0:
-                    # Prompt exists, update it
-                    logger.info(f"Prompt {request.id} exists, updating...")
-                    try:
-                        success = update_prompt_by_id(
-                            request.id,
-                            request.prompt,
-                            request.name,
-                            request.welcome_message
-                        )
-                        if success:
-                            app_state._log_callback(f"System prompt {request.id} updated via API")
-                            return StatusResponse(status="success", message=f"System prompt updated successfully", prompt_id=request.id)
-                        else:
-                            logger.error(f"update_prompt_by_id returned False for UUID {request.id}")
-                            raise HTTPException(status_code=500, detail="Failed to update system prompt. Function returned False.")
-                    except HTTPException:
-                        raise
-                    except Exception as update_error:
-                        logger.error(f"Exception in update_prompt_by_id: {update_error}", exc_info=True)
-                        raise HTTPException(status_code=500, detail=f"Failed to update system prompt: {str(update_error)}")
-                else:
-                    # Prompt doesn't exist, create it with the provided UUID
-                    logger.info(f"Prompt {request.id} does not exist, creating new prompt with provided UUID...")
-                    try:
-                        success = create_prompt_with_id(
-                            request.id,
-                            request.prompt,
-                            request.name,
-                            request.welcome_message
-                        )
-                        if success:
-                            app_state._log_callback(f"System prompt {request.id} created via API")
-                            return StatusResponse(status="success", message=f"System prompt created successfully", prompt_id=request.id)
-                        else:
-                            # This shouldn't happen now since we raise exceptions, but keep for safety
-                            logger.error(f"create_prompt_with_id returned False for UUID {request.id}")
-                            raise HTTPException(status_code=500, detail="Failed to create system prompt. Function returned False.")
-                    except HTTPException:
-                        raise
-                    except RuntimeError as re:
-                        # RuntimeError from create_prompt_with_id contains detailed error
-                        logger.error(f"RuntimeError in create_prompt_with_id: {re}", exc_info=True)
-                        raise HTTPException(status_code=500, detail=f"Failed to create system prompt: {str(re)}")
-                    except ValueError as ve:
-                        # ValueError from create_prompt_with_id
-                        logger.error(f"ValueError in create_prompt_with_id: {ve}", exc_info=True)
-                        raise HTTPException(status_code=500, detail=f"Failed to create system prompt: {str(ve)}")
-                    except Exception as create_error:
-                        logger.error(f"Unexpected exception in create_prompt_with_id: {create_error}", exc_info=True)
-                        raise HTTPException(status_code=500, detail=f"Failed to create system prompt: {str(create_error)}")
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Error in UUID-based prompt operation: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=f"Failed to process system prompt: {str(e)}")
-        
-        # If no UUID provided, create new prompt with auto-generated UUID (new recommended approach)
-        if not request.id:
-            if not request.prompt or not request.prompt.strip():
-                raise HTTPException(status_code=400, detail="Prompt text is required")
-            
-            logger = logging.getLogger(__name__)
-            
-            logger.info("No UUID provided, creating new prompt with auto-generated UUID...")
-            try:
-                success, generated_id = create_prompt(
-                    request.prompt,
-                    request.name,
-                    request.welcome_message
-                )
-                if success and generated_id:
-                    # Verify the prompt was actually created by fetching it
-                    try:
-                        from src.voca.supabase_client import get_supabase_client, is_supabase_configured
-                        if is_supabase_configured():
-                            verify_client = get_supabase_client()
-                            if verify_client:
-                                verify_result = verify_client.table("system_prompts").select("id, prompt, name").eq("id", generated_id).limit(1).execute()
-                                if not verify_result.data or len(verify_result.data) == 0:
-                                    logger.error(f"Prompt {generated_id} was created but not found in database - RLS or permission issue")
-                                    raise HTTPException(status_code=500, detail="Prompt was created but cannot be verified in database. Check RLS policies.")
-                                logger.info(f"Verified prompt {generated_id} exists: {verify_result.data[0]}")
-                    except HTTPException:
-                        raise
-                    except Exception as verify_error:
-                        logger.warning(f"Could not verify prompt creation: {verify_error}")
-                        # Continue anyway - the insert might have succeeded
-                    
-                    app_state._log_callback(f"System prompt {generated_id} created via API (auto-generated UUID)")
-                    return StatusResponse(
-                        status="success", 
-                        message=f"System prompt created successfully", 
-                        prompt_id=generated_id
-                    )
-                else:
-                    error_detail = f"create_prompt returned False or no UUID. success={success}, generated_id={generated_id}"
-                    logger.error(error_detail)
-                    logger.error("This usually means:")
-                    logger.error("1. RLS policy blocked the insert (most common)")
-                    logger.error("2. Supabase insert returned no data")
-                    logger.error("3. Supabase did not generate a UUID")
-                    logger.error("4. Verification step failed")
-                    raise HTTPException(status_code=500, detail=f"Failed to create system prompt: {error_detail}. Check backend logs and RLS policies.")
-            except HTTPException:
-                raise
-            except Exception as create_error:
-                logger.error(f"Exception in create_prompt: {create_error}", exc_info=True)
-                raise HTTPException(status_code=500, detail=f"Failed to create system prompt: {str(create_error)}")
-        
-        # Legacy behavior: use organization_id (for backward compatibility)
-        resolved_org = _resolve_org_id(
-            body_value=request.organization_id,
-            header_value=x_organization_id,
-        )
-        
-        # Allow None organization_id - will save as default prompt
-        if not request.prompt or not request.prompt.strip():
-            raise HTTPException(status_code=400, detail="Prompt text is required")
-        
-        # If organization_id is provided, verify it exists
-        if resolved_org:
-            from src.voca.supabase_client import get_supabase_client, is_supabase_configured
-            if is_supabase_configured():
-                client = get_supabase_client()
-                if client:
-                    try:
-                        org_check = client.table("organizations").select("id").eq("id", resolved_org).limit(1).execute()
-                        if not org_check.data or len(org_check.data) == 0:
-                            raise HTTPException(
-                                status_code=404,
-                                detail=f"Organization '{resolved_org}' not found. Please create the organization first using POST /api/organizations"
-                            )
-                    except HTTPException:
-                        raise
-                    except Exception as e:
-                        logger = logging.getLogger(__name__)
-                        logger.warning(f"Could not verify organization existence: {e}")
-        
-        success = update_prompt(request.prompt, request.name, request.welcome_message, organization_id=resolved_org)
-        if success:
-            name_msg = f" with name '{request.name}'" if request.name else ""
-            org_msg = f" for organization {resolved_org}" if resolved_org else " as default prompt"
-            app_state._log_callback(
-                f"System prompt updated via API{name_msg}{org_msg}"
-            )
-            message = f"System prompt updated successfully{org_msg}"
-            return StatusResponse(status="success", message=message)
-        else:
-            raise HTTPException(status_code=500, detail="Failed to update system prompt. Check backend logs for details.")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error updating system prompt: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update system prompt: {str(e)}")
+    DEPRECATED: Frontend should manage system prompts directly via Supabase.
+    This endpoint is kept for backward compatibility but returns a message.
+    
+    Frontend should use Supabase client directly:
+    - Create: supabase.from('system_prompts').insert({...})
+    - Update: supabase.from('system_prompts').update({...}).eq('id', uuid)
+    - Delete: supabase.from('system_prompts').delete().eq('id', uuid)
+    """
+    logger = logging.getLogger(__name__)
+    logger.warning("System prompt create/update endpoint called - frontend should use Supabase directly")
+    return StatusResponse(
+        status="info",
+        message="System prompts are now managed directly from the frontend via Supabase. Please use the Supabase client in your Next.js frontend to create/update prompts.",
+        prompt_id=None
+    )
 
 
 class WelcomeMessageRequest(BaseModel):
@@ -1546,46 +1368,19 @@ async def update_welcome_message(
     organization_id: Optional[str] = Query(None),
     x_organization_id: Optional[str] = Header(None),
 ):
-    """Update only the welcome message for the system prompt."""
-    try:
-        # Get welcome_message from request body or query parameter
-        msg = None
-        if request and request.welcome_message is not None:
-            msg = request.welcome_message
-        elif welcome_message is not None:
-            msg = welcome_message
-        
-        resolved_org = _resolve_org_id(
-            body_value=request.organization_id if request else None,
-            query_value=organization_id,
-            header_value=x_organization_id,
-        )
-        
-        # Get current prompt to preserve it
-        prompt_data = get_prompt_with_name(resolved_org)
-        current_prompt = prompt_data.get("prompt", "")
-        current_name = prompt_data.get("name")
-        
-        # Update with same prompt but new welcome_message
-        success = update_prompt(
-            current_prompt,
-            current_name,
-            msg,
-            organization_id=resolved_org
-        )
-        
-        if success:
-            org_msg = f" for organization {resolved_org}" if resolved_org else " as default prompt"
-            message = f"Welcome message updated successfully{org_msg}"
-            return StatusResponse(status="success", message=message)
-        else:
-            raise HTTPException(status_code=500, detail="Failed to update welcome message. Check backend logs for details.")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error updating welcome message: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update welcome message: {str(e)}")
+    """
+    DEPRECATED: Frontend should manage welcome messages directly via Supabase.
+    
+    Frontend should use:
+    - supabase.from('system_prompts').update({welcome_message: '...'}).eq('id', uuid)
+    """
+    logger = logging.getLogger(__name__)
+    logger.warning("Welcome message update endpoint called - frontend should use Supabase directly")
+    return StatusResponse(
+        status="info",
+        message="Welcome messages are now managed directly from the frontend via Supabase. Please use the Supabase client in your Next.js frontend to update welcome messages.",
+        prompt_id=None
+    )
 
 
 @app.options("/api/system-prompt/activate")
@@ -1611,73 +1406,20 @@ async def activate_system_prompt(
     request: Request,
     prompt_id: Optional[str] = Query(None, description="UUID of the prompt to activate (query parameter)"),
 ):
-    """Activate a system prompt by UUID and deactivate all others.
-    
-    This aligns with frontend behavior where selecting a prompt automatically activates it.
-    When a prompt is selected in the dropdown, frontend calls this endpoint to:
-    - Activate the selected prompt (is_active: true)
-    - Deactivate all other prompts (is_active: false)
-    
-    Accepts prompt_id as:
-    - Query parameter: ?prompt_id=<uuid>
-    - Request body JSON: {"prompt_id": "<uuid>"} or {"id": "<uuid>"}
     """
-    try:
-        resolved_prompt_id = None
-        
-        # Try to get prompt_id from query parameter first
-        if prompt_id:
-            resolved_prompt_id = prompt_id.strip()
-        
-        # If not in query, try to get from request body
-        if not resolved_prompt_id and request:
-            try:
-                body = await request.json()
-                resolved_prompt_id = body.get("prompt_id") or body.get("id")
-                if resolved_prompt_id:
-                    resolved_prompt_id = str(resolved_prompt_id).strip()
-            except Exception:
-                # Not JSON, try form data
-                try:
-                    form_data = await request.form()
-                    resolved_prompt_id = form_data.get("prompt_id") or form_data.get("id")
-                    if resolved_prompt_id:
-                        resolved_prompt_id = str(resolved_prompt_id).strip()
-                except Exception:
-                    pass
-        
-        if not resolved_prompt_id:
-            raise HTTPException(status_code=400, detail="Prompt ID (UUID) is required. Provide it as query parameter 'prompt_id' or in request body as 'prompt_id' or 'id'")
-        
-        logger = logging.getLogger(__name__)
-        logger.info(f"Activating prompt with UUID: {resolved_prompt_id}")
-        
-        try:
-            success = activate_prompt_by_id(resolved_prompt_id)
-            if success:
-                app_state._log_callback(f"System prompt {resolved_prompt_id} activated via API")
-                return StatusResponse(status="success", message=f"System prompt {resolved_prompt_id} activated successfully")
-            else:
-                # This shouldn't happen now since we raise exceptions, but keep for safety
-                logger.error(f"activate_prompt_by_id returned False for UUID {resolved_prompt_id}")
-                raise HTTPException(status_code=500, detail="Failed to activate system prompt. Function returned False.")
-        except ValueError as ve:
-            # Prompt not found
-            logger.error(f"ValueError in activate_prompt_by_id: {ve}", exc_info=True)
-            raise HTTPException(status_code=404, detail=str(ve))
-        except RuntimeError as re:
-            # RuntimeError from activate_prompt_by_id contains detailed error
-            logger.error(f"RuntimeError in activate_prompt_by_id: {re}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(re))
-        except Exception as activate_error:
-            logger.error(f"Unexpected exception in activate_prompt_by_id: {activate_error}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"Failed to activate system prompt: {str(activate_error)}")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error in activate endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to activate system prompt: {str(e)}")
+    DEPRECATED: Frontend should manage prompt activation directly via Supabase.
+    
+    Frontend should use:
+    - Deactivate all: supabase.from('system_prompts').update({is_active: false}).neq('id', uuid)
+    - Activate one: supabase.from('system_prompts').update({is_active: true}).eq('id', uuid)
+    """
+    logger = logging.getLogger(__name__)
+    logger.warning("System prompt activate endpoint called - frontend should use Supabase directly")
+    return StatusResponse(
+        status="info",
+        message="System prompt activation is now managed directly from the frontend via Supabase. Please use the Supabase client in your Next.js frontend to activate/deactivate prompts.",
+        prompt_id=None
+    )
 
 
 @app.post("/api/system-prompt/reset", response_model=StatusResponse)
@@ -1685,23 +1427,18 @@ async def reset_system_prompt(
     organization_id: Optional[str] = Query(None),
     x_organization_id: Optional[str] = Header(None),
 ):
-    """Reset the system prompt to default."""
-    try:
-        resolved_org = _resolve_org_id(query_value=organization_id, header_value=x_organization_id)
-        success = reset_prompt(resolved_org)
-        if success:
-            app_state._log_callback(
-                f"System prompt reset to default via API (org={resolved_org or 'default'})"
-            )
-            return StatusResponse(status="success", message="System prompt reset to default successfully")
-        else:
-            raise HTTPException(status_code=500, detail="Failed to reset system prompt")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error resetting system prompt: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to reset system prompt: {str(e)}")
+    """
+    DEPRECATED: Frontend should manage prompt resets directly via Supabase.
+    
+    Frontend should create a new prompt with default content if needed.
+    """
+    logger = logging.getLogger(__name__)
+    logger.warning("System prompt reset endpoint called - frontend should use Supabase directly")
+    return StatusResponse(
+        status="info",
+        message="System prompt reset is now managed directly from the frontend via Supabase. Please use the Supabase client in your Next.js frontend to manage prompts.",
+        prompt_id=None
+    )
 
 
 # ==================== Organization Management Endpoints ====================
