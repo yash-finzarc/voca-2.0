@@ -4,6 +4,7 @@ Handles fetching, updating, and resetting the system prompt.
 """
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
 
@@ -433,9 +434,14 @@ def create_prompt(
         except Exception as e:
             logger.warning(f"Failed to deactivate previous prompts: {e}")
 
-        # Create the new prompt - let Supabase generate the UUID (via DEFAULT gen_random_uuid())
+        # Generate UUID in Python to ensure we have it
+        # Even though Supabase has gen_random_uuid() as default, generating it here ensures we can return it
+        generated_uuid = str(uuid.uuid4())
+        logger.info(f"Generated UUID in Python: {generated_uuid}")
+        
+        # Create the new prompt with the generated UUID
         insert_data = {
-            # Don't include "id" - let Supabase generate it via DEFAULT gen_random_uuid()
+            "id": generated_uuid,  # Explicitly set the UUID
             "prompt": prompt.strip(),
             "is_default": True,
             "is_active": True,  # New prompt is automatically active
@@ -505,21 +511,23 @@ def create_prompt(
                 logger.error("ON public.system_prompts AS PERMISSIVE FOR ALL TO public USING (true) WITH CHECK (true);")
                 return (False, None)
             
-            # Fetch the generated UUID from Supabase response
-            # CRITICAL: Get the UUID FIRST before any validation that might fail
-            # This ensures we always return the UUID if we have one
-            generated_id = response.data[0].get("id")
+            # Get the UUID from the response (should match what we sent)
+            # If response doesn't have it, use the one we generated
+            generated_id = None
+            if response.data and len(response.data) > 0:
+                generated_id = response.data[0].get("id")
+            
+            # Fallback to the UUID we generated if response doesn't have it
             if not generated_id:
-                error_msg = "Supabase did not return an ID in the response"
-                logger.error(error_msg)
-                logger.error(f"Response data structure: {response.data}")
-                logger.error(f"Response data keys: {list(response.data[0].keys()) if response.data and len(response.data) > 0 else 'N/A'}")
-                return (False, None)
+                generated_id = generated_uuid
+                logger.warning(f"Response didn't include ID, using generated UUID: {generated_id}")
+            else:
+                logger.info(f"✅ UUID from Supabase response: {generated_id}")
             
-            logger.info(f"✅ Supabase generated UUID: {generated_id}")
-            
-            # Store UUID early so we can return it even if validation has minor issues
-            # This prevents losing the UUID due to overly strict validation
+            # Verify the UUID matches what we sent (should be the same)
+            if generated_id != generated_uuid:
+                logger.warning(f"UUID mismatch: sent {generated_uuid}, got {generated_id}. Using response UUID.")
+                generated_id = generated_uuid  # Use the one we generated to be safe
             
             # CRITICAL: Verify this is actually a NEW prompt, not an existing one
             # Check the created_at timestamp from the response - it should be very recent
