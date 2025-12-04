@@ -28,14 +28,25 @@ These endpoints now return an info message directing you to use Supabase directl
 
 ### Setup Supabase Client
 
+**IMPORTANT: Always use HTTPS for Supabase URLs!**
+
 ```typescript
 import { createClient } from '@supabase/supabase-js'
 
+// Make sure your Supabase URL uses HTTPS (not HTTP)
+// If your env variable has http://, convert it to https://
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+  .replace(/^http:\/\//, 'https://') // Force HTTPS
+
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 ```
+
+**Common Issue: CORS Error with HTTP URLs**
+- If you see "Redirect is not allowed for a preflight request", your Supabase URL is using `http://` instead of `https://`
+- Supabase always redirects HTTP to HTTPS, which breaks CORS preflight requests
+- Solution: Always use `https://` in your Supabase URL
 
 ### Create a New Prompt
 
@@ -173,6 +184,33 @@ CREATE TABLE system_prompts (
 );
 ```
 
+## CORS Configuration
+
+### Fix CORS Errors
+
+If you're getting CORS errors like "Redirect is not allowed for a preflight request":
+
+1. **Use HTTPS URL**: Make sure your Supabase URL uses `https://` (not `http://`)
+   ```typescript
+   // ❌ WRONG - Will cause CORS errors
+   const supabaseUrl = "http://mrgcpmfyzknxefluvxmj.supabase.co"
+   
+   // ✅ CORRECT - Use HTTPS
+   const supabaseUrl = "https://mrgcpmfyzknxefluvxmj.supabase.co"
+   ```
+
+2. **Configure CORS in Supabase Dashboard**:
+   - Go to Supabase Dashboard → Settings → API
+   - Under "CORS Configuration", add your frontend origin:
+     - For local development: `http://localhost:3000`
+     - For production: Your production domain (e.g., `https://voca-frontend-self.vercel.app`)
+   - Click "Save"
+
+3. **Alternative: Use Backend API for Reading** (if CORS still fails):
+   - The backend `GET /api/system-prompt/list` endpoint still works
+   - Use it as a fallback for reading prompts
+   - Only use Supabase directly for create/update/delete operations
+
 ## RLS Policies Required
 
 Make sure you have RLS policies that allow your frontend to:
@@ -203,9 +241,57 @@ USING (true)
 WITH CHECK (true);
 ```
 
+## Troubleshooting CORS Issues
+
+### Error: "Redirect is not allowed for a preflight request"
+
+**Cause**: Your Supabase URL is using `http://` instead of `https://`
+
+**Fix**:
+```typescript
+// In your Supabase client setup
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+  .replace(/^http:\/\//, 'https://') // Convert HTTP to HTTPS
+```
+
+### Error: "Access to fetch blocked by CORS policy"
+
+**Cause**: Supabase CORS settings don't allow your origin
+
+**Fix**:
+1. Go to Supabase Dashboard → Settings → API
+2. Add your origin to CORS configuration:
+   - `http://localhost:3000` (for development)
+   - Your production domain (for production)
+3. Save and retry
+
+### Fallback: Use Backend API for Reading
+
+If CORS issues persist, you can use the backend API for reading prompts:
+
+```typescript
+// Fallback to backend API for reading
+async function listPrompts() {
+  try {
+    // Try Supabase first
+    const { data, error } = await supabase
+      .from('system_prompts')
+      .select('*')
+      .order('updated_at', { ascending: false })
+    
+    if (!error) return data
+  } catch (corsError) {
+    // Fallback to backend API
+    const response = await fetch('http://172.105.50.83:8000/api/system-prompt/list')
+    const data = await response.json()
+    return data
+  }
+}
+```
+
 ## Benefits
 
-1. ✅ **No HTTP barriers** - Direct database access from frontend
+1. ✅ **No HTTP barriers** - Direct database access from frontend (when CORS is configured)
 2. ✅ **Simpler architecture** - Frontend manages its own data
 3. ✅ **Better performance** - Direct Supabase connection
 4. ✅ **Real-time updates** - Can use Supabase real-time subscriptions

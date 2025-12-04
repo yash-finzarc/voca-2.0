@@ -2,7 +2,9 @@
 System prompt management using Supabase.
 Handles fetching, updating, and resetting the system prompt.
 """
+import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -58,6 +60,53 @@ def get_default_prompt() -> str:
     return DEFAULT_SYSTEM_PROMPT
 
 
+def extract_json_from_prompt(prompt_text: str) -> Optional[Dict]:
+    """
+    Extract JSON data from prompt text.
+    Looks for JSON in various formats:
+    1. Between <!-- JSON_DATA --> and <!-- END_JSON --> markers
+    2. Between === TEST_RESULTS_JSON === and === END_JSON === markers
+    3. In ```json code blocks
+    4. Any valid JSON object in the text
+    
+    Returns JSON dict if found, None otherwise.
+    """
+    if not prompt_text:
+        return None
+    
+    # Try different patterns to extract JSON
+    patterns = [
+        # Pattern 1: <!-- JSON_DATA --> ... <!-- END_JSON -->
+        r'<!--\s*JSON_DATA\s*-->(.*?)<!--\s*END_JSON\s*-->',
+        # Pattern 2: === TEST_RESULTS_JSON === ... === END_JSON ===
+        r'===\s*TEST_RESULTS_JSON\s*===(.*?)===\s*END_JSON\s*===',
+        # Pattern 3: ```json ... ```
+        r'```json\s*(.*?)\s*```',
+        # Pattern 4: ``` ... ``` (generic code block)
+        r'```\s*(.*?)\s*```',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, prompt_text, re.DOTALL | re.IGNORECASE)
+        if match:
+            json_str = match.group(1).strip()
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                continue
+    
+    # Try to find any JSON object in the text (fallback)
+    # Look for { ... } pattern
+    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', prompt_text, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group(0))
+        except json.JSONDecodeError:
+            pass
+    
+    return None
+
+
 def get_prompt(organization_id: Optional[str] = None) -> str:
     """
     Get the current system prompt from Supabase.
@@ -70,22 +119,25 @@ def get_prompt(organization_id: Optional[str] = None) -> str:
 def get_prompt_with_name(organization_id: Optional[str] = None) -> dict:
     """
     Get the current system prompt and name from Supabase.
-    Returns dict with 'prompt' and 'name' keys.
+    Returns dict with 'prompt', 'name', 'welcome_message', and 'service_type' keys.
     Falls back to default if Supabase is unavailable.
     """
     cache_key = _cache_key(organization_id)
     cached = _read_cache(cache_key)
     if cached:
+        # Add service_type to cached data if not present (for backward compatibility)
+        if "service_type" not in cached:
+            cached["service_type"] = "conversational"
         return cached
 
     if not is_supabase_configured():
         logger.debug("Supabase not configured, using default prompt")
-        return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None}
+        return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None, "service_type": "conversational"}
 
     client = get_supabase_client()
     if client is None:
         logger.warning("Supabase client unavailable, using default prompt")
-        return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None}
+        return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None, "service_type": "conversational"}
 
     try:
         prompt_data = _fetch_prompt_for_organization(client, organization_id)
@@ -98,7 +150,7 @@ def get_prompt_with_name(organization_id: Optional[str] = None) -> dict:
         return prompt_data
     except Exception as e:
         logger.error(f"Error fetching system prompt from Supabase: {e}")
-        return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None}
+        return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None, "service_type": "conversational"}
 
 
 def update_prompt(
@@ -173,9 +225,10 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
     """
     Fetch prompt for a specific organization.
     Falls back to default prompt if org prompt not found.
-    Returns dict with 'prompt', 'name', and 'welcome_message' keys.
+    Returns dict with 'prompt', 'name', 'welcome_message', and 'service_type' keys.
     """
     if organization_id:
+        # Note: organization_system_prompts doesn't have service_type, so it defaults to conversational
         response = (
             client.table("organization_system_prompts")
             .select("prompt, name, welcome_message")
@@ -191,7 +244,7 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
             name = data.get("name", "Custom")
             welcome_message = data.get("welcome_message")
             logger.debug("Organization prompt fetched from Supabase")
-            return {"prompt": prompt, "name": name, "welcome_message": welcome_message}
+            return {"prompt": prompt, "name": name, "welcome_message": welcome_message, "service_type": "conversational"}
         logger.info(
             "No active prompt found for organization %s, falling back to default",
             organization_id,
@@ -199,11 +252,11 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
 
     # Default prompt fallback - get the most recent active/default prompt
     try:
-        # Try to get the most recent active prompt first
+        # Try to get the most recent active prompt first (with service_type)
         try:
             response = (
                 client.table("system_prompts")
-                .select("prompt, name, welcome_message")
+                .select("prompt, name, welcome_message, service_type")
                 .eq("is_active", True)
                 .order("updated_at", desc=True)
                 .limit(1)
@@ -211,14 +264,25 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
             )
         except Exception:
             # If is_active column doesn't exist, try is_default
-            response = (
-                client.table("system_prompts")
-                .select("prompt, name, welcome_message")
-                .eq("is_default", True)
-                .order("updated_at", desc=True)
-                .limit(1)
-                .execute()
-            )
+            try:
+                response = (
+                    client.table("system_prompts")
+                    .select("prompt, name, welcome_message, service_type")
+                    .eq("is_default", True)
+                    .order("updated_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+            except Exception:
+                # If service_type column doesn't exist yet, fetch without it
+                response = (
+                    client.table("system_prompts")
+                    .select("prompt, name, welcome_message")
+                    .eq("is_default", True)
+                    .order("updated_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
     except Exception as e:
         logger.warning("Error fetching default prompt: %s", e)
         response = type('obj', (object,), {'data': None})()
@@ -228,12 +292,13 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
         prompt = data.get("prompt", DEFAULT_SYSTEM_PROMPT)
         name = data.get("name", "Default")
         welcome_message = data.get("welcome_message")
+        service_type = data.get("service_type", "conversational")  # Default to conversational if not present
         logger.debug("System prompt fetched from Supabase")
-        return {"prompt": prompt, "name": name, "welcome_message": welcome_message}
+        return {"prompt": prompt, "name": name, "welcome_message": welcome_message, "service_type": service_type}
 
     logger.info("No system prompt rows found, initializing with default")
     _initialize_default_prompt(client)
-    return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None}
+    return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None, "service_type": "conversational"}
 
 
 def _update_default_prompt(client, prompt: str, name: Optional[str], welcome_message: Optional[str] = None) -> bool:

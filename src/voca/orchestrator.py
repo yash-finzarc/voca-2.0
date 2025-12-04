@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -11,7 +12,13 @@ from src.voca.config import Config
 from src.voca.conversation_store import save_conversation_snapshot
 from src.voca.langgraph_agent import LangGraphAgent, LangGraphAgentResult
 from src.voca.stt import build_stt
-from src.voca.system_prompt import get_prompt, get_welcome_message
+from src.voca.system_prompt import (
+    get_prompt,
+    get_welcome_message,
+    get_prompt_with_name,
+    extract_json_from_prompt,
+    DEFAULT_SYSTEM_PROMPT,
+)
 from src.voca.tts import CoquiTTS
 from src.voca.conversation_logger import log_user, log_ai
 
@@ -183,6 +190,108 @@ class VocaOrchestrator:
                 log_ai(reply)
             
             return reply
+
+    def generate_announcement(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+    ) -> str:
+        """
+        Generate announcement script for announcement mode.
+        Extracts JSON from system prompt, processes with LLM, and returns Hindi announcement script.
+        Used for one-way announcement calls (no STT, no conversation loop).
+        """
+        org_id = organization_id or self.default_organization_id
+        
+        # Get system prompt with service_type
+        prompt_data = get_prompt_with_name(organization_id=org_id)
+        system_prompt_text = prompt_data.get("prompt", DEFAULT_SYSTEM_PROMPT)
+        service_type = prompt_data.get("service_type", "conversational")
+        welcome_message = prompt_data.get("welcome_message")
+        
+        # Get welcome message (greeting) - same as conversational mode
+        greeting = ""
+        if welcome_message and welcome_message.strip():
+            greeting = welcome_message.strip()
+            # Limit length for TTS
+            if len(greeting) > 300:
+                greeting = greeting[:300] + "..."
+            self.log(f"Using welcome_message from database for announcement: {greeting}")
+        else:
+            # Fallback greeting if no welcome_message
+            greeting = "नमस्कार।"
+        
+        # Extract JSON from prompt
+        json_data = extract_json_from_prompt(system_prompt_text)
+        
+        # If no JSON found, use demo JSON from prompt instructions
+        if not json_data:
+            # Try to find demo JSON in the prompt text
+            demo_json_str = """{
+  "patient": {
+    "name": "josh",
+    "age": 52,
+    "gender": "male"
+  },
+  "tests": [
+    { "name": "Blood Pressure", "status": "red" },
+    { "name": "HbA1c", "status": "yellow" },
+    { "name": "Fasting Blood Sugar", "status": "yellow" },
+    { "name": "Cholesterol", "status": "green" },
+    { "name": "Hemoglobin", "status": "green" }
+  ]
+}"""
+            try:
+                json_data = json.loads(demo_json_str)
+            except Exception:
+                json_data = None
+        
+        # Format JSON as user message for LLM
+        if json_data:
+            user_message = f"Process this test data and generate the announcement script: {json.dumps(json_data, indent=2)}"
+        else:
+            # Fallback: use prompt text itself as context
+            user_message = "Generate the announcement script based on the system prompt instructions."
+        
+        # Call LLM with system prompt and JSON data
+        try:
+            # Create a temporary session for announcement
+            session = self._get_session(conversation_id, organization_id)
+            
+            # Call LLM to generate announcement
+            result: LangGraphAgentResult = self.llm.generate_reply(
+                organization_id=org_id,
+                system_prompt=system_prompt_text,
+                messages=[HumanMessage(content=user_message)],
+                collected_data={},
+                lead_status=None,
+                transcript=[],
+                summary_requested=False,
+            )
+            
+            announcement_script = result.reply.strip() if result.reply else ""
+            
+            if not announcement_script:
+                # Fallback message
+                announcement_script = "कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।"
+            
+            # Combine greeting (welcome_message) and announcement script
+            if greeting:
+                full_script = f"{greeting} {announcement_script}"
+            else:
+                full_script = announcement_script
+            
+            self.log(f"Generated announcement script with welcome_message (total length: {len(full_script)} chars)")
+            return full_script
+            
+        except Exception as e:
+            self.log(f"Error generating announcement: {e}")
+            # Return greeting + fallback message
+            fallback_message = "कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।"
+            if greeting:
+                return f"{greeting} {fallback_message}"
+            return fallback_message
 
     def generate_greeting(
         self,

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS system_prompts (
   is_default BOOLEAN DEFAULT false,
   is_active BOOLEAN DEFAULT true,
   welcome_message TEXT,
+  service_type TEXT DEFAULT 'conversational',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -23,6 +24,9 @@ ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS welcome_message TEXT;
 
 -- Add is_active column if table already exists (for existing installations)
 ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+
+-- Add service_type column if table already exists (for existing installations)
+ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS service_type TEXT DEFAULT 'conversational';
 
 -- Remove key column if it exists (no longer needed - using id as primary identifier)
 ALTER TABLE system_prompts DROP COLUMN IF EXISTS key;

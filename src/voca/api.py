@@ -964,30 +964,72 @@ async def handle_outbound_call(request: Request):
     
     response = VoiceResponse()
     
-    # Generate greeting from system prompt
+    # Check service_type to determine if this is announcement or conversational mode
     try:
         org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
-        greeting = app_state.get_orchestrator().generate_greeting(
-            conversation_id=call_sid,
-            organization_id=org_id
-        )
+        from src.voca.system_prompt import get_prompt_with_name
+        prompt_data = get_prompt_with_name(organization_id=org_id)
+        service_type = prompt_data.get("service_type", "conversational")
+        
+        if service_type == "announcement":
+            # Announcement mode: Generate announcement script, play it, and hangup
+            try:
+                announcement = app_state.get_orchestrator().generate_announcement(
+                    conversation_id=call_sid,
+                    organization_id=org_id
+                )
+                logger.info(f"Generated announcement for outbound call {call_sid} (length: {len(announcement)} chars)")
+                response.say(announcement)
+                # Hangup after announcement (no gather, no STT)
+                response.hangup()
+                logger.info(f"Outbound call {call_sid} will play announcement and hangup (announcement mode)")
+            except Exception as e:
+                logger.error(f"Error generating announcement: {e}")
+                response.say("कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।")
+                response.hangup()
+        else:
+            # Conversational mode: Generate greeting and set up speech gathering (existing flow)
+            greeting = app_state.get_orchestrator().generate_greeting(
+                conversation_id=call_sid,
+                organization_id=org_id
+            )
+            response.say(greeting)
+            
+            # Gather user input
+            if call_sid:
+                gather = response.gather(
+                    input='speech',
+                    timeout=10,
+                    speech_timeout='auto',
+                    action=f'/process_speech/{call_sid}',
+                    method='POST'
+                )
+                gather.say("I'm listening...")
+                response.redirect(f'/process_speech/{call_sid}')
     except Exception as e:
-        logger.error(f"Error generating greeting: {e}")
-        greeting = "Hello! This is VOCA calling. How can I help you today?"
-    
-    response.say(greeting)
-    
-    # Gather user input
-    if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        logger.error(f"Error in handle_outbound_call: {e}")
+        # Fallback to conversational mode on error
+        try:
+            org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
+            greeting = app_state.get_orchestrator().generate_greeting(
+                conversation_id=call_sid,
+                organization_id=org_id
+            )
+        except Exception:
+            greeting = "Hello! This is VOCA calling. How can I help you today?"
+        response.say(greeting)
+        
+        # Gather user input
+        if call_sid:
+            gather = response.gather(
+                input='speech',
+                timeout=10,
+                speech_timeout='auto',
+                action=f'/process_speech/{call_sid}',
+                method='POST'
+            )
+            gather.say("I'm listening...")
+            response.redirect(f'/process_speech/{call_sid}')
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -1017,29 +1059,70 @@ async def handle_incoming_call_webhook(request: Request):
     
     response = VoiceResponse()
     
-    # Generate greeting from system prompt
+    # Check service_type to determine if this is announcement or conversational mode
     try:
         org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
-        greeting = app_state.get_orchestrator().generate_greeting(
-            conversation_id=call_sid,
-            organization_id=org_id
-        )
+        from src.voca.system_prompt import get_prompt_with_name
+        prompt_data = get_prompt_with_name(organization_id=org_id)
+        service_type = prompt_data.get("service_type", "conversational")
+        
+        if service_type == "announcement":
+            # Announcement mode: Generate announcement script, play it, and hangup
+            try:
+                announcement = app_state.get_orchestrator().generate_announcement(
+                    conversation_id=call_sid,
+                    organization_id=org_id
+                )
+                logger.info(f"Generated announcement for call {call_sid} (length: {len(announcement)} chars)")
+                response.say(announcement)
+                # Hangup after announcement (no gather, no STT)
+                response.hangup()
+                logger.info(f"Call {call_sid} will play announcement and hangup (announcement mode)")
+            except Exception as e:
+                logger.error(f"Error generating announcement: {e}")
+                response.say("कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।")
+                response.hangup()
+        else:
+            # Conversational mode: Generate greeting and set up speech gathering (existing flow)
+            greeting = app_state.get_orchestrator().generate_greeting(
+                conversation_id=call_sid,
+                organization_id=org_id
+            )
+            response.say(greeting)
+            
+            if call_sid:
+                gather = response.gather(
+                    input='speech',
+                    timeout=10,
+                    speech_timeout='auto',
+                    action=f'/process_speech/{call_sid}',
+                    method='POST'
+                )
+                gather.say("I'm listening...")
+                response.redirect(f'/process_speech/{call_sid}')
     except Exception as e:
-        logger.error(f"Error generating greeting: {e}")
-        greeting = "Hello! You've reached VOCA, your AI voice assistant. Please speak after the tone."
-    
-    response.say(greeting)
-    
-    if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        logger.error(f"Error in handle_incoming_call_webhook: {e}")
+        # Fallback to conversational mode on error
+        try:
+            org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
+            greeting = app_state.get_orchestrator().generate_greeting(
+                conversation_id=call_sid,
+                organization_id=org_id
+            )
+        except Exception:
+            greeting = "Hello! You've reached VOCA, your AI voice assistant. Please speak after the tone."
+        response.say(greeting)
+        
+        if call_sid:
+            gather = response.gather(
+                input='speech',
+                timeout=10,
+                speech_timeout='auto',
+                action=f'/process_speech/{call_sid}',
+                method='POST'
+            )
+            gather.say("I'm listening...")
+            response.redirect(f'/process_speech/{call_sid}')
     
     return Response(content=str(response), media_type='text/xml')
 
