@@ -1229,24 +1229,30 @@ async def list_system_prompts(
     try:
         resolved_org = _resolve_org_id(query_value=organization_id, header_value=x_organization_id)
         
-        # Get default prompts
+        # Get default prompts - show all prompts, not just active ones
         if include_default:
             try:
+                # Try to get all prompts ordered by updated_at (most recent first)
+                # This will show all prompts including inactive ones for history
                 default_response = client.table("system_prompts").select("*").order("updated_at", desc=True).execute()
                 if default_response.data:
                     for item in default_response.data:
-                        results.append(
-                            SystemPromptListItem(
-                                id=item.get("id"),
-                                key=item.get("key"),
-                                name=item.get("name") or "Default",
-                                prompt=item.get("prompt", ""),
-                                welcome_message=item.get("welcome_message"),
-                                is_default=item.get("is_default", False),
-                                created_at=item.get("created_at"),
-                                updated_at=item.get("updated_at"),
+                        # Only include prompts that are default-related (key starts with "default" or is_default=True)
+                        key = item.get("key", "")
+                        is_default = item.get("is_default", False)
+                        if key.startswith("default") or is_default:
+                            results.append(
+                                SystemPromptListItem(
+                                    id=item.get("id"),
+                                    key=item.get("key"),
+                                    name=item.get("name") or "Default",
+                                    prompt=item.get("prompt", ""),
+                                    welcome_message=item.get("welcome_message"),
+                                    is_default=is_default,
+                                    created_at=item.get("created_at"),
+                                    updated_at=item.get("updated_at"),
+                                )
                             )
-                        )
             except Exception as e:
                 logger = logging.getLogger(__name__)
                 logger.warning(f"Error fetching default prompts: {e}")

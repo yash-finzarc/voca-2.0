@@ -9,12 +9,20 @@ CREATE TABLE IF NOT EXISTS system_prompts (
   name TEXT,
   prompt TEXT NOT NULL,
   is_default BOOLEAN DEFAULT false,
+  is_active BOOLEAN DEFAULT true,
+  welcome_message TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Add name column if table already exists (for existing installations)
 ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS name TEXT;
+
+-- Add welcome_message column if table already exists (for existing installations)
+ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS welcome_message TEXT;
+
+-- Add is_active column if table already exists (for existing installations)
+ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
 
 -- Insert default prompt if it doesn't exist
 INSERT INTO system_prompts (key, name, prompt, is_default) 
