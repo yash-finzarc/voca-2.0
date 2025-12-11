@@ -10,7 +10,9 @@ def main():
     )
     logging.getLogger("aiortc").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
-    logging.getLogger("twilio.http_client").setLevel(logging.WARNING)
+    # Disable Twilio HTTP client logging (too verbose)
+    logging.getLogger("twilio.http_client").setLevel(logging.CRITICAL)
+    logging.getLogger("twilio.http_client").disabled = True
     app = VocaApp()
     app.run()
 

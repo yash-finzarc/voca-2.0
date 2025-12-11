@@ -110,6 +110,10 @@ def main():
         ]
     )
     
+    # Disable Twilio HTTP client logging (too verbose)
+    logging.getLogger("twilio.http_client").setLevel(logging.CRITICAL)
+    logging.getLogger("twilio.http_client").disabled = True
+    
     logger = logging.getLogger(__name__)
     
     # Check configuration

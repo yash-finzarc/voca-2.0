@@ -40,6 +40,10 @@ from src.voca.conversation_logger import log_user, log_ai
 # Setup logger for API module
 logger = logging.getLogger(__name__)
 
+# Disable Twilio HTTP client logging (too verbose)
+logging.getLogger("twilio.http_client").setLevel(logging.CRITICAL)
+logging.getLogger("twilio.http_client").disabled = True
+
 # Request/Response Models
 class MakeCallRequest(BaseModel):
     phone_number: str
