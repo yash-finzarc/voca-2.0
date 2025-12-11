@@ -33,6 +33,10 @@ class Config:
     # Audio Debug Storage
     audio_storage_enabled: bool = os.getenv("VOCA_DEBUG_AUDIO_STORAGE", "false").lower() in ("1", "true", "yes")
     audio_storage_dir: str = os.getenv("VOCA_AUDIO_LOG_DIR", "audio_logs")
+    
+    # Deepgram STT (via Twilio)
+    deepgram_api_key: str = os.getenv("DEEPGRAM_API_KEY", "")
+    twilio_stt_model: str = os.getenv("TWILIO_STT_MODEL", "deepgram_nova-3")  # Options: deepgram_nova-3, deepgram_nova-2, etc.
 
 
 
