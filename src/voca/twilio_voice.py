@@ -230,6 +230,8 @@ class TwilioVoiceHandler:
                     # Continue the conversation
                     gather = response.gather(
                         input='speech',
+                        speech_model="nova-3",
+                        language='hi-IN',
                         timeout=10,
                         speech_timeout='auto',
                         action=f'/process_speech/{call_sid}',
