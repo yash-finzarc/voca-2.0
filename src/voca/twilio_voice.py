@@ -45,6 +45,9 @@ class TwilioVoiceHandler:
         self.websocket_connections: Dict[str, websocket.WebSocket] = {}
         self.audio_buffers: Dict[str, list] = {}
         
+        # Disable Twilio HTTP client logging (too verbose)
+        logging.getLogger("twilio.http_client").setLevel(logging.WARNING)
+        
     def start_webhook_server(self, host='0.0.0.0', port=5000):
         """Start FastAPI server to handle Twilio webhooks with real-time audio streaming."""
         app = FastAPI(title="VOCA Twilio Webhook Server")

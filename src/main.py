@@ -10,6 +10,7 @@ def main():
     )
     logging.getLogger("aiortc").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
+    logging.getLogger("twilio.http_client").setLevel(logging.WARNING)
     app = VocaApp()
     app.run()
 

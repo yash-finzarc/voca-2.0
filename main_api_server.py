@@ -11,7 +11,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# Disable verbose Twilio HTTP client logging
+# Disable Twilio HTTP client logging (too verbose)
 logging.getLogger("twilio.http_client").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
