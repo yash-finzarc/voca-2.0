@@ -117,7 +117,7 @@ class TwilioVoiceHandler:
             
             # Gather user input
             gather = response.gather(
-                speech_model="nova-3",
+                speech_model="deepgram_nova-3",
                 language='hi-IN',
                 input='speech',
                 timeout=10,
@@ -232,7 +232,7 @@ class TwilioVoiceHandler:
                     # Continue the conversation
                     gather = response.gather(
                         input='speech',
-                        speech_model="nova-3",
+                        speech_model="deepgram_nova-3",
                         language='hi-IN',
                         timeout=10,
                         speech_timeout='auto',
@@ -258,7 +258,7 @@ class TwilioVoiceHandler:
                         response.say("I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?")
                     # Continue the conversation - don't cut off
                     gather = response.gather(
-                        speech_model="nova-3",
+                        speech_model="deepgram_nova-3",
                         language='hi-IN',
                         input='speech',
                         timeout=10,
@@ -477,7 +477,7 @@ class TwilioVoiceHandler:
             
             # Gather user input
             gather = response.gather(
-                speech_model="nova-3",
+                speech_model="deepgram_nova-3",
                 language='hi-IN',
                 input='speech',
                 timeout=10, 
