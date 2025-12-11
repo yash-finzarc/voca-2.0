@@ -27,6 +27,14 @@ from .twilio_config import get_twilio_config
 from .orchestrator import VocaOrchestrator
 from .config import Config
 
+# Import Deepgram for STT (used via Twilio's speech_model parameter)
+try:
+    from deepgram import DeepgramClient
+    DEEPGRAM_AVAILABLE = True
+except Exception:
+    DeepgramClient = None  # type: ignore
+    DEEPGRAM_AVAILABLE = False
+
 
 class TwilioVoiceHandler:
     """Handles Twilio voice calls and bridges them to VOCA orchestrator with real-time audio streaming."""
@@ -41,6 +49,16 @@ class TwilioVoiceHandler:
         self._loop = None
         self.websocket_connections: Dict[str, websocket.WebSocket] = {}
         self.audio_buffers: Dict[str, list] = {}
+        
+        # Log Deepgram availability and STT configuration
+        if DEEPGRAM_AVAILABLE:
+            self.logger.info("[STT] Deepgram SDK is available for local STT processing")
+        else:
+            self.logger.info("[STT] Deepgram SDK not available (using Twilio's built-in Deepgram via speech_model)")
+        
+        # Log which STT model will be used for Twilio calls
+        self.twilio_stt_model = "deepgram_nova-3"
+        self.logger.info(f"[STT] Twilio calls will use Deepgram STT model: {self.twilio_stt_model}")
         
     def start_webhook_server(self, host='0.0.0.0', port=5000):
         """Start FastAPI server to handle Twilio webhooks with real-time audio streaming."""
@@ -115,9 +133,11 @@ class TwilioVoiceHandler:
             # Say welcome message
             response.say(greeting)
             
-            # Gather user input
+            # Gather user input with Deepgram STT
+            twilio_stt_model = handler.twilio_stt_model
+            handler.logger.info(f"[STT] Using Twilio Deepgram STT model: {twilio_stt_model} for call {call_sid}")
             gather = response.gather(
-                speech_model="deepgram_nova-3",
+                speech_model=twilio_stt_model,
                 language='hi-IN',
                 input='speech',
                 timeout=10,
@@ -142,6 +162,8 @@ class TwilioVoiceHandler:
             speech_result = form_data.get('SpeechResult', '')
             confidence = form_data.get('Confidence', '0')
             
+            # Log which STT model was used (Twilio Deepgram via speech_model parameter)
+            handler.logger.info(f"[STT] Twilio Deepgram STT transcription received for call {call_sid}")
             handler.logger.info(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
             
             # Get session to check if we're collecting a name
@@ -229,10 +251,12 @@ class TwilioVoiceHandler:
                     response = VoiceResponse()
                     response.say(ai_response)
                     
-                    # Continue the conversation
+                    # Continue the conversation with Deepgram STT
+                    twilio_stt_model = handler.twilio_stt_model
+                    handler.logger.info(f"[STT] Using Twilio Deepgram STT model: {twilio_stt_model} for call {call_sid}")
                     gather = response.gather(
                         input='speech',
-                        speech_model="deepgram_nova-3",
+                        speech_model=twilio_stt_model,
                         language='hi-IN',
                         timeout=10,
                         speech_timeout='auto',
@@ -256,9 +280,11 @@ class TwilioVoiceHandler:
                         response.say("I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name.")
                     else:
                         response.say("I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?")
-                    # Continue the conversation - don't cut off
+                    # Continue the conversation - don't cut off (with Deepgram STT)
+                    twilio_stt_model = handler.twilio_stt_model
+                    handler.logger.info(f"[STT] Using Twilio Deepgram STT model: {twilio_stt_model} for call {call_sid}")
                     gather = response.gather(
-                        speech_model="deepgram_nova-3",
+                        speech_model=twilio_stt_model,
                         language='hi-IN',
                         input='speech',
                         timeout=10,
@@ -475,9 +501,11 @@ class TwilioVoiceHandler:
             
             response.say(greeting)
             
-            # Gather user input
+            # Gather user input with Deepgram STT
+            twilio_stt_model = handler.twilio_stt_model
+            handler.logger.info(f"[STT] Using Twilio Deepgram STT model: {twilio_stt_model} for outbound call {call_sid}")
             gather = response.gather(
-                speech_model="deepgram_nova-3",
+                speech_model=twilio_stt_model,
                 language='hi-IN',
                 input='speech',
                 timeout=10, 
