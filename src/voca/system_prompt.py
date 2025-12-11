@@ -200,7 +200,8 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
     response = (
         client.table("system_prompts")
         .select("prompt, name, welcome_message")
-        .eq("key", "default")
+        .eq("is_default", True)
+        .order("updated_at", desc=True)
         .limit(1)
         .execute()
     )
@@ -231,7 +232,7 @@ def _update_default_prompt(client, prompt: str, name: Optional[str], welcome_mes
     response = (
         client.table("system_prompts")
         .update(update_data)
-        .eq("key", "default")
+        .eq("is_default", True)
         .execute()
     )
 
@@ -257,7 +258,6 @@ def _initialize_prompt(client, prompt: str, name: Optional[str] = None) -> bool:
     """Initialize the system_prompts table with given prompt and optional name."""
     try:
         insert_data = {
-            "key": "default",
             "prompt": prompt,
             "is_default": True,
             "updated_at": datetime.utcnow().isoformat(),
@@ -288,7 +288,7 @@ def _initialize_prompt(client, prompt: str, name: Optional[str] = None) -> bool:
             response = (
                 client.table("system_prompts")
                 .update(update_data)
-                .eq("key", "default")
+                .eq("is_default", True)
                 .execute()
             )
 
