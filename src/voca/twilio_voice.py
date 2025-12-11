@@ -10,7 +10,7 @@ import base64
 import io
 from datetime import datetime, timezone
 from typing import Optional, Callable, Dict, Any, List
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
 import uvicorn
 from twilio.rest import Client
@@ -25,6 +25,7 @@ from urllib.parse import urlencode
 
 from .twilio_config import get_twilio_config
 from .orchestrator import VocaOrchestrator
+from .config import Config
 
 
 class TwilioVoiceHandler:
@@ -83,6 +84,33 @@ class TwilioVoiceHandler:
             except Exception as e:
                 handler.logger.error(f"Error generating greeting: {e}")
                 greeting = "Hello! How can I help you today?"
+            
+            # Enable Media Streams for audio storage/debugging
+            # This streams raw audio to /media/{call_sid} WebSocket endpoint for storage
+            if Config.audio_storage_enabled:
+                # Get webhook base URL from config or use default
+                config = get_twilio_config()
+                webhook_url = config.get_webhook_url()
+                # Remove /webhook/voice to get base URL
+                base_url = webhook_url.replace('/webhook/voice', '')
+                # Twilio Media Streams require WebSocket (wss://) not HTTP
+                # Convert http:// to wss:// or https:// to wss://
+                if base_url.startswith('http://'):
+                    base_url = base_url.replace('http://', 'wss://')
+                elif base_url.startswith('https://'):
+                    base_url = base_url.replace('https://', 'wss://')
+                elif not base_url.startswith('wss://'):
+                    # If no protocol, assume we need wss://
+                    base_url = f"wss://{base_url.lstrip('/')}"
+                
+                stream_url = f"{base_url}/media/{call_sid}"
+                start = Start()
+                stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
+                start.stream(stream)
+                response.append(start)
+                handler.logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
+                handler.logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
+                handler.logger.info(f"[AUDIO_DEBUG] TwiML includes: <Start><Stream url='{stream_url}'></Stream></Start>")
             
             # Say welcome message
             response.say(greeting)
@@ -285,17 +313,88 @@ class TwilioVoiceHandler:
                 response.redirect(f'/process_speech/{call_sid}')
                 return Response(content=str(response), media_type='text/xml')
         
-        @app.post('/media/{call_sid}')
-        async def handle_media_stream(call_sid: str, request: Request):
-            """Handle incoming media stream from Twilio."""
-            if call_sid not in handler.active_calls:
-                raise HTTPException(status_code=404, detail="Call not found")
+        @app.websocket('/media/{call_sid}')
+        async def handle_media_stream_websocket(websocket: WebSocket, call_sid: str):
+            """Handle Twilio Media Streams via WebSocket."""
+            from fastapi import WebSocketDisconnect
+            await websocket.accept()
+            handler.logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket connected for call {call_sid}")
             
-            # Get audio data from request body
-            audio_data = await request.body()
-            if audio_data:
-                # Process audio through VOCA orchestrator
-                handler.process_audio_stream(call_sid, audio_data)
+            try:
+                while True:
+                    # Receive JSON messages from Twilio Media Streams
+                    data = await websocket.receive_json()
+                    event = data.get('event')
+                    
+                    if event == 'connected':
+                        handler.logger.info(f"[AUDIO_DEBUG] Media stream connected for call {call_sid}")
+                    elif event == 'start':
+                        handler.logger.info(f"[AUDIO_DEBUG] Media stream started for call {call_sid}")
+                    elif event == 'media':
+                        # Extract base64 audio payload
+                        media_payload = data.get('media', {}).get('payload')
+                        if media_payload:
+                            try:
+                                audio_bytes = base64.b64decode(media_payload)
+                                # Twilio Media Streams use μ-law encoding at 8kHz
+                                # Convert μ-law to linear PCM16
+                                # Simple μ-law to linear conversion
+                                mu_law_array = np.frombuffer(audio_bytes, dtype=np.uint8)
+                                # μ-law decoder: expand 8-bit μ-law to 16-bit linear
+                                sign = (mu_law_array & 0x80) >> 7
+                                exponent = (mu_law_array & 0x70) >> 4
+                                mantissa = mu_law_array & 0x0F
+                                
+                                # Decode μ-law
+                                linear = np.zeros(len(mu_law_array), dtype=np.int16)
+                                for i in range(len(mu_law_array)):
+                                    mu = mu_law_array[i]
+                                    sign_bit = (mu & 0x80) >> 7
+                                    exponent_bits = (mu & 0x70) >> 4
+                                    mantissa_bits = mu & 0x0F
+                                    
+                                    # μ-law expansion formula
+                                    if exponent_bits == 0:
+                                        sample = (mantissa_bits << 1) + 33
+                                    else:
+                                        sample = ((mantissa_bits << 1) + 33) << (exponent_bits - 1)
+                                    
+                                    if sign_bit == 1:
+                                        sample = -sample
+                                    
+                                    linear[i] = np.int16(sample - 33)
+                                
+                                # Scale to int16 range
+                                audio_array = (linear * 16).astype(np.int16)
+                                
+                                # Process through orchestrator with audio storage
+                                handler.orchestrator.handle_audio_chunk(audio_array, call_sid=call_sid)
+                            except Exception as e:
+                                handler.logger.error(f"[AUDIO_DEBUG] Error processing media payload: {e}", exc_info=True)
+                    elif event == 'stop':
+                        handler.logger.info(f"[AUDIO_DEBUG] Media stream stopped for call {call_sid}")
+                        break
+                        
+            except WebSocketDisconnect:
+                handler.logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket disconnected for call {call_sid}")
+            except Exception as e:
+                handler.logger.error(f"[AUDIO_DEBUG] Error in Media Stream WebSocket: {e}")
+        
+        @app.post('/media/{call_sid}')
+        async def handle_media_stream_fallback(call_sid: str, request: Request):
+            """Fallback HTTP POST endpoint for Media Streams (if WebSocket not available)."""
+            try:
+                data = await request.json()
+                event = data.get('event')
+                
+                if event == 'media':
+                    media_payload = data.get('media', {}).get('payload')
+                    if media_payload:
+                        audio_bytes = base64.b64decode(media_payload)
+                        audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+                        handler.orchestrator.handle_audio_chunk(audio_array, call_sid=call_sid)
+            except Exception as e:
+                handler.logger.error(f"[AUDIO_DEBUG] Error in fallback media stream: {e}")
             
             return PlainTextResponse("OK")
         
@@ -334,6 +433,26 @@ class TwilioVoiceHandler:
             }
             
             response = VoiceResponse()
+            
+            # Enable Media Streams for audio storage/debugging
+            if Config.audio_storage_enabled:
+                config = get_twilio_config()
+                webhook_url = config.get_webhook_url()
+                base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+                # Convert to WebSocket URL (wss://)
+                if base_url.startswith('http://'):
+                    base_url = base_url.replace('http://', 'wss://')
+                elif base_url.startswith('https://'):
+                    base_url = base_url.replace('https://', 'wss://')
+                elif not base_url.startswith('wss://'):
+                    base_url = f"wss://{base_url.lstrip('/')}"
+                
+                stream_url = f"{base_url}/media/{call_sid}"
+                start = Start()
+                stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
+                start.stream(stream)
+                response.append(start)
+                handler.logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for outbound call {call_sid}: {stream_url}")
             
             # Generate greeting from system prompt
             try:
@@ -440,7 +559,7 @@ class TwilioVoiceHandler:
             audio_array = np.frombuffer(audio_data, dtype=np.int16)
             
             # Process through VOCA orchestrator
-            self.orchestrator.handle_audio_chunk(audio_array)
+            self.orchestrator.handle_audio_chunk(audio_array, call_sid=call_sid)
             
         except Exception as e:
             self.logger.error(f"Error processing audio for call {call_sid}: {e}")

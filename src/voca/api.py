@@ -17,12 +17,6 @@ from pydantic import BaseModel, Field
 from twilio.twiml.voice_response import VoiceResponse
 import time
 
-try:
-    from pyngrok import ngrok
-    NGROK_AVAILABLE = True
-except ImportError:
-    NGROK_AVAILABLE = False
-
 from src.voca.orchestrator import VocaOrchestrator
 from src.voca.twilio_voice import TwilioCallManager
 from src.voca.twilio_config import get_twilio_config
@@ -36,6 +30,9 @@ from src.voca.system_prompt import (
     DEFAULT_SYSTEM_PROMPT,
 )
 from src.voca.conversation_logger import log_user, log_ai
+
+# Setup logger for API module
+logger = logging.getLogger(__name__)
 
 
 # Request/Response Models
@@ -70,10 +67,6 @@ class StatusResponse(BaseModel):
 class LogEntry(BaseModel):
     timestamp: str
     message: str
-
-
-class NgrokUrlRequest(BaseModel):
-    url: str
 
 
 class CallRecord(BaseModel):
@@ -155,9 +148,6 @@ class AppState:
         self.is_twilio_server_running: bool = False
         self.is_continuous_call_running: bool = False
         self.continuous_call_thread: Optional[threading.Thread] = None
-        self.ngrok_tunnel = None  # pyngrok tunnel object
-        self.ngrok_url: Optional[str] = None
-        self.ngrok_port: int = 8000  # API server port
         
     def get_orchestrator(self) -> VocaOrchestrator:
         if self.orchestrator is None:
@@ -236,30 +226,11 @@ async def startup_event():
     # Start log broadcaster task
     asyncio.create_task(log_broadcaster())
     
-    # Automatically start ngrok tunnel when API server starts
-    run_main = os.getenv("RUN_MAIN")
-    if (
-        NGROK_AVAILABLE
-        and app_state.ngrok_tunnel is None
-        and (run_main is None or run_main == "true")  # Run when not using reloader or in main process
-    ):
-        loop = asyncio.get_running_loop()
-
-        async def start_ngrok():
-            def _connect():
-                try:
-                    tunnel = ngrok.connect(app_state.ngrok_port)
-                    app_state.ngrok_tunnel = tunnel
-                    app_state.ngrok_url = tunnel.public_url
-                    logger.info(f"Ngrok tunnel started automatically: {app_state.ngrok_url}")
-                    app_state._log_callback(f"Ngrok tunnel started automatically: {app_state.ngrok_url}")
-                except Exception as exc:
-                    logger.error(f"Failed to start ngrok tunnel automatically: {exc}")
-                    app_state._log_callback(f"Failed to start ngrok tunnel automatically: {exc}")
-
-            await loop.run_in_executor(None, _connect)
-
-        await start_ngrok()
+    # Log base URL if configured
+    base_url = os.getenv("BASE_URL")
+    if base_url:
+        logger.info(f"Base URL configured: {base_url}")
+        app_state._log_callback(f"Base URL: {base_url}")
 
 
 @app.on_event("shutdown")
@@ -268,17 +239,6 @@ async def shutdown_event():
     logger = logging.getLogger(__name__)
     logger.info("VOCA API server shutting down...")
     
-    # Stop ngrok tunnel if running
-    if app_state.ngrok_tunnel is not None and NGROK_AVAILABLE:
-        try:
-            ngrok.disconnect(app_state.ngrok_tunnel.public_url)
-            logger.info("Ngrok tunnel stopped")
-            app_state._log_callback("Ngrok tunnel stopped")
-        except Exception as e:
-            logger.error(f"Error stopping ngrok tunnel: {e}")
-        finally:
-            app_state.ngrok_tunnel = None
-            app_state.ngrok_url = None
 
 
 @app.get("/")
@@ -298,7 +258,6 @@ async def health():
 
 
 # OPTIONS handler - FastAPI CORS middleware should handle this automatically
-# But we add explicit handler as fallback for ngrok compatibility
 @app.options("/{full_path:path}")
 async def options_handler(full_path: str, request: Request):
     """Handle OPTIONS requests for CORS preflight."""
@@ -624,118 +583,6 @@ async def get_twilio_webhook_urls():
     }
 
 
-# ==================== Ngrok Endpoints ====================
-
-@app.post("/api/ngrok/start", response_model=Dict[str, Any])
-async def start_ngrok_tunnel():
-    """Start ngrok tunnel for the API server."""
-    if not NGROK_AVAILABLE:
-        raise HTTPException(
-            status_code=400,
-            detail="pyngrok not installed. Install it with: pip install pyngrok"
-        )
-    
-    if app_state.ngrok_tunnel is not None:
-        return {
-            "status": "already_running",
-            "url": app_state.ngrok_url,
-            "message": "Ngrok tunnel is already running"
-        }
-    
-    try:
-        # Start ngrok tunnel on API server port (8000)
-        app_state.ngrok_tunnel = ngrok.connect(app_state.ngrok_port)
-        app_state.ngrok_url = app_state.ngrok_tunnel.public_url
-        
-        app_state._log_callback(f"Ngrok tunnel started: {app_state.ngrok_url}")
-        
-        return {
-            "status": "success",
-            "url": app_state.ngrok_url,
-            "message": f"Ngrok tunnel started successfully. Frontend can connect to: {app_state.ngrok_url}"
-        }
-    except Exception as e:
-        app_state._log_callback(f"Failed to start ngrok tunnel: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start ngrok tunnel: {str(e)}")
-
-
-@app.post("/api/ngrok/stop", response_model=StatusResponse)
-async def stop_ngrok_tunnel():
-    """Stop ngrok tunnel."""
-    if not NGROK_AVAILABLE:
-        raise HTTPException(
-            status_code=400,
-            detail="pyngrok not installed"
-        )
-    
-    if app_state.ngrok_tunnel is None:
-        raise HTTPException(status_code=400, detail="Ngrok tunnel is not running")
-    
-    try:
-        ngrok.disconnect(app_state.ngrok_tunnel.public_url)
-        app_state._log_callback(f"Ngrok tunnel stopped: {app_state.ngrok_url}")
-        
-        old_url = app_state.ngrok_url
-        app_state.ngrok_tunnel = None
-        app_state.ngrok_url = None
-        
-        return StatusResponse(
-            status="success",
-            message=f"Ngrok tunnel stopped. Previous URL was: {old_url}"
-        )
-    except Exception as e:
-        app_state._log_callback(f"Failed to stop ngrok tunnel: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to stop ngrok tunnel: {str(e)}")
-
-
-@app.get("/api/ngrok/status", response_model=Dict[str, Any])
-async def get_ngrok_status():
-    """Get ngrok tunnel status and URL."""
-    if not NGROK_AVAILABLE:
-        return {
-            "available": False,
-            "running": False,
-            "url": None,
-            "message": "pyngrok not installed"
-        }
-    
-    if app_state.ngrok_tunnel is None:
-        return {
-            "available": True,
-            "running": False,
-            "url": None,
-            "message": "Ngrok tunnel is not running"
-        }
-    
-    return {
-        "available": True,
-        "running": True,
-        "url": app_state.ngrok_url,
-        "port": app_state.ngrok_port,
-        "message": f"Ngrok tunnel is active. Frontend URL: {app_state.ngrok_url}"
-    }
-
-
-@app.post("/api/ngrok/set-url", response_model=StatusResponse)
-async def set_ngrok_url(request: Dict[str, str]):
-    """Manually set ngrok URL if you're running ngrok separately."""
-    url = request.get("url")
-    if not url:
-        raise HTTPException(status_code=400, detail="URL is required")
-    
-    # Ensure URL has https:// prefix
-    if not url.startswith(("http://", "https://")):
-        url = f"https://{url}"
-    
-    app_state.ngrok_url = url
-    app_state._log_callback(f"Ngrok URL set manually: {url}")
-    
-    return StatusResponse(
-        status="success",
-        message=f"Ngrok URL set to: {url}"
-    )
-
-
 # ==================== Logs Endpoints ====================
 
 @app.get("/api/logs", response_model=List[LogEntry])
@@ -806,7 +653,6 @@ async def log_broadcaster():
 
 
 # ==================== Twilio Webhook Endpoints ====================
-# These endpoints are needed for Twilio to handle calls through ngrok
 
 @app.post("/outbound")
 async def handle_outbound_call(request: Request):

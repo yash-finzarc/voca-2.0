@@ -106,7 +106,7 @@ class TwilioWebSocketHandler:
             self.audio_buffers[call_sid].append(audio_array)
             
             # Process through VOCA orchestrator
-            self.orchestrator.handle_audio_chunk(audio_array)
+            self.orchestrator.handle_audio_chunk(audio_array, call_sid=call_sid)
             
         except Exception as e:
             self.logger.error(f"Error processing audio chunk for call {call_sid}: {e}")
@@ -200,7 +200,7 @@ class TwilioMediaStreamHandler:
             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
             
             # Process through VOCA orchestrator
-            self.orchestrator.handle_audio_chunk(audio_array)
+            self.orchestrator.handle_audio_chunk(audio_array, call_sid=call_sid)
             
         except Exception as e:
             self.logger.error(f"Error handling media stream for call {call_sid}: {e}")

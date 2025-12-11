@@ -30,4 +30,8 @@ class Config:
     supabase_key: str = os.getenv("SUPABASE_KEY", "")
     default_organization_id: str = os.getenv("VOCA_DEFAULT_ORGANIZATION_ID", "")
 
+    # Audio Debug Storage
+    audio_storage_enabled: bool = os.getenv("VOCA_DEBUG_AUDIO_STORAGE", "false").lower() in ("1", "true", "yes")
+    audio_storage_dir: str = os.getenv("VOCA_AUDIO_LOG_DIR", "audio_logs")
+
 

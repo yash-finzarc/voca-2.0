@@ -37,10 +37,13 @@ class TwilioConfig:
         required_fields = [self.account_sid, self.auth_token, self.phone_number]
         return all(field for field in required_fields)
     
-    def get_webhook_url(self, base_url: str = "http://localhost:5000") -> str:
+    def get_webhook_url(self, base_url: Optional[str] = None) -> str:
         """Get the webhook URL for Twilio callbacks."""
         if self.webhook_url:
             return self.webhook_url
+        # Use BASE_URL from environment if available, otherwise default to localhost
+        if base_url is None:
+            base_url = os.getenv("BASE_URL", "http://localhost:5000")
         return f"{base_url}/webhook/voice"
 
 
