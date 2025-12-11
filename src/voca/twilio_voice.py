@@ -62,6 +62,7 @@ class TwilioVoiceHandler:
             handler.logger.info(f"Incoming call from {from_number}, SID: {call_sid}")
             
             # Store call information
+            stt_model = "deepgram_nova-3"
             handler.active_calls[call_sid] = {
                 'from_number': from_number,
                 'status': 'ringing',
@@ -69,8 +70,10 @@ class TwilioVoiceHandler:
                 'audio_buffer': [],
                 'unclear_count': 0,  # Track consecutive unclear responses
                 'last_speech_attempt': None,  # Track last speech attempt to detect name collection
-                'name_attempt_count': 0  # Track attempts to provide name
+                'name_attempt_count': 0,  # Track attempts to provide name
+                'stt_model': stt_model  # Store STT model for this call
             }
+            handler.logger.info(f"[STT] Using STT model: {stt_model} for incoming call {call_sid}")
             
             # Create TwiML response
             response = VoiceResponse()
@@ -119,7 +122,7 @@ class TwilioVoiceHandler:
             response.say(greeting)
             
             # Gather user input with STT via Twilio
-            stt_model = "deepgram_nova-3"
+            stt_model = handler.active_calls.get(call_sid, {}).get('stt_model', 'deepgram_nova-3')
             handler.logger.info(f"[STT] Using STT model: {stt_model} for call {call_sid}")
             gather = response.gather(
                 speech_model=stt_model,
@@ -147,7 +150,9 @@ class TwilioVoiceHandler:
             speech_result = form_data.get('SpeechResult', '')
             confidence = form_data.get('Confidence', '0')
             
-            handler.logger.info(f"[STT] STT transcription received for call {call_sid}")
+            # Get STT model used for this call
+            stt_model = handler.active_calls.get(call_sid, {}).get('stt_model', 'deepgram_nova-3')
+            handler.logger.info(f"[STT] STT transcription received for call {call_sid} using model: {stt_model}")
             handler.logger.info(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
             
             # Get session to check if we're collecting a name
@@ -236,7 +241,7 @@ class TwilioVoiceHandler:
                     response.say(ai_response)
                     
                     # Continue the conversation
-                    stt_model = "deepgram_nova-3"
+                    stt_model = handler.active_calls.get(call_sid, {}).get('stt_model', 'deepgram_nova-3')
                     handler.logger.info(f"[STT] Using STT model: {stt_model} for call {call_sid}")
                     gather = response.gather(
                         input='speech',
@@ -265,7 +270,7 @@ class TwilioVoiceHandler:
                     else:
                         response.say("I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?")
                     # Continue the conversation - don't cut off
-                    stt_model = "deepgram_nova-3"
+                    stt_model = handler.active_calls.get(call_sid, {}).get('stt_model', 'deepgram_nova-3')
                     handler.logger.info(f"[STT] Using STT model: {stt_model} for call {call_sid}")
                     gather = response.gather(
                         speech_model=stt_model,
@@ -438,6 +443,7 @@ class TwilioVoiceHandler:
             call_sid = form_data.get('CallSid')
             
             # Store call information
+            stt_model = "deepgram_nova-3"
             handler.active_calls[call_sid] = {
                 'to_number': 'outbound',
                 'status': 'ringing',
@@ -445,8 +451,10 @@ class TwilioVoiceHandler:
                 'audio_buffer': [],
                 'unclear_count': 0,  # Track consecutive unclear responses
                 'last_speech_attempt': None,  # Track last speech attempt to detect name collection
-                'name_attempt_count': 0  # Track attempts to provide name
+                'name_attempt_count': 0,  # Track attempts to provide name
+                'stt_model': stt_model  # Store STT model for this call
             }
+            handler.logger.info(f"[STT] Using STT model: {stt_model} for outbound call {call_sid}")
             
             response = VoiceResponse()
             
@@ -486,7 +494,7 @@ class TwilioVoiceHandler:
             response.say(greeting)
             
             # Gather user input with STT via Twilio
-            stt_model = "deepgram_nova-3"
+            stt_model = handler.active_calls.get(call_sid, {}).get('stt_model', 'deepgram_nova-3')
             handler.logger.info(f"[STT] Using STT model: {stt_model} for outbound call {call_sid}")
             gather = response.gather(
                 speech_model=stt_model,
