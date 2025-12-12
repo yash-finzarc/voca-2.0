@@ -15,10 +15,14 @@ logging.basicConfig(
 )
 
 # Explicitly set logger levels for VOCA modules to ensure visibility
-logging.getLogger("src.voca.twilio_voice").setLevel(logging.INFO)
+# Set to DEBUG temporarily to see all logs, then can change back to INFO
+logging.getLogger("src.voca.twilio_voice").setLevel(logging.DEBUG)
 logging.getLogger("src.voca.api").setLevel(logging.INFO)
 logging.getLogger("voca.supabase").setLevel(logging.INFO)
 logging.getLogger("voca.langgraph").setLevel(logging.INFO)
+
+# Also ensure the root logger shows INFO and above
+logging.root.setLevel(logging.INFO)
 
 # Ensure all handlers output to stdout/stderr
 for handler in logging.root.handlers:

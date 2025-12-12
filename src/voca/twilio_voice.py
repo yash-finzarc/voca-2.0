@@ -609,13 +609,23 @@ class TwilioVoiceHandler:
         @app.post('/outbound')
         async def handle_outbound_call(request: Request):
             """Handle outbound call TwiML."""
-            form_data = await request.form()
-            call_sid = form_data.get('CallSid')
-            
-            # Log immediately to ensure we see this endpoint is being called
-            handler.logger.info(f"=== OUTBOUND CALL WEBHOOK RECEIVED ===")
-            handler.logger.info(f"Outbound call webhook received, SID: {call_sid}")
-            handler.logger.info(f"Form data keys: {list(form_data.keys())}")
+            try:
+                form_data = await request.form()
+                call_sid = form_data.get('CallSid')
+                
+                # Log immediately to ensure we see this endpoint is being called
+                # Use print as fallback to ensure visibility
+                print(f"[OUTBOUND] === OUTBOUND CALL WEBHOOK RECEIVED ===")
+                print(f"[OUTBOUND] Call SID: {call_sid}")
+                print(f"[OUTBOUND] Form data keys: {list(form_data.keys())}")
+                
+                handler.logger.info(f"=== OUTBOUND CALL WEBHOOK RECEIVED ===")
+                handler.logger.info(f"Outbound call webhook received, SID: {call_sid}")
+                handler.logger.info(f"Form data keys: {list(form_data.keys())}")
+            except Exception as e:
+                print(f"[OUTBOUND] ERROR in handle_outbound_call: {e}")
+                handler.logger.error(f"Error in handle_outbound_call: {e}", exc_info=True)
+                raise
             
             # Fetch call details from Twilio API to get language information
             try:
