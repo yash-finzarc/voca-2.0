@@ -182,7 +182,11 @@ class TwilioVoiceHandler:
             # Transcriptions will be sent to /transcription/{call_sid} callback
             # The callback will process transcriptions and generate AI responses
             
-            return Response(content=str(response), media_type='text/xml')
+            # Log the TwiML response for debugging
+            twiml_xml = str(response)
+            handler.logger.info(f"[TwiML] Response for call {call_sid}:\n{twiml_xml}")
+            
+            return Response(content=twiml_xml, media_type='text/xml')
         
         @app.post('/process_speech/{call_sid}')
         async def handle_speech(call_sid: str, request: Request):
@@ -476,7 +480,14 @@ class TwilioVoiceHandler:
         @app.post('/transcription/{call_sid}')
         async def handle_transcription(call_sid: str, request: Request):
             """Handle real-time transcription callbacks from Twilio with Deepgram."""
+            handler.logger.info(f"[TRANSCRIPTION] Received transcription callback for call {call_sid}")
+            
             form_data = await request.form()
+            
+            # Log all form data for debugging
+            form_dict = dict(form_data)
+            handler.logger.info(f"[TRANSCRIPTION] Form data keys: {list(form_dict.keys())}")
+            handler.logger.debug(f"[TRANSCRIPTION] Full form data: {form_dict}")
             
             # Extract transcription data
             transcription_text = form_data.get('TranscriptionText', '')
@@ -597,6 +608,7 @@ class TwilioVoiceHandler:
             try:
                 config = get_twilio_config()
                 if config and config.account_sid and config.auth_token:
+                    handler.logger.info(f"[CALL_INFO] Fetching call details for outbound call {call_sid}...")
                     client = Client(config.account_sid, config.auth_token)
                     call = client.calls(call_sid).fetch()
                     handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Status: {call.status}, Direction: {call.direction}")
@@ -608,6 +620,7 @@ class TwilioVoiceHandler:
                     # Fetch transcription records to get language information
                     detected_languages = []
                     try:
+                        handler.logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
                         transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
                         handler.logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                         for trans in transcriptions:
@@ -618,7 +631,7 @@ class TwilioVoiceHandler:
                                 detected_languages.append(trans_lang)
                             handler.logger.info(f"[CALL_INFO] Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                     except Exception as trans_e:
-                        handler.logger.debug(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}")
+                        handler.logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
                     
                     # Log detected languages
                     if detected_languages:
@@ -626,8 +639,10 @@ class TwilioVoiceHandler:
                         handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
                     else:
                         handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                else:
+                    handler.logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
             except Exception as e:
-                handler.logger.warning(f"[CALL_INFO] Could not fetch outbound call details from Twilio API: {e}")
+                handler.logger.error(f"[CALL_INFO] Could not fetch outbound call details from Twilio API: {e}", exc_info=True)
             
             # Store call information
             handler.active_calls[call_sid] = {
@@ -677,6 +692,7 @@ class TwilioVoiceHandler:
             
             response.append(start)
             handler.logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
+            handler.logger.info(f"[TRANSCRIPTION] Outbound call {call_sid} - Callback URL: {transcription_callback_url}")
             
             # Generate greeting from system prompt
             try:
@@ -697,7 +713,11 @@ class TwilioVoiceHandler:
             # Transcriptions will be sent to /transcription/{call_sid} callback automatically
             # The callback will process transcriptions and generate AI responses
             
-            return Response(content=str(response), media_type='text/xml')
+            # Log the TwiML response for debugging
+            twiml_xml = str(response)
+            handler.logger.info(f"[TwiML] Outbound response for call {call_sid}:\n{twiml_xml}")
+            
+            return Response(content=twiml_xml, media_type='text/xml')
         
         # Start server in a separate thread using uvicorn
         config = uvicorn.Config(app, host=host, port=port, log_level="info")
