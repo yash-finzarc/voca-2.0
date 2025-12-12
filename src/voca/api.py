@@ -844,7 +844,7 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    transcriptions = call.transcriptions.list(limit=10)
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -909,7 +909,7 @@ async def handle_outbound_call(request: Request):
         # Using the Start class's internal method to add child elements
         # Add Transcription element with Deepgram settings
         # The Twilio Python library doesn't have a Transcription class, so we construct it manually
-        # We'll add the Transcription XML directly to the Start element
+        # We'll manually construct the XML string and add it to the Start element's children
         import xml.etree.ElementTree as ET
         transcription_elem = ET.Element('Transcription')
         transcription_elem.set('statusCallbackUrl', transcription_callback)
@@ -917,8 +917,11 @@ async def handle_outbound_call(request: Request):
         transcription_elem.set('transcriptionEngine', 'deepgram')
         transcription_elem.set('speechModel', 'nova-3')
         transcription_elem.set('languageCode', 'hi-IN')
-        # Add to Start element by converting to string and appending
-        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        # Add Transcription element to Start's children using the library's internal structure
+        # The Start class has a _verbs list that we can append to
+        if not hasattr(start, '_verbs'):
+            start._verbs = []
+        start._verbs.append(transcription_elem)
         response.append(start)
         
         logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
@@ -2307,7 +2310,7 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    transcriptions = call.transcriptions.list(limit=10)
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -2370,7 +2373,7 @@ async def handle_outbound_call(request: Request):
         # Using the Start class's internal method to add child elements
         # Add Transcription element with Deepgram settings
         # The Twilio Python library doesn't have a Transcription class, so we construct it manually
-        # We'll add the Transcription XML directly to the Start element
+        # We'll manually construct the XML string and add it to the Start element's children
         import xml.etree.ElementTree as ET
         transcription_elem = ET.Element('Transcription')
         transcription_elem.set('statusCallbackUrl', transcription_callback)
@@ -2378,8 +2381,11 @@ async def handle_outbound_call(request: Request):
         transcription_elem.set('transcriptionEngine', 'deepgram')
         transcription_elem.set('speechModel', 'nova-3')
         transcription_elem.set('languageCode', 'hi-IN')
-        # Add to Start element by converting to string and appending
-        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        # Add Transcription element to Start's children using the library's internal structure
+        # The Start class has a _verbs list that we can append to
+        if not hasattr(start, '_verbs'):
+            start._verbs = []
+        start._verbs.append(transcription_elem)
         response.append(start)
         
         logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
@@ -3763,7 +3769,7 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    transcriptions = call.transcriptions.list(limit=10)
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -3826,7 +3832,7 @@ async def handle_outbound_call(request: Request):
         # Using the Start class's internal method to add child elements
         # Add Transcription element with Deepgram settings
         # The Twilio Python library doesn't have a Transcription class, so we construct it manually
-        # We'll add the Transcription XML directly to the Start element
+        # We'll manually construct the XML string and add it to the Start element's children
         import xml.etree.ElementTree as ET
         transcription_elem = ET.Element('Transcription')
         transcription_elem.set('statusCallbackUrl', transcription_callback)
@@ -3834,8 +3840,11 @@ async def handle_outbound_call(request: Request):
         transcription_elem.set('transcriptionEngine', 'deepgram')
         transcription_elem.set('speechModel', 'nova-3')
         transcription_elem.set('languageCode', 'hi-IN')
-        # Add to Start element by converting to string and appending
-        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        # Add Transcription element to Start's children using the library's internal structure
+        # The Start class has a _verbs list that we can append to
+        if not hasattr(start, '_verbs'):
+            start._verbs = []
+        start._verbs.append(transcription_elem)
         response.append(start)
         
         logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
@@ -5064,7 +5073,7 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    transcriptions = call.transcriptions.list(limit=10)
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -5127,7 +5136,7 @@ async def handle_outbound_call(request: Request):
         # Using the Start class's internal method to add child elements
         # Add Transcription element with Deepgram settings
         # The Twilio Python library doesn't have a Transcription class, so we construct it manually
-        # We'll add the Transcription XML directly to the Start element
+        # We'll manually construct the XML string and add it to the Start element's children
         import xml.etree.ElementTree as ET
         transcription_elem = ET.Element('Transcription')
         transcription_elem.set('statusCallbackUrl', transcription_callback)
@@ -5135,8 +5144,11 @@ async def handle_outbound_call(request: Request):
         transcription_elem.set('transcriptionEngine', 'deepgram')
         transcription_elem.set('speechModel', 'nova-3')
         transcription_elem.set('languageCode', 'hi-IN')
-        # Add to Start element by converting to string and appending
-        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        # Add Transcription element to Start's children using the library's internal structure
+        # The Start class has a _verbs list that we can append to
+        if not hasattr(start, '_verbs'):
+            start._verbs = []
+        start._verbs.append(transcription_elem)
         response.append(start)
         
         logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
@@ -6520,7 +6532,7 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    transcriptions = call.transcriptions.list(limit=10)
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -6583,7 +6595,7 @@ async def handle_outbound_call(request: Request):
         # Using the Start class's internal method to add child elements
         # Add Transcription element with Deepgram settings
         # The Twilio Python library doesn't have a Transcription class, so we construct it manually
-        # We'll add the Transcription XML directly to the Start element
+        # We'll manually construct the XML string and add it to the Start element's children
         import xml.etree.ElementTree as ET
         transcription_elem = ET.Element('Transcription')
         transcription_elem.set('statusCallbackUrl', transcription_callback)
@@ -6591,8 +6603,11 @@ async def handle_outbound_call(request: Request):
         transcription_elem.set('transcriptionEngine', 'deepgram')
         transcription_elem.set('speechModel', 'nova-3')
         transcription_elem.set('languageCode', 'hi-IN')
-        # Add to Start element by converting to string and appending
-        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        # Add Transcription element to Start's children using the library's internal structure
+        # The Start class has a _verbs list that we can append to
+        if not hasattr(start, '_verbs'):
+            start._verbs = []
+        start._verbs.append(transcription_elem)
         response.append(start)
         
         logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
@@ -7839,7 +7854,7 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    transcriptions = call.transcriptions.list(limit=10)
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -7902,7 +7917,7 @@ async def handle_outbound_call(request: Request):
         # Using the Start class's internal method to add child elements
         # Add Transcription element with Deepgram settings
         # The Twilio Python library doesn't have a Transcription class, so we construct it manually
-        # We'll add the Transcription XML directly to the Start element
+        # We'll manually construct the XML string and add it to the Start element's children
         import xml.etree.ElementTree as ET
         transcription_elem = ET.Element('Transcription')
         transcription_elem.set('statusCallbackUrl', transcription_callback)
@@ -7910,8 +7925,11 @@ async def handle_outbound_call(request: Request):
         transcription_elem.set('transcriptionEngine', 'deepgram')
         transcription_elem.set('speechModel', 'nova-3')
         transcription_elem.set('languageCode', 'hi-IN')
-        # Add to Start element by converting to string and appending
-        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        # Add Transcription element to Start's children using the library's internal structure
+        # The Start class has a _verbs list that we can append to
+        if not hasattr(start, '_verbs'):
+            start._verbs = []
+        start._verbs.append(transcription_elem)
         response.append(start)
         
         logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
@@ -9295,7 +9313,7 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    transcriptions = call.transcriptions.list(limit=10)
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -9358,7 +9376,7 @@ async def handle_outbound_call(request: Request):
         # Using the Start class's internal method to add child elements
         # Add Transcription element with Deepgram settings
         # The Twilio Python library doesn't have a Transcription class, so we construct it manually
-        # We'll add the Transcription XML directly to the Start element
+        # We'll manually construct the XML string and add it to the Start element's children
         import xml.etree.ElementTree as ET
         transcription_elem = ET.Element('Transcription')
         transcription_elem.set('statusCallbackUrl', transcription_callback)
@@ -9366,8 +9384,11 @@ async def handle_outbound_call(request: Request):
         transcription_elem.set('transcriptionEngine', 'deepgram')
         transcription_elem.set('speechModel', 'nova-3')
         transcription_elem.set('languageCode', 'hi-IN')
-        # Add to Start element by converting to string and appending
-        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        # Add Transcription element to Start's children using the library's internal structure
+        # The Start class has a _verbs list that we can append to
+        if not hasattr(start, '_verbs'):
+            start._verbs = []
+        start._verbs.append(transcription_elem)
         response.append(start)
         
         logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
@@ -10597,7 +10618,7 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    transcriptions = call.transcriptions.list(limit=10)
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -10660,7 +10681,7 @@ async def handle_outbound_call(request: Request):
         # Using the Start class's internal method to add child elements
         # Add Transcription element with Deepgram settings
         # The Twilio Python library doesn't have a Transcription class, so we construct it manually
-        # We'll add the Transcription XML directly to the Start element
+        # We'll manually construct the XML string and add it to the Start element's children
         import xml.etree.ElementTree as ET
         transcription_elem = ET.Element('Transcription')
         transcription_elem.set('statusCallbackUrl', transcription_callback)
@@ -10668,8 +10689,11 @@ async def handle_outbound_call(request: Request):
         transcription_elem.set('transcriptionEngine', 'deepgram')
         transcription_elem.set('speechModel', 'nova-3')
         transcription_elem.set('languageCode', 'hi-IN')
-        # Add to Start element by converting to string and appending
-        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        # Add Transcription element to Start's children using the library's internal structure
+        # The Start class has a _verbs list that we can append to
+        if not hasattr(start, '_verbs'):
+            start._verbs = []
+        start._verbs.append(transcription_elem)
         response.append(start)
         
         logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
@@ -11899,7 +11923,7 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    transcriptions = call.transcriptions.list(limit=10)
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -11962,7 +11986,7 @@ async def handle_outbound_call(request: Request):
         # Using the Start class's internal method to add child elements
         # Add Transcription element with Deepgram settings
         # The Twilio Python library doesn't have a Transcription class, so we construct it manually
-        # We'll add the Transcription XML directly to the Start element
+        # We'll manually construct the XML string and add it to the Start element's children
         import xml.etree.ElementTree as ET
         transcription_elem = ET.Element('Transcription')
         transcription_elem.set('statusCallbackUrl', transcription_callback)
@@ -11970,8 +11994,11 @@ async def handle_outbound_call(request: Request):
         transcription_elem.set('transcriptionEngine', 'deepgram')
         transcription_elem.set('speechModel', 'nova-3')
         transcription_elem.set('languageCode', 'hi-IN')
-        # Add to Start element by converting to string and appending
-        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        # Add Transcription element to Start's children using the library's internal structure
+        # The Start class has a _verbs list that we can append to
+        if not hasattr(start, '_verbs'):
+            start._verbs = []
+        start._verbs.append(transcription_elem)
         response.append(start)
         
         logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
