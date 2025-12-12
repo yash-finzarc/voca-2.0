@@ -5472,6 +5472,14 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                 response.redirect(f'/process_speech/{call_sid}')
             
             return Response(content=str(response), media_type='text/xml')
+        except Exception as e:
+            # Legacy path error handling
+            app_state._log_callback(f"Error processing speech (legacy path): {e}")
+            response = VoiceResponse()
+            response.say("I'm sorry, I had trouble processing that. Please try again.")
+            if call_sid:
+                response.redirect(f'/process_speech/{call_sid}')
+            return Response(content=str(response), media_type='text/xml')
 
 
 @app.post("/transcription/{call_sid}")
