@@ -844,7 +844,16 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    # Get transcriptions via recordings (transcriptions.list() doesn't support call_sid parameter)
+                    all_transcriptions = []
+                    recordings = client.recordings.list(call_sid=call_sid, limit=10)
+                    for recording in recordings:
+                        try:
+                            recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                            all_transcriptions.extend(recording_transcriptions)
+                        except Exception as rec_e:
+                            logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                    transcriptions = all_transcriptions[:10]  # Limit to 10 total
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -2288,7 +2297,16 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    # Get transcriptions via recordings (transcriptions.list() doesn't support call_sid parameter)
+                    all_transcriptions = []
+                    recordings = client.recordings.list(call_sid=call_sid, limit=10)
+                    for recording in recordings:
+                        try:
+                            recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                            all_transcriptions.extend(recording_transcriptions)
+                        except Exception as rec_e:
+                            logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                    transcriptions = all_transcriptions[:10]  # Limit to 10 total
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -3725,7 +3743,16 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    # Get transcriptions via recordings (transcriptions.list() doesn't support call_sid parameter)
+                    all_transcriptions = []
+                    recordings = client.recordings.list(call_sid=call_sid, limit=10)
+                    for recording in recordings:
+                        try:
+                            recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                            all_transcriptions.extend(recording_transcriptions)
+                        except Exception as rec_e:
+                            logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                    transcriptions = all_transcriptions[:10]  # Limit to 10 total
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -5007,7 +5034,16 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    # Get transcriptions via recordings (transcriptions.list() doesn't support call_sid parameter)
+                    all_transcriptions = []
+                    recordings = client.recordings.list(call_sid=call_sid, limit=10)
+                    for recording in recordings:
+                        try:
+                            recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                            all_transcriptions.extend(recording_transcriptions)
+                        except Exception as rec_e:
+                            logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                    transcriptions = all_transcriptions[:10]  # Limit to 10 total
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -6444,7 +6480,16 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    # Get transcriptions via recordings (transcriptions.list() doesn't support call_sid parameter)
+                    all_transcriptions = []
+                    recordings = client.recordings.list(call_sid=call_sid, limit=10)
+                    for recording in recordings:
+                        try:
+                            recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                            all_transcriptions.extend(recording_transcriptions)
+                        except Exception as rec_e:
+                            logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                    transcriptions = all_transcriptions[:10]  # Limit to 10 total
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -7744,7 +7789,16 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    # Get transcriptions via recordings (transcriptions.list() doesn't support call_sid parameter)
+                    all_transcriptions = []
+                    recordings = client.recordings.list(call_sid=call_sid, limit=10)
+                    for recording in recordings:
+                        try:
+                            recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                            all_transcriptions.extend(recording_transcriptions)
+                        except Exception as rec_e:
+                            logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                    transcriptions = all_transcriptions[:10]  # Limit to 10 total
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -9181,7 +9235,16 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    # Get transcriptions via recordings (transcriptions.list() doesn't support call_sid parameter)
+                    all_transcriptions = []
+                    recordings = client.recordings.list(call_sid=call_sid, limit=10)
+                    for recording in recordings:
+                        try:
+                            recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                            all_transcriptions.extend(recording_transcriptions)
+                        except Exception as rec_e:
+                            logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                    transcriptions = all_transcriptions[:10]  # Limit to 10 total
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -10464,7 +10527,16 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    # Get transcriptions via recordings (transcriptions.list() doesn't support call_sid parameter)
+                    all_transcriptions = []
+                    recordings = client.recordings.list(call_sid=call_sid, limit=10)
+                    for recording in recordings:
+                        try:
+                            recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                            all_transcriptions.extend(recording_transcriptions)
+                        except Exception as rec_e:
+                            logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                    transcriptions = all_transcriptions[:10]  # Limit to 10 total
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
@@ -11747,7 +11819,16 @@ async def handle_outbound_call(request: Request):
                 detected_languages = []
                 try:
                     logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                    # Get transcriptions via recordings (transcriptions.list() doesn't support call_sid parameter)
+                    all_transcriptions = []
+                    recordings = client.recordings.list(call_sid=call_sid, limit=10)
+                    for recording in recordings:
+                        try:
+                            recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                            all_transcriptions.extend(recording_transcriptions)
+                        except Exception as rec_e:
+                            logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                    transcriptions = all_transcriptions[:10]  # Limit to 10 total
                     logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
                     for trans in transcriptions:
                         trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
