@@ -585,8 +585,8 @@ class TwilioVoiceHandler:
             call = self.client.calls.create(
                 to=to_number,
                 from_=config.phone_number,
-                url=f"{config.get_webhook_url().replace('/webhook/voice', '')}/outbound",
-                method='POST'
+                url=f"{config.get_webhook_url().replace('/webhook/voice', '')}/dg/outbound",
+                method='POST',
             )
             
             call_sid = call.sid

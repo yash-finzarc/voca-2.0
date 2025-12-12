@@ -810,7 +810,7 @@ async def log_broadcaster():
 # ==================== Twilio Webhook Endpoints ====================
 # These endpoints are needed for Twilio to handle calls through ngrok
 
-@app.post("/outbound")
+@app.post("/dg/outbound")
 async def handle_outbound_call(request: Request):
     """Handle outbound call TwiML - forwarded from Twilio webhook server.
 
@@ -912,9 +912,9 @@ async def handle_outbound_call(request: Request):
         config = get_twilio_config()
         webhook_url = config.get_webhook_url()
         # webhook_url is typically .../webhook/voice; strip that to get the base
-        base_url = webhook_url.replace("/webhook/voice", "").replace("/outbound", "")
+        base_url = webhook_url.replace("/webhook/voice", "")
 
-        transcription_callback_url = f"{base_url}/transcription/{call_sid}"
+        transcription_callback_url = f"{base_url}/dg/transcription/{call_sid}"
         start = Start()
         transcription = Transcription(
             statusCallbackUrl=transcription_callback_url,
@@ -964,7 +964,7 @@ async def handle_outbound_call(request: Request):
     return Response(content=str(response), media_type="text/xml")
 
 
-@app.post("/webhook/voice")
+@app.post("/dg/webhook/voice")
 async def handle_incoming_call_webhook(request: Request):
     """Handle incoming Twilio call webhook - forwarded from Twilio webhook server.
 
@@ -999,7 +999,7 @@ async def handle_incoming_call_webhook(request: Request):
         webhook_url = config.get_webhook_url()
         base_url = webhook_url.replace("/webhook/voice", "")
 
-        transcription_callback_url = f"{base_url}/transcription/{call_sid}"
+        transcription_callback_url = f"{base_url}/dg/transcription/{call_sid}"
         start = Start()
         transcription = Transcription(
             statusCallbackUrl=transcription_callback_url,
@@ -1155,7 +1155,7 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         return Response(content=str(response), media_type='text/xml')
 
 
-@app.post("/transcription/{call_sid}")
+@app.post("/dg/transcription/{call_sid}")
 async def handle_transcription_webhook(call_sid: str, request: Request):
     """Handle real-time transcription callbacks from Twilio (Deepgram Nova-3 Hindi)."""
     twilio_manager = app_state.get_twilio_manager()
