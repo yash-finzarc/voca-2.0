@@ -38,8 +38,10 @@ from .config import Config
 
 # STT Model Configuration
 # Using Deepgram Nova-3 via Twilio's speech_model parameter
-DEFAULT_STT_MODEL = Config.twilio_stt_model if hasattr(Config, 'twilio_stt_model') else "deepgram_nova-3"
-DEFAULT_STT_LANGUAGE = Config.twilio_stt_language if hasattr(Config, 'twilio_stt_language') else "hi-IN"
+# Note: Use "nova-3" not "deepgram_nova-3" for the model name
+# Note: Use "hi" not "hi-IN" for Hindi language code
+DEFAULT_STT_MODEL = Config.twilio_stt_model if hasattr(Config, 'twilio_stt_model') else "nova-3"
+DEFAULT_STT_LANGUAGE = Config.twilio_stt_language if hasattr(Config, 'twilio_stt_language') else "hi"
 
 
 class TwilioVoiceHandler:
