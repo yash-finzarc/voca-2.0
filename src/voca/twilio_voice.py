@@ -396,12 +396,24 @@ class TwilioVoiceHandler:
             transcription_status = form_data.get('TranscriptionStatus', '')
             transcription_sid = form_data.get('TranscriptionSid', '')
             confidence = form_data.get('Confidence', '0')
+            # Check for language in webhook (may not be present for all transcription services)
+            language = form_data.get('Language', None) or form_data.get('LanguageCode', None)
             
-            handler.logger.info(f"[TRANSCRIPTION] Call {call_sid}: Status={transcription_status}, Text='{transcription_text}', Confidence={confidence}")
+            handler.logger.info(f"[TRANSCRIPTION] Call {call_sid}: Status={transcription_status}, Text='{transcription_text}', Confidence={confidence}, Language={language or 'N/A'}")
             
             # Only process completed transcriptions with text
             if transcription_status == 'completed' and transcription_text and transcription_text.strip():
                 try:
+                    # If language not in webhook, try to fetch from Twilio API using transcription_sid
+                    if not language and transcription_sid:
+                        try:
+                            trans_obj = handler.client.transcriptions(transcription_sid).fetch()
+                            language = getattr(trans_obj, 'language', None) or getattr(trans_obj, 'language_code', None)
+                            if language:
+                                handler.logger.info(f"[TRANSCRIPTION] Fetched language from API: {language}")
+                        except Exception as lang_e:
+                            handler.logger.debug(f"[TRANSCRIPTION] Could not fetch language from API: {lang_e}")
+                    
                     # Process transcription through VOCA orchestrator
                     ai_response = handler.orchestrator.generate_reply(
                         transcription_text,
@@ -419,6 +431,8 @@ class TwilioVoiceHandler:
                             'status': transcription_status,
                             'transcription_sid': transcription_sid,
                             'confidence': confidence,
+                            'language': language,
+                            'language_code': language,  # Alias for compatibility
                             'timestamp': datetime.now(timezone.utc).isoformat()
                         })
                     
