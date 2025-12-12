@@ -39,6 +39,7 @@ from .config import Config
 # STT Model Configuration
 # Using Deepgram Nova-3 via Twilio's speech_model parameter
 DEFAULT_STT_MODEL = Config.twilio_stt_model if hasattr(Config, 'twilio_stt_model') else "deepgram_nova-3"
+DEFAULT_STT_LANGUAGE = Config.twilio_stt_language if hasattr(Config, 'twilio_stt_language') else "hi-IN"
 
 
 class TwilioVoiceHandler:
@@ -58,6 +59,7 @@ class TwilioVoiceHandler:
         # Initialize Deepgram client if available
         self.deepgram_client = None
         self.stt_model = DEFAULT_STT_MODEL
+        self.stt_language = DEFAULT_STT_LANGUAGE
         
         if DEEPGRAM_AVAILABLE and Config.deepgram_api_key:
             try:
@@ -72,6 +74,7 @@ class TwilioVoiceHandler:
         # Log STT model configuration
         self.logger.info("=" * 80)
         self.logger.info(f"[STT MODEL] Configured STT Model: {self.stt_model}")
+        self.logger.info(f"[STT LANGUAGE] Configured Language: {self.stt_language}")
         self.logger.info(f"[STT MODEL] Deepgram SDK Available: {DEEPGRAM_AVAILABLE}")
         self.logger.info(f"[STT MODEL] Deepgram Client Initialized: {self.deepgram_client is not None}")
         self.logger.info("=" * 80)
@@ -104,7 +107,8 @@ class TwilioVoiceHandler:
                 'unclear_count': 0,  # Track consecutive unclear responses
                 'last_speech_attempt': None,  # Track last speech attempt to detect name collection
                 'name_attempt_count': 0,  # Track attempts to provide name
-                'stt_model': stt_model  # Store STT model for this call
+                'stt_model': stt_model,  # Store STT model for this call
+                'stt_language': handler.stt_language  # Store STT language for this call
             }
             
             # Log STT model for this call
@@ -159,16 +163,18 @@ class TwilioVoiceHandler:
             # Say welcome message
             response.say(greeting)
             
-            # Get STT model for this call
+            # Get STT model and language for this call
             stt_model = handler.active_calls.get(call_sid, {}).get('stt_model', handler.stt_model)
+            stt_language = handler.active_calls.get(call_sid, {}).get('stt_language', handler.stt_language)
             
-            # Log STT model usage
+            # Log STT model and language usage
             handler.logger.info(f"[STT MODEL] {stt_model} - Gathering speech for call {call_sid}")
+            handler.logger.info(f"[STT LANGUAGE] {stt_language} - Language configured for call {call_sid}")
             
             # Gather user input with Deepgram STT via Twilio
             gather = response.gather(
                 speech_model=stt_model,
-                language='hi-IN',
+                language=stt_language,
                 input='speech',
                 timeout=10,
                 speech_timeout='auto',
@@ -290,15 +296,17 @@ class TwilioVoiceHandler:
                     response = VoiceResponse()
                     response.say(ai_response)
                     
-                    # Get STT model for this call
+                    # Get STT model and language for this call
                     stt_model = handler.active_calls.get(call_sid, {}).get('stt_model', handler.stt_model)
+                    stt_language = handler.active_calls.get(call_sid, {}).get('stt_language', handler.stt_language)
                     handler.logger.info(f"[STT MODEL] {stt_model} - Continuing conversation for call {call_sid}")
+                    handler.logger.info(f"[STT LANGUAGE] {stt_language} - Language for call {call_sid}")
                     
                     # Continue the conversation
                     gather = response.gather(
                         input='speech',
                         speech_model=stt_model,
-                        language='hi-IN',
+                        language=stt_language,
                         timeout=10,
                         speech_timeout='auto',
                         action=f'/process_speech/{call_sid}',
@@ -322,14 +330,16 @@ class TwilioVoiceHandler:
                     else:
                         response.say("I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?")
                     
-                    # Get STT model for this call
+                    # Get STT model and language for this call
                     stt_model = handler.active_calls.get(call_sid, {}).get('stt_model', handler.stt_model)
+                    stt_language = handler.active_calls.get(call_sid, {}).get('stt_language', handler.stt_language)
                     handler.logger.info(f"[STT MODEL] {stt_model} - Retrying conversation for call {call_sid}")
+                    handler.logger.info(f"[STT LANGUAGE] {stt_language} - Language for call {call_sid}")
                     
                     # Continue the conversation - don't cut off
                     gather = response.gather(
                         speech_model=stt_model,
-                        language='hi-IN',
+                        language=stt_language,
                         input='speech',
                         timeout=10,
                         speech_timeout='auto',
@@ -377,9 +387,11 @@ class TwilioVoiceHandler:
                 
                 response = VoiceResponse()
                 
-                # Get STT model for this call
+                # Get STT model and language for this call
                 stt_model = handler.active_calls.get(call_sid, {}).get('stt_model', handler.stt_model)
+                stt_language = handler.active_calls.get(call_sid, {}).get('stt_language', handler.stt_language)
                 handler.logger.info(f"[STT MODEL] {stt_model} - Retrying after unclear speech for call {call_sid}")
+                handler.logger.info(f"[STT LANGUAGE] {stt_language} - Language for call {call_sid}")
                 
                 # If we're in a loop and it's about a name, ask to spell it
                 if unclear_count >= 2 and is_collecting_name:
@@ -395,6 +407,7 @@ class TwilioVoiceHandler:
                 gather = response.gather(
                     input='speech',
                     speech_model=stt_model,
+                    language=stt_language,
                     timeout=10,
                     speech_timeout='auto',
                     action=f'/process_speech/{call_sid}',
@@ -514,8 +527,9 @@ class TwilioVoiceHandler:
             form_data = await request.form()
             call_sid = form_data.get('CallSid')
             
-            # Get STT model for this call
+            # Get STT model and language for this call
             stt_model = handler.stt_model
+            stt_language = handler.stt_language
             
             # Store call information
             handler.active_calls[call_sid] = {
@@ -526,7 +540,8 @@ class TwilioVoiceHandler:
                 'unclear_count': 0,  # Track consecutive unclear responses
                 'last_speech_attempt': None,  # Track last speech attempt to detect name collection
                 'name_attempt_count': 0,  # Track attempts to provide name
-                'stt_model': stt_model  # Store STT model for this call
+                'stt_model': stt_model,  # Store STT model for this call
+                'stt_language': stt_language  # Store STT language for this call
             }
             
             # Log STT model for this call
@@ -571,14 +586,16 @@ class TwilioVoiceHandler:
             
             response.say(greeting)
             
-            # Get STT model for this call
+            # Get STT model and language for this call
             stt_model = handler.active_calls.get(call_sid, {}).get('stt_model', handler.stt_model)
+            stt_language = handler.active_calls.get(call_sid, {}).get('stt_language', handler.stt_language)
             handler.logger.info(f"[STT MODEL] {stt_model} - Gathering speech for outbound call {call_sid}")
+            handler.logger.info(f"[STT LANGUAGE] {stt_language} - Language configured for outbound call {call_sid}")
             
             # Gather user input with Deepgram STT via Twilio
             gather = response.gather(
                 speech_model=stt_model,
-                language='hi-IN',
+                language=stt_language,
                 input='speech',
                 timeout=10, 
                 speech_timeout='auto',

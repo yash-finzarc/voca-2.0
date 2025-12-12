@@ -37,6 +37,7 @@ class Config:
     # Deepgram STT (via Twilio)
     deepgram_api_key: str = os.getenv("DEEPGRAM_API_KEY", "")
     twilio_stt_model: str = os.getenv("TWILIO_STT_MODEL", "deepgram_nova-3")  # Options: deepgram_nova-3, deepgram_nova-2, etc.
+    twilio_stt_language: str = os.getenv("TWILIO_STT_LANGUAGE", "hi-IN")  # Language code for STT (e.g., hi-IN for Hindi, en-US for English, or "multi" for auto-detection)
 
 
 
