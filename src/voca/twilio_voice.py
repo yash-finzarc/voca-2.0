@@ -99,7 +99,7 @@ class TwilioVoiceHandler:
                 status_callback_url=transcription_callback_url,
                 transcription_engine='deepgram',
                 speech_model='nova-3',  # Use nova-3 for best accuracy
-                language_code='hi-IN'   # Hindi language
+                languageCode='hi-IN'   # Hindi language
             )
             start.append(transcription)
             response.append(start)
@@ -408,7 +408,7 @@ class TwilioVoiceHandler:
                     if not language and transcription_sid:
                         try:
                             trans_obj = handler.client.transcriptions(transcription_sid).fetch()
-                            language = getattr(trans_obj, 'language', None) or getattr(trans_obj, 'language_code', None)
+                            language = getattr(trans_obj, 'language', None) or getattr(trans_obj, 'languageCode', None)
                             if language:
                                 handler.logger.info(f"[TRANSCRIPTION] Fetched language from API: {language}")
                         except Exception as lang_e:
@@ -432,7 +432,7 @@ class TwilioVoiceHandler:
                             'transcription_sid': transcription_sid,
                             'confidence': confidence,
                             'language': language,
-                            'language_code': language,  # Alias for compatibility
+                            'languageCode': language,  # Alias for compatibility
                             'timestamp': datetime.now(timezone.utc).isoformat()
                         })
                         
@@ -441,7 +441,7 @@ class TwilioVoiceHandler:
                             # Get all unique languages from all transcriptions for this call
                             all_languages = []
                             for trans in handler.active_calls[call_sid]['transcriptions']:
-                                trans_lang = trans.get('language') or trans.get('language_code')
+                                trans_lang = trans.get('language') or trans.get('languageCode')
                                 if trans_lang:
                                     all_languages.append(trans_lang)
                             if all_languages:
@@ -515,7 +515,7 @@ class TwilioVoiceHandler:
                 status_callback_url=transcription_callback_url,
                 transcription_engine='deepgram',
                 speech_model='nova-3',  # Use nova-3 for best accuracy
-                language_code='hi-IN'   # Hindi language
+                languageCode='hi-IN'   # Hindi language
             )
             start.append(transcription)
             

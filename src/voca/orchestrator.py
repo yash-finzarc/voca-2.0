@@ -14,7 +14,6 @@ from src.voca.stt import build_stt
 from src.voca.system_prompt import get_prompt, get_welcome_message
 from src.voca.tts import CoquiTTS
 from src.voca.conversation_logger import log_user, log_ai
-from src.voca.audio_debug_storage import store_stt_audio
 
 # Sounddevice commented out - not needed for Twilio calls
 # try:
@@ -52,8 +51,6 @@ class VocaOrchestrator:
         self._lock = threading.Lock()
         self._sessions: Dict[str, ConversationSession] = {}
         self.default_organization_id = organization_id or Config.default_organization_id or None
-        # Track chunk numbers per call/conversation for audio storage
-        self._audio_chunk_counters: Dict[str, int] = {}
 
     def log(self, msg: str):
         self.on_log(msg)
@@ -74,79 +71,16 @@ class VocaOrchestrator:
         if not self.models_ready():
             self.load_models()
 
-    def handle_audio_chunk(
-        self, 
-        pcm16: np.ndarray, 
-        call_sid: Optional[str] = None, 
-        conversation_id: Optional[str] = None
-    ):
-        """
-        Handle audio chunk: store audio for debugging, then transcribe.
-        
-        Args:
-            pcm16: Audio data as int16 PCM numpy array
-            call_sid: Optional call SID identifier for audio storage
-            conversation_id: Optional conversation ID (used if call_sid not provided)
-        """
+    def handle_audio_chunk(self, pcm16: np.ndarray):
         # naive: do full utterance on each chunk; in practice, use VAD/segmenter
         if self.stt is None or not getattr(self.stt, "is_ready", lambda: False)():
             return
-        
-        # Store audio before STT processing for debugging
-        chunk_number = None
-        audio_id = call_sid or conversation_id or "default"
-        if Config.audio_storage_enabled and audio_id:
-            with self._lock:
-                # Get or increment chunk counter for this call/conversation
-                if audio_id not in self._audio_chunk_counters:
-                    self._audio_chunk_counters[audio_id] = 0
-                self._audio_chunk_counters[audio_id] += 1
-                chunk_number = self._audio_chunk_counters[audio_id]
-            
-            try:
-                # Get sample rate from STT engine or use config default
-                sample_rate = getattr(self.stt, "sample_rate", Config.sample_rate)
-                
-                # Store audio chunk with metadata
-                metadata = {
-                    "conversation_id": conversation_id,
-                    "sample_rate": sample_rate,
-                }
-                store_stt_audio(
-                    call_sid=audio_id,
-                    audio_array=pcm16,
-                    chunk_number=chunk_number,
-                    metadata=metadata,
-                    sample_rate=sample_rate
-                )
-                self.log(f"[AUDIO_DEBUG] Stored audio chunk #{chunk_number} for {audio_id}")
-            except Exception as e:
-                self.log(f"[AUDIO_DEBUG] Failed to store audio: {e}")
-        
         try:
             text = self.stt.transcribe_pcm16(pcm16)
-            
-            # Update metadata with transcript if audio was stored
-            if Config.audio_storage_enabled and chunk_number is not None and audio_id:
-                try:
-                    from src.voca.audio_debug_storage import update_stt_metadata
-                    update_stt_metadata(
-                        call_sid=audio_id,
-                        chunk_number=chunk_number,
-                        transcript=text,
-                        transcript_accepted=bool(text.strip()) if text else False
-                    )
-                except Exception as e:
-                    self.log(f"[AUDIO_DEBUG] Failed to update metadata: {e}")
-            
             if text:
                 self.log(f"USER: {text}")
                 log_user(text)
-                reply = self.generate_reply(
-                    text, 
-                    conversation_id=conversation_id or "local_audio",
-                    call_sid=call_sid
-                )
+                reply = self.generate_reply(text, conversation_id="local_audio")
                 if reply:
                     self.log(f"ASSISTANT: {reply}")
                     log_ai(reply)
@@ -346,26 +280,6 @@ class VocaOrchestrator:
         return
         self.log("Transcribing...")
         try:
-            # Store audio before transcription if enabled
-            if Config.audio_storage_enabled:
-                try:
-                    from src.voca.audio_debug_storage import store_stt_audio
-                    audio_id = "one_minute_test"
-                    with self._lock:
-                        if audio_id not in self._audio_chunk_counters:
-                            self._audio_chunk_counters[audio_id] = 0
-                        self._audio_chunk_counters[audio_id] += 1
-                        chunk_number = self._audio_chunk_counters[audio_id]
-                    store_stt_audio(
-                        call_sid=audio_id,
-                        audio_array=pcm16,
-                        chunk_number=chunk_number,
-                        metadata={"conversation_id": "one_minute_test"},
-                        sample_rate=sr
-                    )
-                except Exception as e:
-                    self.log(f"[AUDIO_DEBUG] Failed to store audio: {e}")
-            
             text = self.stt.transcribe_pcm16(pcm16)
         except Exception as e:
             self.log(f"Transcription failed: {e}")
