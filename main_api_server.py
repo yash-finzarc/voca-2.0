@@ -8,25 +8,8 @@ import uvicorn
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()  # Explicitly add StreamHandler to stdout
-    ]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
-# Explicitly set logger levels for VOCA modules to ensure visibility
-# Set to DEBUG temporarily to see all logs, then can change back to INFO
-logging.getLogger("src.voca.twilio_voice").setLevel(logging.DEBUG)
-logging.getLogger("src.voca.api").setLevel(logging.INFO)
-logging.getLogger("voca.supabase").setLevel(logging.INFO)
-logging.getLogger("voca.langgraph").setLevel(logging.INFO)
-
-# Also ensure the root logger shows INFO and above
-logging.root.setLevel(logging.INFO)
-
-# Ensure all handlers output to stdout/stderr
-for handler in logging.root.handlers:
-    handler.setLevel(logging.INFO)
 
 # Disable Twilio HTTP client logging (too verbose)
 logging.getLogger("twilio.http_client").setLevel(logging.WARNING)

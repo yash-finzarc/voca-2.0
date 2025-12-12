@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSoc
 from fastapi.responses import PlainTextResponse
 import uvicorn
 from twilio.rest import Client
-from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription
+from twilio.twiml.voice_response import VoiceResponse, Start, Stream
 from twilio.twiml.messaging_response import MessagingResponse
 import threading
 import queue
@@ -58,55 +58,6 @@ class TwilioVoiceHandler:
             
             handler.logger.info(f"Incoming call from {from_number}, SID: {call_sid}")
             
-            # Fetch call details from Twilio API to get language information
-            try:
-                config = get_twilio_config()
-                if config and config.account_sid and config.auth_token:
-                    client = Client(config.account_sid, config.auth_token)
-                    call = client.calls(call_sid).fetch()
-                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - Status: {call.status}, Direction: {call.direction}")
-                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - From: {call.from_formatted}, To: {call.to_formatted}")
-                    # Log any available language/region info
-                    if hasattr(call, 'price_unit'):
-                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - Price Unit: {call.price_unit}")
-                    
-                    # Fetch transcription records to get language information
-                    detected_languages = []
-                    try:
-                        transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
-                        handler.logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            handler.logger.info(f"[CALL_INFO] Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
-                    except Exception as trans_e:
-                        handler.logger.debug(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}")
-                    
-                    # Log detected languages
-                    if detected_languages:
-                        unique_languages = list(set(detected_languages))
-                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                    else:
-                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - No language detected yet (transcriptions may be in progress)")
-                    
-                    # Store call info in active_calls
-                    if call_sid in handler.active_calls:
-                        handler.active_calls[call_sid]['twilio_call_info'] = {
-                            'status': call.status,
-                            'direction': call.direction,
-                            'from': call.from_formatted,
-                            'to': call.to_formatted,
-                            'duration': getattr(call, 'duration', None),
-                            'price': getattr(call, 'price', None),
-                            'price_unit': getattr(call, 'price_unit', None),
-                            'detected_languages': detected_languages,
-                        }
-            except Exception as e:
-                handler.logger.warning(f"[CALL_INFO] Could not fetch call details from Twilio API: {e}")
-            
             # Store call information
             handler.active_calls[call_sid] = {
                 'from_number': from_number,
@@ -134,120 +85,66 @@ class TwilioVoiceHandler:
                 handler.logger.error(f"Error generating greeting: {e}")
                 greeting = "Hello! How can I help you today?"
             
-            # Enable Real-Time Transcriptions with Deepgram Nova-3 for Hindi
-            # This provides real-time transcriptions via callbacks (no Deepgram API key needed)
-            config = get_twilio_config()
-            webhook_url = config.get_webhook_url()
-            base_url = webhook_url.replace('/webhook/voice', '')
-            
-            # Set up Real-Time Transcription with Deepgram Nova-3 for Hindi
-            # This provides real-time transcriptions via callbacks (no Deepgram API key needed)
-            transcription_callback_url = f'{base_url}/transcription/{call_sid}'
-            start = Start()
-            transcription = Transcription(
-                status_callback_url=transcription_callback_url,
-                transcription_engine='deepgram',
-                speech_model='nova-3',  # Use nova-3 for best accuracy
-                language_code='hi-IN'   # Hindi language
-            )
-            start.append(transcription)
-            response.append(start)
-            handler.logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for call {call_sid}")
-            handler.logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback_url}")
-            
-            # Enable Media Streams for audio storage/debugging (if enabled)
+            # Enable Media Streams for audio storage/debugging
             # This streams raw audio to /media/{call_sid} WebSocket endpoint for storage
             if Config.audio_storage_enabled:
+                # Get webhook base URL from config or use default
+                config = get_twilio_config()
+                webhook_url = config.get_webhook_url()
+                # Remove /webhook/voice to get base URL
+                base_url = webhook_url.replace('/webhook/voice', '')
                 # Twilio Media Streams require WebSocket (wss://) not HTTP
                 # Convert http:// to wss:// or https:// to wss://
                 if base_url.startswith('http://'):
-                    wss_base_url = base_url.replace('http://', 'wss://')
+                    base_url = base_url.replace('http://', 'wss://')
                 elif base_url.startswith('https://'):
-                    wss_base_url = base_url.replace('https://', 'wss://')
+                    base_url = base_url.replace('https://', 'wss://')
                 elif not base_url.startswith('wss://'):
-                    wss_base_url = f"wss://{base_url.lstrip('/')}"
-                else:
-                    wss_base_url = base_url
+                    # If no protocol, assume we need wss://
+                    base_url = f"wss://{base_url.lstrip('/')}"
                 
-                stream_url = f"{wss_base_url}/media/{call_sid}"
+                stream_url = f"{base_url}/media/{call_sid}"
+                start = Start()
                 stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
                 start.stream(stream)
+                response.append(start)
                 handler.logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
                 handler.logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
+                handler.logger.info(f"[AUDIO_DEBUG] TwiML includes: <Start><Stream url='{stream_url}'></Stream></Start>")
             
             # Say welcome message
             response.say(greeting)
             
-            # Real-Time Transcriptions work alongside the call but need the call to be active
-            # We use a minimal Gather that redirects to a no-op endpoint
-            # The actual speech processing happens via transcription callbacks
-            # This keeps the call listening while transcriptions handle the processing
+            # Gather user input with Deepgram Nova-3 for Hindi STT
             gather = response.gather(
+                speech_model="deepgram_nova-3",
+                language='hi-IN',
                 input='speech',
-                timeout=30,  # Long timeout - we rely on transcriptions
+                timeout=10,
                 speech_timeout='auto',
-                action=f'/transcription_keepalive/{call_sid}',  # No-op endpoint
+                action=f'/process_speech/{call_sid}',
                 method='POST'
             )
-            # Don't add any say() to gather - we want silent listening
-            # Transcriptions will send callbacks to /transcription/{call_sid}
+            # Explicitly set transcription provider
+            gather.attrs['transcriptionProvider'] = 'deepgram'
+            gather.say("I'm listening...")
             
-            # Log the TwiML response for debugging
-            twiml_xml = str(response)
-            handler.logger.info(f"[TwiML] Response for call {call_sid}:\n{twiml_xml}")
+            # If no input, redirect to process
+            response.redirect(f'/process_speech/{call_sid}')
             
-            return Response(content=twiml_xml, media_type='text/xml')
+            return Response(content=str(response), media_type='text/xml')
         
         @app.post('/process_speech/{call_sid}')
         async def handle_speech(call_sid: str, request: Request):
-            """Handle speech input from user (fallback - should use transcription callbacks instead)."""
-            handler.logger.warning(f"[PROCESS_SPEECH] Fallback endpoint called for call {call_sid} - Real-Time Transcriptions should be used instead")
-            
+            """Handle speech input from user."""
             if call_sid not in handler.active_calls:
                 raise HTTPException(status_code=404, detail="Call not found")
             
             form_data = await request.form()
             speech_result = form_data.get('SpeechResult', '')
             confidence = form_data.get('Confidence', '0')
-            language = form_data.get('Language', 'en-US')  # Default to en-US if not provided
             
-            handler.logger.info(f"[PROCESS_SPEECH] Speech received for call {call_sid}: {speech_result} (confidence: {confidence}, language: {language})")
-            
-            # Fetch call details from Twilio API to get language information
-            try:
-                config = get_twilio_config()
-                if config and config.account_sid and config.auth_token:
-                    client = Client(config.account_sid, config.auth_token)
-                    call = client.calls(call_sid).fetch()
-                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - Status: {call.status}, Direction: {call.direction}")
-                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - From: {call.from_formatted}, To: {call.to_formatted}")
-                    # Log any available language/region info
-                    if hasattr(call, 'price_unit'):
-                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - Price Unit: {call.price_unit}")
-                    
-                    # Fetch transcription records to get language information
-                    detected_languages = []
-                    try:
-                        transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
-                        handler.logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            handler.logger.info(f"[CALL_INFO] Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
-                    except Exception as trans_e:
-                        handler.logger.debug(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}")
-                    
-                    # Log detected languages
-                    if detected_languages:
-                        unique_languages = list(set(detected_languages))
-                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                    else:
-                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - No language detected yet (transcriptions may be in progress)")
-            except Exception as e:
-                handler.logger.warning(f"[CALL_INFO] Could not fetch call details from Twilio API: {e}")
+            handler.logger.info(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
             
             # Get session to check if we're collecting a name
             session = handler.orchestrator._get_session(call_sid, None)
@@ -334,8 +231,21 @@ class TwilioVoiceHandler:
                     response = VoiceResponse()
                     response.say(ai_response)
                     
-                    # No need for Gather - Real-Time Transcriptions continue automatically
-                    # Transcriptions will be sent to /transcription/{call_sid} callback
+                    # Continue the conversation with Deepgram Nova-3 for Hindi STT
+                    gather = response.gather(
+                        input='speech',
+                        speech_model="deepgram_nova-3",
+                        language='hi-IN',
+                        timeout=10,
+                        speech_timeout='auto',
+                        action=f'/process_speech/{call_sid}',
+                        method='POST'
+                    )
+                    gather.attrs['transcriptionProvider'] = 'deepgram'
+                    gather.say("I'm listening...")
+                    
+                    # If no input, redirect to process
+                    response.redirect(f'/process_speech/{call_sid}')
                     
                     twiml_str = str(response)
                     handler.logger.info(f"TwiML Response: {twiml_str}")
@@ -349,7 +259,19 @@ class TwilioVoiceHandler:
                         response.say("I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name.")
                     else:
                         response.say("I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?")
-                    # No need for Gather - Real-Time Transcriptions continue automatically
+                    # Continue the conversation - don't cut off (Deepgram Nova-3 for Hindi STT)
+                    gather = response.gather(
+                        speech_model="deepgram_nova-3",
+                        language='hi',
+                        input='speech',
+                        timeout=10,
+                        speech_timeout='auto',
+                        action=f'/process_speech/{call_sid}',
+                        method='POST'
+                    )
+                    gather.attrs['transcriptionProvider'] = 'deepgram'
+                    gather.say("I'm listening...")
+                    response.redirect(f'/process_speech/{call_sid}')
                     twiml_str = str(response)
                     return Response(content=twiml_str, media_type='text/xml')
             else:
@@ -398,8 +320,7 @@ class TwilioVoiceHandler:
                 else:
                     response.say("I didn't catch that. Please speak clearly.")
                 
-                # No need for Gather or redirect - Real-Time Transcriptions continue automatically
-                # Transcriptions will be sent to /transcription/{call_sid} callback
+                response.redirect(f'/process_speech/{call_sid}')
                 return Response(content=str(response), media_type='text/xml')
         
         @app.websocket('/media/{call_sid}')
@@ -487,108 +408,6 @@ class TwilioVoiceHandler:
             
             return PlainTextResponse("OK")
         
-        @app.post('/transcription/{call_sid}')
-        async def handle_transcription(call_sid: str, request: Request):
-            """Handle real-time transcription callbacks from Twilio with Deepgram."""
-            handler.logger.info(f"[TRANSCRIPTION] Received transcription callback for call {call_sid}")
-            
-            form_data = await request.form()
-            
-            # Log all form data for debugging
-            form_dict = dict(form_data)
-            handler.logger.info(f"[TRANSCRIPTION] Form data keys: {list(form_dict.keys())}")
-            handler.logger.debug(f"[TRANSCRIPTION] Full form data: {form_dict}")
-            
-            # Extract transcription data
-            transcription_text = form_data.get('TranscriptionText', '')
-            transcription_status = form_data.get('TranscriptionStatus', '')
-            transcription_sid = form_data.get('TranscriptionSid', '')
-            confidence = form_data.get('Confidence', '0')
-            language = form_data.get('Language', 'hi-IN')  # Should be hi-IN based on our config
-            
-            handler.logger.info(f"[TRANSCRIPTION] Call {call_sid}: Status={transcription_status}, Text='{transcription_text}', Confidence={confidence}, Language={language}")
-            
-            # Fetch call details from Twilio API to get language information
-            try:
-                config = get_twilio_config()
-                if config and config.account_sid and config.auth_token:
-                    client = Client(config.account_sid, config.auth_token)
-                    call = client.calls(call_sid).fetch()
-                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - Status: {call.status}, Direction: {call.direction}")
-                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - From: {call.from_formatted}, To: {call.to_formatted}")
-                    
-                    # Fetch transcription records to get language information
-                    detected_languages = []
-                    try:
-                        transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
-                        handler.logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            handler.logger.info(f"[CALL_INFO] Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
-                            # Store detected language
-                            if call_sid in handler.active_calls:
-                                if 'detected_languages' not in handler.active_calls[call_sid]:
-                                    handler.active_calls[call_sid]['detected_languages'] = []
-                                if trans_lang:
-                                    handler.active_calls[call_sid]['detected_languages'].append(trans_lang)
-                    except Exception as trans_e:
-                        handler.logger.debug(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}")
-                    
-                    # Log detected languages
-                    if detected_languages:
-                        unique_languages = list(set(detected_languages))
-                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                    else:
-                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - No language detected yet (transcriptions may be in progress)")
-            except Exception as e:
-                handler.logger.warning(f"[CALL_INFO] Could not fetch call details from Twilio API: {e}")
-            
-            # Only process completed transcriptions with text
-            if transcription_status == 'completed' and transcription_text and transcription_text.strip():
-                try:
-                    # Process transcription through VOCA orchestrator
-                    ai_response = handler.orchestrator.generate_reply(
-                        transcription_text,
-                        conversation_id=call_sid,
-                        call_sid=call_sid,
-                    )
-                    handler.logger.info(f"[TRANSCRIPTION] AI Response: {ai_response}")
-                    
-                    # Store transcription in call metadata
-                    if call_sid in handler.active_calls:
-                        if 'transcriptions' not in handler.active_calls[call_sid]:
-                            handler.active_calls[call_sid]['transcriptions'] = []
-                        handler.active_calls[call_sid]['transcriptions'].append({
-                            'text': transcription_text,
-                            'status': transcription_status,
-                            'transcription_sid': transcription_sid,
-                            'confidence': confidence,
-                            'timestamp': datetime.now(timezone.utc).isoformat()
-                        })
-                    
-                    # Generate TwiML response with AI reply
-                    # No need for Gather - Real-Time Transcriptions continue automatically
-                    # The transcription service will keep sending transcriptions as user speaks
-                    response = VoiceResponse()
-                    response.say(ai_response)
-                    
-                    # Return response - transcriptions will continue automatically
-                    return Response(content=str(response), media_type='text/xml')
-                    
-                except Exception as e:
-                    handler.logger.error(f"[TRANSCRIPTION] Error processing transcription: {e}", exc_info=True)
-                    # Return empty response to continue call
-                    response = VoiceResponse()
-                    return Response(content=str(response), media_type='text/xml')
-            else:
-                # For in-progress or empty transcriptions, just acknowledge
-                handler.logger.debug(f"[TRANSCRIPTION] Ignoring transcription: status={transcription_status}, has_text={bool(transcription_text)}")
-                return PlainTextResponse("OK")
-        
         @app.post('/call/status')
         async def handle_call_status(request: Request):
             """Handle call status updates from Twilio."""
@@ -609,63 +428,8 @@ class TwilioVoiceHandler:
         @app.post('/outbound')
         async def handle_outbound_call(request: Request):
             """Handle outbound call TwiML."""
-            try:
-                form_data = await request.form()
-                call_sid = form_data.get('CallSid')
-                
-                # Log immediately to ensure we see this endpoint is being called
-                # Use print as fallback to ensure visibility
-                print(f"[OUTBOUND] === OUTBOUND CALL WEBHOOK RECEIVED ===")
-                print(f"[OUTBOUND] Call SID: {call_sid}")
-                print(f"[OUTBOUND] Form data keys: {list(form_data.keys())}")
-                
-                handler.logger.info(f"=== OUTBOUND CALL WEBHOOK RECEIVED ===")
-                handler.logger.info(f"Outbound call webhook received, SID: {call_sid}")
-                handler.logger.info(f"Form data keys: {list(form_data.keys())}")
-            except Exception as e:
-                print(f"[OUTBOUND] ERROR in handle_outbound_call: {e}")
-                handler.logger.error(f"Error in handle_outbound_call: {e}", exc_info=True)
-                raise
-            
-            # Fetch call details from Twilio API to get language information
-            try:
-                config = get_twilio_config()
-                if config and config.account_sid and config.auth_token:
-                    handler.logger.info(f"[CALL_INFO] Fetching call details for outbound call {call_sid}...")
-                    client = Client(config.account_sid, config.auth_token)
-                    call = client.calls(call_sid).fetch()
-                    handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Status: {call.status}, Direction: {call.direction}")
-                    handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - From: {call.from_formatted}, To: {call.to_formatted}")
-                    # Log any available language/region info
-                    if hasattr(call, 'price_unit'):
-                        handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
-                    
-                    # Fetch transcription records to get language information
-                    detected_languages = []
-                    try:
-                        handler.logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                        transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
-                        handler.logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            handler.logger.info(f"[CALL_INFO] Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
-                    except Exception as trans_e:
-                        handler.logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
-                    
-                    # Log detected languages
-                    if detected_languages:
-                        unique_languages = list(set(detected_languages))
-                        handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                    else:
-                        handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
-                else:
-                    handler.logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
-            except Exception as e:
-                handler.logger.error(f"[CALL_INFO] Could not fetch outbound call details from Twilio API: {e}", exc_info=True)
+            form_data = await request.form()
+            call_sid = form_data.get('CallSid')
             
             # Store call information
             handler.active_calls[call_sid] = {
@@ -680,42 +444,25 @@ class TwilioVoiceHandler:
             
             response = VoiceResponse()
             
-            # Enable Real-Time Transcriptions with Deepgram Nova-3 for Hindi
-            config = get_twilio_config()
-            webhook_url = config.get_webhook_url()
-            base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
-            
-            # Set up Real-Time Transcription with Deepgram
-            transcription_callback_url = f'{base_url}/transcription/{call_sid}'
-            start = Start()
-            transcription = Transcription(
-                status_callback_url=transcription_callback_url,
-                transcription_engine='deepgram',
-                speech_model='nova-3',  # Use nova-3 for best accuracy
-                language_code='hi-IN'   # Hindi language
-            )
-            start.append(transcription)
-            
-            # Enable Media Streams for audio storage/debugging (if enabled)
+            # Enable Media Streams for audio storage/debugging
             if Config.audio_storage_enabled:
+                config = get_twilio_config()
+                webhook_url = config.get_webhook_url()
+                base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
                 # Convert to WebSocket URL (wss://)
                 if base_url.startswith('http://'):
-                    wss_base_url = base_url.replace('http://', 'wss://')
+                    base_url = base_url.replace('http://', 'wss://')
                 elif base_url.startswith('https://'):
-                    wss_base_url = base_url.replace('https://', 'wss://')
+                    base_url = base_url.replace('https://', 'wss://')
                 elif not base_url.startswith('wss://'):
-                    wss_base_url = f"wss://{base_url.lstrip('/')}"
-                else:
-                    wss_base_url = base_url
+                    base_url = f"wss://{base_url.lstrip('/')}"
                 
-                stream_url = f"{wss_base_url}/media/{call_sid}"
+                stream_url = f"{base_url}/media/{call_sid}"
+                start = Start()
                 stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
                 start.stream(stream)
+                response.append(start)
                 handler.logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for outbound call {call_sid}: {stream_url}")
-            
-            response.append(start)
-            handler.logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
-            handler.logger.info(f"[TRANSCRIPTION] Outbound call {call_sid} - Callback URL: {transcription_callback_url}")
             
             # Generate greeting from system prompt
             try:
@@ -732,40 +479,22 @@ class TwilioVoiceHandler:
             
             response.say(greeting)
             
-            # Real-Time Transcriptions work alongside the call but need the call to be active
-            # We use a minimal Gather that redirects to a no-op endpoint
-            # The actual speech processing happens via transcription callbacks
-            # This keeps the call listening while transcriptions handle the processing
+            # Gather user input with Deepgram Nova-3 for Hindi STT
             gather = response.gather(
+                speech_model="deepgram_nova-3",
+                language='hi-IN',
                 input='speech',
-                timeout=30,  # Long timeout - we rely on transcriptions
+                timeout=10, 
                 speech_timeout='auto',
-                action=f'/transcription_keepalive/{call_sid}',  # No-op endpoint
+                action=f'/process_speech/{call_sid}',
                 method='POST'
             )
-            # Don't add any say() to gather - we want silent listening
-            # Transcriptions will send callbacks to /transcription/{call_sid}
+            gather.attrs['transcriptionProvider'] = 'deepgram'
+            gather.say("I'm listening...")
             
-            # Log the TwiML response for debugging
-            twiml_xml = str(response)
-            handler.logger.info(f"[TwiML] Outbound response for call {call_sid}:\n{twiml_xml}")
+            # If no input, redirect to process
+            response.redirect(f'/process_speech/{call_sid}')
             
-            return Response(content=twiml_xml, media_type='text/xml')
-        
-        @app.post('/transcription_keepalive/{call_sid}')
-        async def handle_transcription_keepalive(call_sid: str, request: Request):
-            """No-op endpoint for Gather - actual processing happens via transcription callbacks."""
-            handler.logger.debug(f"[TRANSCRIPTION_KEEPALIVE] Gather keepalive for call {call_sid} - ignoring, using transcription callbacks")
-            # Return empty response - transcriptions will handle the actual processing
-            response = VoiceResponse()
-            # Add another Gather to keep listening
-            gather = response.gather(
-                input='speech',
-                timeout=30,
-                speech_timeout='auto',
-                action=f'/transcription_keepalive/{call_sid}',
-                method='POST'
-            )
             return Response(content=str(response), media_type='text/xml')
         
         # Start server in a separate thread using uvicorn
