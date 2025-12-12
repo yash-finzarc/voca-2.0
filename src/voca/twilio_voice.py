@@ -174,15 +174,17 @@ class TwilioVoiceHandler:
             handler.logger.info(f"[STT LANGUAGE] {stt_language} - Language configured for call {call_sid}")
             
             # Gather user input with Deepgram STT via Twilio
+            # Note: Use set() method to add speechModel and language attributes
             gather = response.gather(
-                speech_model=stt_model,
-                language=stt_language,
                 input='speech',
                 timeout=10,
                 speech_timeout='auto',
                 action=f'/process_speech/{call_sid}',
                 method='POST'
             )
+            # Set speechModel and language attributes using set()
+            gather.set('speechModel', stt_model)
+            gather.set('language', stt_language)
             gather.say("I'm listening...")
             
             # If no input, redirect to process
@@ -332,13 +334,14 @@ class TwilioVoiceHandler:
                     # Continue the conversation
                     gather = response.gather(
                         input='speech',
-                        speech_model=stt_model,
-                        language=stt_language,
                         timeout=10,
                         speech_timeout='auto',
                         action=f'/process_speech/{call_sid}',
                         method='POST'
                     )
+                    # Set speechModel and language attributes using set()
+                    gather.set('speechModel', stt_model)
+                    gather.set('language', stt_language)
                     gather.say("I'm listening...")
                     
                     # If no input, redirect to process
@@ -365,14 +368,15 @@ class TwilioVoiceHandler:
                     
                     # Continue the conversation - don't cut off
                     gather = response.gather(
-                        speech_model=stt_model,
-                        language=stt_language,
                         input='speech',
                         timeout=10,
                         speech_timeout='auto',
                         action=f'/process_speech/{call_sid}',
                         method='POST'
                     )
+                    # Set speechModel and language attributes using set()
+                    gather.set('speechModel', stt_model)
+                    gather.set('language', stt_language)
                     gather.say("I'm listening...")
                     response.redirect(f'/process_speech/{call_sid}')
                     twiml_str = str(response)
@@ -433,13 +437,14 @@ class TwilioVoiceHandler:
                 # The gather will listen for speech, and only if it times out will redirect execute
                 gather = response.gather(
                     input='speech',
-                    speech_model=stt_model,
-                    language=stt_language,
                     timeout=10,
                     speech_timeout='auto',
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
+                # Set speechModel and language attributes using set()
+                gather.set('speechModel', stt_model)
+                gather.set('language', stt_language)
                 gather.say("I'm listening...")
                 
                 # Redirect only if gather times out (this is the fallback)
@@ -620,15 +625,17 @@ class TwilioVoiceHandler:
             handler.logger.info(f"[STT LANGUAGE] {stt_language} - Language configured for outbound call {call_sid}")
             
             # Gather user input with Deepgram STT via Twilio
+            # Note: Use set() method to add speechModel and language attributes
             gather = response.gather(
-                speech_model=stt_model,
-                language=stt_language,
                 input='speech',
                 timeout=10, 
                 speech_timeout='auto',
                 action=f'/process_speech/{call_sid}',
                 method='POST'
             )
+            # Set speechModel and language attributes using set()
+            gather.set('speechModel', stt_model)
+            gather.set('language', stt_language)
             gather.say("I'm listening...")
             
             # If no input, redirect to process
