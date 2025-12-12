@@ -2440,9 +2440,9 @@ async def log_broadcaster():
 # ==================== Twilio Webhook Endpoints ====================
 # These endpoints are needed for Twilio to handle calls through ngrok
 
-@app.post("/outbound")
+@app.post("/outbound-legacy")
 async def handle_outbound_call(request: Request):
-    """Handle outbound call TwiML - forwarded from Twilio webhook server."""
+    """LEGACY: Handle outbound call TwiML (old Gather-based implementation)."""
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         # Return basic TwiML if Twilio not configured
@@ -2562,9 +2562,9 @@ async def handle_outbound_call(request: Request):
     return Response(content=str(response), media_type='text/xml')
 
 
-@app.post("/webhook/voice")
+@app.post("/webhook/voice-legacy")
 async def handle_incoming_call_webhook(request: Request):
-    """Handle incoming Twilio call webhook - forwarded from Twilio webhook server."""
+    """LEGACY: Handle incoming Twilio call webhook (old Gather-based implementation)."""
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         response = VoiceResponse()
@@ -2616,9 +2616,9 @@ async def handle_incoming_call_webhook(request: Request):
     return Response(content=str(response), media_type='text/xml')
 
 
-@app.post("/process_speech/{call_sid}")
+@app.post("/process_speech-legacy/{call_sid}")
 async def handle_speech_webhook(call_sid: str, request: Request):
-    """Handle speech input from Twilio - forwarded from Twilio webhook server."""
+    """LEGACY: Handle speech input from Twilio <Gather> webhooks (old implementation)."""
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         response = VoiceResponse()
