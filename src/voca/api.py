@@ -840,16 +840,13 @@ async def handle_outbound_call(request: Request):
                 if hasattr(call, 'price_unit'):
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
                 
-                # Fetch transcription records to get language information
+                # Only check for language if transcriptions already exist (skip during initial welcome message)
                 detected_languages = []
                 try:
-                    logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    
                     # First, check local real-time transcriptions stored in active_calls
-                    local_transcriptions = []
                     if call_sid in voice_handler.active_calls:
                         call_data = voice_handler.active_calls[call_sid]
-                        if 'transcriptions' in call_data:
+                        if 'transcriptions' in call_data and len(call_data['transcriptions']) > 0:
                             local_transcriptions = call_data['transcriptions']
                             logger.info(f"[CALL_INFO] Found {len(local_transcriptions)} local transcription records for call {call_sid}")
                             for trans in local_transcriptions:
@@ -861,34 +858,35 @@ async def handle_outbound_call(request: Request):
                                     detected_languages.append(trans_lang)
                                 logger.info(f"[CALL_INFO] Local Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                     
-                    # Also try to get transcriptions from Twilio API (via recordings) as fallback
+                    # Only check API if we have no local transcriptions and call might have recordings
                     if not detected_languages:
                         all_transcriptions = []
                         recordings = client.recordings.list(call_sid=call_sid, limit=10)
-                        for recording in recordings:
-                            try:
-                                recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
-                                all_transcriptions.extend(recording_transcriptions)
-                            except Exception as rec_e:
-                                logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
-                        transcriptions = all_transcriptions[:10]  # Limit to 10 total
-                        logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                        if recordings:  # Only check if recordings exist
+                            for recording in recordings:
+                                try:
+                                    recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                                    all_transcriptions.extend(recording_transcriptions)
+                                except Exception as rec_e:
+                                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                            transcriptions = all_transcriptions[:10]  # Limit to 10 total
+                            if transcriptions:
+                                logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
+                                for trans in transcriptions:
+                                    trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                                    trans_status = getattr(trans, 'status', 'N/A')
+                                    trans_text = getattr(trans, 'transcription_text', None)
+                                    if trans_lang:
+                                        detected_languages.append(trans_lang)
+                                    logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                 except Exception as trans_e:
-                    logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
+                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions (this is normal during initial call setup): {trans_e}")
                 
-                # Log detected languages
+                # Log detected languages only if found
                 if detected_languages:
                     unique_languages = list(set(detected_languages))
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                else:
-                    logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                # Don't log "no language detected" during initial call - this is expected
             else:
                 logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
         except Exception as e:
@@ -2311,16 +2309,13 @@ async def handle_outbound_call(request: Request):
                 if hasattr(call, 'price_unit'):
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
                 
-                # Fetch transcription records to get language information
+                # Only check for language if transcriptions already exist (skip during initial welcome message)
                 detected_languages = []
                 try:
-                    logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    
                     # First, check local real-time transcriptions stored in active_calls
-                    local_transcriptions = []
                     if call_sid in voice_handler.active_calls:
                         call_data = voice_handler.active_calls[call_sid]
-                        if 'transcriptions' in call_data:
+                        if 'transcriptions' in call_data and len(call_data['transcriptions']) > 0:
                             local_transcriptions = call_data['transcriptions']
                             logger.info(f"[CALL_INFO] Found {len(local_transcriptions)} local transcription records for call {call_sid}")
                             for trans in local_transcriptions:
@@ -2332,34 +2327,35 @@ async def handle_outbound_call(request: Request):
                                     detected_languages.append(trans_lang)
                                 logger.info(f"[CALL_INFO] Local Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                     
-                    # Also try to get transcriptions from Twilio API (via recordings) as fallback
+                    # Only check API if we have no local transcriptions and call might have recordings
                     if not detected_languages:
                         all_transcriptions = []
                         recordings = client.recordings.list(call_sid=call_sid, limit=10)
-                        for recording in recordings:
-                            try:
-                                recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
-                                all_transcriptions.extend(recording_transcriptions)
-                            except Exception as rec_e:
-                                logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
-                        transcriptions = all_transcriptions[:10]  # Limit to 10 total
-                        logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                        if recordings:  # Only check if recordings exist
+                            for recording in recordings:
+                                try:
+                                    recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                                    all_transcriptions.extend(recording_transcriptions)
+                                except Exception as rec_e:
+                                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                            transcriptions = all_transcriptions[:10]  # Limit to 10 total
+                            if transcriptions:
+                                logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
+                                for trans in transcriptions:
+                                    trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                                    trans_status = getattr(trans, 'status', 'N/A')
+                                    trans_text = getattr(trans, 'transcription_text', None)
+                                    if trans_lang:
+                                        detected_languages.append(trans_lang)
+                                    logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                 except Exception as trans_e:
-                    logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
+                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions (this is normal during initial call setup): {trans_e}")
                 
-                # Log detected languages
+                # Log detected languages only if found
                 if detected_languages:
                     unique_languages = list(set(detected_languages))
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                else:
-                    logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                # Don't log "no language detected" during initial call - this is expected
             else:
                 logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
         except Exception as e:
@@ -3775,16 +3771,13 @@ async def handle_outbound_call(request: Request):
                 if hasattr(call, 'price_unit'):
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
                 
-                # Fetch transcription records to get language information
+                # Only check for language if transcriptions already exist (skip during initial welcome message)
                 detected_languages = []
                 try:
-                    logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    
                     # First, check local real-time transcriptions stored in active_calls
-                    local_transcriptions = []
                     if call_sid in voice_handler.active_calls:
                         call_data = voice_handler.active_calls[call_sid]
-                        if 'transcriptions' in call_data:
+                        if 'transcriptions' in call_data and len(call_data['transcriptions']) > 0:
                             local_transcriptions = call_data['transcriptions']
                             logger.info(f"[CALL_INFO] Found {len(local_transcriptions)} local transcription records for call {call_sid}")
                             for trans in local_transcriptions:
@@ -3796,34 +3789,35 @@ async def handle_outbound_call(request: Request):
                                     detected_languages.append(trans_lang)
                                 logger.info(f"[CALL_INFO] Local Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                     
-                    # Also try to get transcriptions from Twilio API (via recordings) as fallback
+                    # Only check API if we have no local transcriptions and call might have recordings
                     if not detected_languages:
                         all_transcriptions = []
                         recordings = client.recordings.list(call_sid=call_sid, limit=10)
-                        for recording in recordings:
-                            try:
-                                recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
-                                all_transcriptions.extend(recording_transcriptions)
-                            except Exception as rec_e:
-                                logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
-                        transcriptions = all_transcriptions[:10]  # Limit to 10 total
-                        logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                        if recordings:  # Only check if recordings exist
+                            for recording in recordings:
+                                try:
+                                    recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                                    all_transcriptions.extend(recording_transcriptions)
+                                except Exception as rec_e:
+                                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                            transcriptions = all_transcriptions[:10]  # Limit to 10 total
+                            if transcriptions:
+                                logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
+                                for trans in transcriptions:
+                                    trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                                    trans_status = getattr(trans, 'status', 'N/A')
+                                    trans_text = getattr(trans, 'transcription_text', None)
+                                    if trans_lang:
+                                        detected_languages.append(trans_lang)
+                                    logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                 except Exception as trans_e:
-                    logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
+                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions (this is normal during initial call setup): {trans_e}")
                 
-                # Log detected languages
+                # Log detected languages only if found
                 if detected_languages:
                     unique_languages = list(set(detected_languages))
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                else:
-                    logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                # Don't log "no language detected" during initial call - this is expected
             else:
                 logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
         except Exception as e:
@@ -5084,16 +5078,13 @@ async def handle_outbound_call(request: Request):
                 if hasattr(call, 'price_unit'):
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
                 
-                # Fetch transcription records to get language information
+                # Only check for language if transcriptions already exist (skip during initial welcome message)
                 detected_languages = []
                 try:
-                    logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    
                     # First, check local real-time transcriptions stored in active_calls
-                    local_transcriptions = []
                     if call_sid in voice_handler.active_calls:
                         call_data = voice_handler.active_calls[call_sid]
-                        if 'transcriptions' in call_data:
+                        if 'transcriptions' in call_data and len(call_data['transcriptions']) > 0:
                             local_transcriptions = call_data['transcriptions']
                             logger.info(f"[CALL_INFO] Found {len(local_transcriptions)} local transcription records for call {call_sid}")
                             for trans in local_transcriptions:
@@ -5105,34 +5096,35 @@ async def handle_outbound_call(request: Request):
                                     detected_languages.append(trans_lang)
                                 logger.info(f"[CALL_INFO] Local Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                     
-                    # Also try to get transcriptions from Twilio API (via recordings) as fallback
+                    # Only check API if we have no local transcriptions and call might have recordings
                     if not detected_languages:
                         all_transcriptions = []
                         recordings = client.recordings.list(call_sid=call_sid, limit=10)
-                        for recording in recordings:
-                            try:
-                                recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
-                                all_transcriptions.extend(recording_transcriptions)
-                            except Exception as rec_e:
-                                logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
-                        transcriptions = all_transcriptions[:10]  # Limit to 10 total
-                        logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                        if recordings:  # Only check if recordings exist
+                            for recording in recordings:
+                                try:
+                                    recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                                    all_transcriptions.extend(recording_transcriptions)
+                                except Exception as rec_e:
+                                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                            transcriptions = all_transcriptions[:10]  # Limit to 10 total
+                            if transcriptions:
+                                logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
+                                for trans in transcriptions:
+                                    trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                                    trans_status = getattr(trans, 'status', 'N/A')
+                                    trans_text = getattr(trans, 'transcription_text', None)
+                                    if trans_lang:
+                                        detected_languages.append(trans_lang)
+                                    logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                 except Exception as trans_e:
-                    logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
+                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions (this is normal during initial call setup): {trans_e}")
                 
-                # Log detected languages
+                # Log detected languages only if found
                 if detected_languages:
                     unique_languages = list(set(detected_languages))
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                else:
-                    logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                # Don't log "no language detected" during initial call - this is expected
             else:
                 logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
         except Exception as e:
@@ -6548,16 +6540,13 @@ async def handle_outbound_call(request: Request):
                 if hasattr(call, 'price_unit'):
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
                 
-                # Fetch transcription records to get language information
+                # Only check for language if transcriptions already exist (skip during initial welcome message)
                 detected_languages = []
                 try:
-                    logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    
                     # First, check local real-time transcriptions stored in active_calls
-                    local_transcriptions = []
                     if call_sid in voice_handler.active_calls:
                         call_data = voice_handler.active_calls[call_sid]
-                        if 'transcriptions' in call_data:
+                        if 'transcriptions' in call_data and len(call_data['transcriptions']) > 0:
                             local_transcriptions = call_data['transcriptions']
                             logger.info(f"[CALL_INFO] Found {len(local_transcriptions)} local transcription records for call {call_sid}")
                             for trans in local_transcriptions:
@@ -6569,34 +6558,35 @@ async def handle_outbound_call(request: Request):
                                     detected_languages.append(trans_lang)
                                 logger.info(f"[CALL_INFO] Local Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                     
-                    # Also try to get transcriptions from Twilio API (via recordings) as fallback
+                    # Only check API if we have no local transcriptions and call might have recordings
                     if not detected_languages:
                         all_transcriptions = []
                         recordings = client.recordings.list(call_sid=call_sid, limit=10)
-                        for recording in recordings:
-                            try:
-                                recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
-                                all_transcriptions.extend(recording_transcriptions)
-                            except Exception as rec_e:
-                                logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
-                        transcriptions = all_transcriptions[:10]  # Limit to 10 total
-                        logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                        if recordings:  # Only check if recordings exist
+                            for recording in recordings:
+                                try:
+                                    recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                                    all_transcriptions.extend(recording_transcriptions)
+                                except Exception as rec_e:
+                                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                            transcriptions = all_transcriptions[:10]  # Limit to 10 total
+                            if transcriptions:
+                                logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
+                                for trans in transcriptions:
+                                    trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                                    trans_status = getattr(trans, 'status', 'N/A')
+                                    trans_text = getattr(trans, 'transcription_text', None)
+                                    if trans_lang:
+                                        detected_languages.append(trans_lang)
+                                    logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                 except Exception as trans_e:
-                    logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
+                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions (this is normal during initial call setup): {trans_e}")
                 
-                # Log detected languages
+                # Log detected languages only if found
                 if detected_languages:
                     unique_languages = list(set(detected_languages))
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                else:
-                    logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                # Don't log "no language detected" during initial call - this is expected
             else:
                 logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
         except Exception as e:
@@ -7875,16 +7865,13 @@ async def handle_outbound_call(request: Request):
                 if hasattr(call, 'price_unit'):
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
                 
-                # Fetch transcription records to get language information
+                # Only check for language if transcriptions already exist (skip during initial welcome message)
                 detected_languages = []
                 try:
-                    logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    
                     # First, check local real-time transcriptions stored in active_calls
-                    local_transcriptions = []
                     if call_sid in voice_handler.active_calls:
                         call_data = voice_handler.active_calls[call_sid]
-                        if 'transcriptions' in call_data:
+                        if 'transcriptions' in call_data and len(call_data['transcriptions']) > 0:
                             local_transcriptions = call_data['transcriptions']
                             logger.info(f"[CALL_INFO] Found {len(local_transcriptions)} local transcription records for call {call_sid}")
                             for trans in local_transcriptions:
@@ -7896,34 +7883,35 @@ async def handle_outbound_call(request: Request):
                                     detected_languages.append(trans_lang)
                                 logger.info(f"[CALL_INFO] Local Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                     
-                    # Also try to get transcriptions from Twilio API (via recordings) as fallback
+                    # Only check API if we have no local transcriptions and call might have recordings
                     if not detected_languages:
                         all_transcriptions = []
                         recordings = client.recordings.list(call_sid=call_sid, limit=10)
-                        for recording in recordings:
-                            try:
-                                recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
-                                all_transcriptions.extend(recording_transcriptions)
-                            except Exception as rec_e:
-                                logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
-                        transcriptions = all_transcriptions[:10]  # Limit to 10 total
-                        logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                        if recordings:  # Only check if recordings exist
+                            for recording in recordings:
+                                try:
+                                    recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                                    all_transcriptions.extend(recording_transcriptions)
+                                except Exception as rec_e:
+                                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                            transcriptions = all_transcriptions[:10]  # Limit to 10 total
+                            if transcriptions:
+                                logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
+                                for trans in transcriptions:
+                                    trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                                    trans_status = getattr(trans, 'status', 'N/A')
+                                    trans_text = getattr(trans, 'transcription_text', None)
+                                    if trans_lang:
+                                        detected_languages.append(trans_lang)
+                                    logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                 except Exception as trans_e:
-                    logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
+                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions (this is normal during initial call setup): {trans_e}")
                 
-                # Log detected languages
+                # Log detected languages only if found
                 if detected_languages:
                     unique_languages = list(set(detected_languages))
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                else:
-                    logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                # Don't log "no language detected" during initial call - this is expected
             else:
                 logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
         except Exception as e:
@@ -9339,16 +9327,13 @@ async def handle_outbound_call(request: Request):
                 if hasattr(call, 'price_unit'):
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
                 
-                # Fetch transcription records to get language information
+                # Only check for language if transcriptions already exist (skip during initial welcome message)
                 detected_languages = []
                 try:
-                    logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    
                     # First, check local real-time transcriptions stored in active_calls
-                    local_transcriptions = []
                     if call_sid in voice_handler.active_calls:
                         call_data = voice_handler.active_calls[call_sid]
-                        if 'transcriptions' in call_data:
+                        if 'transcriptions' in call_data and len(call_data['transcriptions']) > 0:
                             local_transcriptions = call_data['transcriptions']
                             logger.info(f"[CALL_INFO] Found {len(local_transcriptions)} local transcription records for call {call_sid}")
                             for trans in local_transcriptions:
@@ -9360,34 +9345,35 @@ async def handle_outbound_call(request: Request):
                                     detected_languages.append(trans_lang)
                                 logger.info(f"[CALL_INFO] Local Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                     
-                    # Also try to get transcriptions from Twilio API (via recordings) as fallback
+                    # Only check API if we have no local transcriptions and call might have recordings
                     if not detected_languages:
                         all_transcriptions = []
                         recordings = client.recordings.list(call_sid=call_sid, limit=10)
-                        for recording in recordings:
-                            try:
-                                recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
-                                all_transcriptions.extend(recording_transcriptions)
-                            except Exception as rec_e:
-                                logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
-                        transcriptions = all_transcriptions[:10]  # Limit to 10 total
-                        logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                        if recordings:  # Only check if recordings exist
+                            for recording in recordings:
+                                try:
+                                    recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                                    all_transcriptions.extend(recording_transcriptions)
+                                except Exception as rec_e:
+                                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                            transcriptions = all_transcriptions[:10]  # Limit to 10 total
+                            if transcriptions:
+                                logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
+                                for trans in transcriptions:
+                                    trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                                    trans_status = getattr(trans, 'status', 'N/A')
+                                    trans_text = getattr(trans, 'transcription_text', None)
+                                    if trans_lang:
+                                        detected_languages.append(trans_lang)
+                                    logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                 except Exception as trans_e:
-                    logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
+                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions (this is normal during initial call setup): {trans_e}")
                 
-                # Log detected languages
+                # Log detected languages only if found
                 if detected_languages:
                     unique_languages = list(set(detected_languages))
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                else:
-                    logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                # Don't log "no language detected" during initial call - this is expected
             else:
                 logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
         except Exception as e:
@@ -10649,16 +10635,13 @@ async def handle_outbound_call(request: Request):
                 if hasattr(call, 'price_unit'):
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
                 
-                # Fetch transcription records to get language information
+                # Only check for language if transcriptions already exist (skip during initial welcome message)
                 detected_languages = []
                 try:
-                    logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    
                     # First, check local real-time transcriptions stored in active_calls
-                    local_transcriptions = []
                     if call_sid in voice_handler.active_calls:
                         call_data = voice_handler.active_calls[call_sid]
-                        if 'transcriptions' in call_data:
+                        if 'transcriptions' in call_data and len(call_data['transcriptions']) > 0:
                             local_transcriptions = call_data['transcriptions']
                             logger.info(f"[CALL_INFO] Found {len(local_transcriptions)} local transcription records for call {call_sid}")
                             for trans in local_transcriptions:
@@ -10670,34 +10653,35 @@ async def handle_outbound_call(request: Request):
                                     detected_languages.append(trans_lang)
                                 logger.info(f"[CALL_INFO] Local Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                     
-                    # Also try to get transcriptions from Twilio API (via recordings) as fallback
+                    # Only check API if we have no local transcriptions and call might have recordings
                     if not detected_languages:
                         all_transcriptions = []
                         recordings = client.recordings.list(call_sid=call_sid, limit=10)
-                        for recording in recordings:
-                            try:
-                                recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
-                                all_transcriptions.extend(recording_transcriptions)
-                            except Exception as rec_e:
-                                logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
-                        transcriptions = all_transcriptions[:10]  # Limit to 10 total
-                        logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                        if recordings:  # Only check if recordings exist
+                            for recording in recordings:
+                                try:
+                                    recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                                    all_transcriptions.extend(recording_transcriptions)
+                                except Exception as rec_e:
+                                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                            transcriptions = all_transcriptions[:10]  # Limit to 10 total
+                            if transcriptions:
+                                logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
+                                for trans in transcriptions:
+                                    trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                                    trans_status = getattr(trans, 'status', 'N/A')
+                                    trans_text = getattr(trans, 'transcription_text', None)
+                                    if trans_lang:
+                                        detected_languages.append(trans_lang)
+                                    logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                 except Exception as trans_e:
-                    logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
+                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions (this is normal during initial call setup): {trans_e}")
                 
-                # Log detected languages
+                # Log detected languages only if found
                 if detected_languages:
                     unique_languages = list(set(detected_languages))
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                else:
-                    logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                # Don't log "no language detected" during initial call - this is expected
             else:
                 logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
         except Exception as e:
@@ -11959,16 +11943,13 @@ async def handle_outbound_call(request: Request):
                 if hasattr(call, 'price_unit'):
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
                 
-                # Fetch transcription records to get language information
+                # Only check for language if transcriptions already exist (skip during initial welcome message)
                 detected_languages = []
                 try:
-                    logger.info(f"[CALL_INFO] Fetching transcription records for call {call_sid}...")
-                    
                     # First, check local real-time transcriptions stored in active_calls
-                    local_transcriptions = []
                     if call_sid in voice_handler.active_calls:
                         call_data = voice_handler.active_calls[call_sid]
-                        if 'transcriptions' in call_data:
+                        if 'transcriptions' in call_data and len(call_data['transcriptions']) > 0:
                             local_transcriptions = call_data['transcriptions']
                             logger.info(f"[CALL_INFO] Found {len(local_transcriptions)} local transcription records for call {call_sid}")
                             for trans in local_transcriptions:
@@ -11980,34 +11961,35 @@ async def handle_outbound_call(request: Request):
                                     detected_languages.append(trans_lang)
                                 logger.info(f"[CALL_INFO] Local Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                     
-                    # Also try to get transcriptions from Twilio API (via recordings) as fallback
+                    # Only check API if we have no local transcriptions and call might have recordings
                     if not detected_languages:
                         all_transcriptions = []
                         recordings = client.recordings.list(call_sid=call_sid, limit=10)
-                        for recording in recordings:
-                            try:
-                                recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
-                                all_transcriptions.extend(recording_transcriptions)
-                            except Exception as rec_e:
-                                logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
-                        transcriptions = all_transcriptions[:10]  # Limit to 10 total
-                        logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
-                        for trans in transcriptions:
-                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
-                            trans_status = getattr(trans, 'status', 'N/A')
-                            trans_text = getattr(trans, 'transcription_text', None)
-                            if trans_lang:
-                                detected_languages.append(trans_lang)
-                            logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                        if recordings:  # Only check if recordings exist
+                            for recording in recordings:
+                                try:
+                                    recording_transcriptions = client.recordings(recording.sid).transcriptions.list(limit=10)
+                                    all_transcriptions.extend(recording_transcriptions)
+                                except Exception as rec_e:
+                                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions for recording {recording.sid}: {rec_e}")
+                            transcriptions = all_transcriptions[:10]  # Limit to 10 total
+                            if transcriptions:
+                                logger.info(f"[CALL_INFO] Found {len(transcriptions)} API transcription records for outbound call {call_sid}")
+                                for trans in transcriptions:
+                                    trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                                    trans_status = getattr(trans, 'status', 'N/A')
+                                    trans_text = getattr(trans, 'transcription_text', None)
+                                    if trans_lang:
+                                        detected_languages.append(trans_lang)
+                                    logger.info(f"[CALL_INFO] API Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
                 except Exception as trans_e:
-                    logger.warning(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}", exc_info=True)
+                    logger.debug(f"[CALL_INFO] Could not fetch transcriptions (this is normal during initial call setup): {trans_e}")
                 
-                # Log detected languages
+                # Log detected languages only if found
                 if detected_languages:
                     unique_languages = list(set(detected_languages))
                     logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
-                else:
-                    logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                # Don't log "no language detected" during initial call - this is expected
             else:
                 logger.warning(f"[CALL_INFO] Twilio config not available (account_sid or auth_token missing)")
         except Exception as e:

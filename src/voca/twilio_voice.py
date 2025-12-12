@@ -435,6 +435,18 @@ class TwilioVoiceHandler:
                             'language_code': language,  # Alias for compatibility
                             'timestamp': datetime.now(timezone.utc).isoformat()
                         })
+                        
+                        # Log language detection when we have transcriptions with language
+                        if language:
+                            # Get all unique languages from all transcriptions for this call
+                            all_languages = []
+                            for trans in handler.active_calls[call_sid]['transcriptions']:
+                                trans_lang = trans.get('language') or trans.get('language_code')
+                                if trans_lang:
+                                    all_languages.append(trans_lang)
+                            if all_languages:
+                                unique_languages = list(set(all_languages))
+                                handler.logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
                     
                     # Generate TwiML response with AI reply
                     # No need for Gather - Real-Time Transcriptions continue automatically
