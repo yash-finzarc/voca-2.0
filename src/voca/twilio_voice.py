@@ -602,7 +602,10 @@ class TwilioVoiceHandler:
             form_data = await request.form()
             call_sid = form_data.get('CallSid')
             
+            # Log immediately to ensure we see this endpoint is being called
+            handler.logger.info(f"=== OUTBOUND CALL WEBHOOK RECEIVED ===")
             handler.logger.info(f"Outbound call webhook received, SID: {call_sid}")
+            handler.logger.info(f"Form data keys: {list(form_data.keys())}")
             
             # Fetch call details from Twilio API to get language information
             try:
