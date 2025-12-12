@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSoc
 from fastapi.responses import PlainTextResponse
 import uvicorn
 from twilio.rest import Client
-from twilio.twiml.voice_response import VoiceResponse, Start, Stream
+from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription
 from twilio.twiml.messaging_response import MessagingResponse
 import threading
 import queue
@@ -85,52 +85,53 @@ class TwilioVoiceHandler:
                 handler.logger.error(f"Error generating greeting: {e}")
                 greeting = "Hello! How can I help you today?"
             
-            # Enable Media Streams for audio storage/debugging
+            # Enable Real-Time Transcriptions with Deepgram Nova-3 for Hindi
+            # This provides real-time transcriptions via callbacks (no Deepgram API key needed)
+            config = get_twilio_config()
+            webhook_url = config.get_webhook_url()
+            base_url = webhook_url.replace('/webhook/voice', '')
+            
+            # Set up Real-Time Transcription with Deepgram Nova-3 for Hindi
+            # This provides real-time transcriptions via callbacks (no Deepgram API key needed)
+            transcription_callback_url = f'{base_url}/transcription/{call_sid}'
+            start = Start()
+            transcription = Transcription(
+                status_callback_url=transcription_callback_url,
+                transcription_engine='deepgram',
+                speech_model='nova-3',  # Use nova-3 for best accuracy
+                language_code='hi-IN'   # Hindi language
+            )
+            start.append(transcription)
+            response.append(start)
+            handler.logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for call {call_sid}")
+            handler.logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback_url}")
+            
+            # Enable Media Streams for audio storage/debugging (if enabled)
             # This streams raw audio to /media/{call_sid} WebSocket endpoint for storage
             if Config.audio_storage_enabled:
-                # Get webhook base URL from config or use default
-                config = get_twilio_config()
-                webhook_url = config.get_webhook_url()
-                # Remove /webhook/voice to get base URL
-                base_url = webhook_url.replace('/webhook/voice', '')
                 # Twilio Media Streams require WebSocket (wss://) not HTTP
                 # Convert http:// to wss:// or https:// to wss://
                 if base_url.startswith('http://'):
-                    base_url = base_url.replace('http://', 'wss://')
+                    wss_base_url = base_url.replace('http://', 'wss://')
                 elif base_url.startswith('https://'):
-                    base_url = base_url.replace('https://', 'wss://')
+                    wss_base_url = base_url.replace('https://', 'wss://')
                 elif not base_url.startswith('wss://'):
-                    # If no protocol, assume we need wss://
-                    base_url = f"wss://{base_url.lstrip('/')}"
+                    wss_base_url = f"wss://{base_url.lstrip('/')}"
+                else:
+                    wss_base_url = base_url
                 
-                stream_url = f"{base_url}/media/{call_sid}"
-                start = Start()
+                stream_url = f"{wss_base_url}/media/{call_sid}"
                 stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
                 start.stream(stream)
-                response.append(start)
                 handler.logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
                 handler.logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
-                handler.logger.info(f"[AUDIO_DEBUG] TwiML includes: <Start><Stream url='{stream_url}'></Stream></Start>")
             
             # Say welcome message
             response.say(greeting)
             
-            # Gather user input with Deepgram Nova-3 for Hindi STT
-            gather = response.gather(
-                speech_model="deepgram_nova-3",
-                language='hi-IN',
-                input='speech',
-                timeout=10,
-                speech_timeout='auto',
-                action=f'/process_speech/{call_sid}',
-                method='POST'
-            )
-            # Explicitly set transcription provider
-            gather.attrs['transcriptionProvider'] = 'deepgram'
-            gather.say("I'm listening...")
-            
-            # If no input, redirect to process
-            response.redirect(f'/process_speech/{call_sid}')
+            # No need for Gather - Real-Time Transcriptions will handle speech recognition
+            # Transcriptions will be sent to /transcription/{call_sid} callback
+            # The callback will process transcriptions and generate AI responses
             
             return Response(content=str(response), media_type='text/xml')
         
@@ -231,21 +232,8 @@ class TwilioVoiceHandler:
                     response = VoiceResponse()
                     response.say(ai_response)
                     
-                    # Continue the conversation with Deepgram Nova-3 for Hindi STT
-                    gather = response.gather(
-                        input='speech',
-                        speech_model="deepgram_nova-3",
-                        language='hi-IN',
-                        timeout=10,
-                        speech_timeout='auto',
-                        action=f'/process_speech/{call_sid}',
-                        method='POST'
-                    )
-                    gather.attrs['transcriptionProvider'] = 'deepgram'
-                    gather.say("I'm listening...")
-                    
-                    # If no input, redirect to process
-                    response.redirect(f'/process_speech/{call_sid}')
+                    # No need for Gather - Real-Time Transcriptions continue automatically
+                    # Transcriptions will be sent to /transcription/{call_sid} callback
                     
                     twiml_str = str(response)
                     handler.logger.info(f"TwiML Response: {twiml_str}")
@@ -259,19 +247,7 @@ class TwilioVoiceHandler:
                         response.say("I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name.")
                     else:
                         response.say("I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?")
-                    # Continue the conversation - don't cut off (Deepgram Nova-3 for Hindi STT)
-                    gather = response.gather(
-                        speech_model="deepgram_nova-3",
-                        language='hi-IN',
-                        input='speech',
-                        timeout=10,
-                        speech_timeout='auto',
-                        action=f'/process_speech/{call_sid}',
-                        method='POST'
-                    )
-                    gather.attrs['transcriptionProvider'] = 'deepgram'
-                    gather.say("I'm listening...")
-                    response.redirect(f'/process_speech/{call_sid}')
+                    # No need for Gather - Real-Time Transcriptions continue automatically
                     twiml_str = str(response)
                     return Response(content=twiml_str, media_type='text/xml')
             else:
@@ -320,7 +296,8 @@ class TwilioVoiceHandler:
                 else:
                     response.say("I didn't catch that. Please speak clearly.")
                 
-                response.redirect(f'/process_speech/{call_sid}')
+                # No need for Gather or redirect - Real-Time Transcriptions continue automatically
+                # Transcriptions will be sent to /transcription/{call_sid} callback
                 return Response(content=str(response), media_type='text/xml')
         
         @app.websocket('/media/{call_sid}')
@@ -408,6 +385,61 @@ class TwilioVoiceHandler:
             
             return PlainTextResponse("OK")
         
+        @app.post('/transcription/{call_sid}')
+        async def handle_transcription(call_sid: str, request: Request):
+            """Handle real-time transcription callbacks from Twilio with Deepgram."""
+            form_data = await request.form()
+            
+            # Extract transcription data
+            transcription_text = form_data.get('TranscriptionText', '')
+            transcription_status = form_data.get('TranscriptionStatus', '')
+            transcription_sid = form_data.get('TranscriptionSid', '')
+            confidence = form_data.get('Confidence', '0')
+            
+            handler.logger.info(f"[TRANSCRIPTION] Call {call_sid}: Status={transcription_status}, Text='{transcription_text}', Confidence={confidence}")
+            
+            # Only process completed transcriptions with text
+            if transcription_status == 'completed' and transcription_text and transcription_text.strip():
+                try:
+                    # Process transcription through VOCA orchestrator
+                    ai_response = handler.orchestrator.generate_reply(
+                        transcription_text,
+                        conversation_id=call_sid,
+                        call_sid=call_sid,
+                    )
+                    handler.logger.info(f"[TRANSCRIPTION] AI Response: {ai_response}")
+                    
+                    # Store transcription in call metadata
+                    if call_sid in handler.active_calls:
+                        if 'transcriptions' not in handler.active_calls[call_sid]:
+                            handler.active_calls[call_sid]['transcriptions'] = []
+                        handler.active_calls[call_sid]['transcriptions'].append({
+                            'text': transcription_text,
+                            'status': transcription_status,
+                            'transcription_sid': transcription_sid,
+                            'confidence': confidence,
+                            'timestamp': datetime.now(timezone.utc).isoformat()
+                        })
+                    
+                    # Generate TwiML response with AI reply
+                    # No need for Gather - Real-Time Transcriptions continue automatically
+                    # The transcription service will keep sending transcriptions as user speaks
+                    response = VoiceResponse()
+                    response.say(ai_response)
+                    
+                    # Return response - transcriptions will continue automatically
+                    return Response(content=str(response), media_type='text/xml')
+                    
+                except Exception as e:
+                    handler.logger.error(f"[TRANSCRIPTION] Error processing transcription: {e}", exc_info=True)
+                    # Return empty response to continue call
+                    response = VoiceResponse()
+                    return Response(content=str(response), media_type='text/xml')
+            else:
+                # For in-progress or empty transcriptions, just acknowledge
+                handler.logger.debug(f"[TRANSCRIPTION] Ignoring transcription: status={transcription_status}, has_text={bool(transcription_text)}")
+                return PlainTextResponse("OK")
+        
         @app.post('/call/status')
         async def handle_call_status(request: Request):
             """Handle call status updates from Twilio."""
@@ -444,25 +476,41 @@ class TwilioVoiceHandler:
             
             response = VoiceResponse()
             
-            # Enable Media Streams for audio storage/debugging
+            # Enable Real-Time Transcriptions with Deepgram Nova-3 for Hindi
+            config = get_twilio_config()
+            webhook_url = config.get_webhook_url()
+            base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+            
+            # Set up Real-Time Transcription with Deepgram
+            transcription_callback_url = f'{base_url}/transcription/{call_sid}'
+            start = Start()
+            transcription = Transcription(
+                status_callback_url=transcription_callback_url,
+                transcription_engine='deepgram',
+                speech_model='nova-3',  # Use nova-3 for best accuracy
+                language_code='hi-IN'   # Hindi language
+            )
+            start.append(transcription)
+            
+            # Enable Media Streams for audio storage/debugging (if enabled)
             if Config.audio_storage_enabled:
-                config = get_twilio_config()
-                webhook_url = config.get_webhook_url()
-                base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
                 # Convert to WebSocket URL (wss://)
                 if base_url.startswith('http://'):
-                    base_url = base_url.replace('http://', 'wss://')
+                    wss_base_url = base_url.replace('http://', 'wss://')
                 elif base_url.startswith('https://'):
-                    base_url = base_url.replace('https://', 'wss://')
+                    wss_base_url = base_url.replace('https://', 'wss://')
                 elif not base_url.startswith('wss://'):
-                    base_url = f"wss://{base_url.lstrip('/')}"
+                    wss_base_url = f"wss://{base_url.lstrip('/')}"
+                else:
+                    wss_base_url = base_url
                 
-                stream_url = f"{base_url}/media/{call_sid}"
-                start = Start()
+                stream_url = f"{wss_base_url}/media/{call_sid}"
                 stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
                 start.stream(stream)
-                response.append(start)
                 handler.logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for outbound call {call_sid}: {stream_url}")
+            
+            response.append(start)
+            handler.logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
             
             # Generate greeting from system prompt
             try:
@@ -479,21 +527,9 @@ class TwilioVoiceHandler:
             
             response.say(greeting)
             
-            # Gather user input with Deepgram Nova-3 for Hindi STT
-            gather = response.gather(
-                speech_model="deepgram_nova-3",
-                language='hi-IN',
-                input='speech',
-                timeout=10, 
-                speech_timeout='auto',
-                action=f'/process_speech/{call_sid}',
-                method='POST'
-            )
-            gather.attrs['transcriptionProvider'] = 'deepgram'
-            gather.say("I'm listening...")
-            
-            # If no input, redirect to process
-            response.redirect(f'/process_speech/{call_sid}')
+            # No need for Gather - Real-Time Transcriptions will handle speech recognition
+            # Transcriptions will be sent to /transcription/{call_sid} callback automatically
+            # The callback will process transcriptions and generate AI responses
             
             return Response(content=str(response), media_type='text/xml')
         
