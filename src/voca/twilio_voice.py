@@ -178,9 +178,19 @@ class TwilioVoiceHandler:
             # Say welcome message
             response.say(greeting)
             
-            # No need for Gather - Real-Time Transcriptions will handle speech recognition
-            # Transcriptions will be sent to /transcription/{call_sid} callback
-            # The callback will process transcriptions and generate AI responses
+            # Real-Time Transcriptions work alongside the call but need the call to be active
+            # We use a minimal Gather that redirects to a no-op endpoint
+            # The actual speech processing happens via transcription callbacks
+            # This keeps the call listening while transcriptions handle the processing
+            gather = response.gather(
+                input='speech',
+                timeout=30,  # Long timeout - we rely on transcriptions
+                speech_timeout='auto',
+                action=f'/transcription_keepalive/{call_sid}',  # No-op endpoint
+                method='POST'
+            )
+            # Don't add any say() to gather - we want silent listening
+            # Transcriptions will send callbacks to /transcription/{call_sid}
             
             # Log the TwiML response for debugging
             twiml_xml = str(response)
@@ -712,15 +722,41 @@ class TwilioVoiceHandler:
             
             response.say(greeting)
             
-            # No need for Gather - Real-Time Transcriptions will handle speech recognition
-            # Transcriptions will be sent to /transcription/{call_sid} callback automatically
-            # The callback will process transcriptions and generate AI responses
+            # Real-Time Transcriptions work alongside the call but need the call to be active
+            # We use a minimal Gather that redirects to a no-op endpoint
+            # The actual speech processing happens via transcription callbacks
+            # This keeps the call listening while transcriptions handle the processing
+            gather = response.gather(
+                input='speech',
+                timeout=30,  # Long timeout - we rely on transcriptions
+                speech_timeout='auto',
+                action=f'/transcription_keepalive/{call_sid}',  # No-op endpoint
+                method='POST'
+            )
+            # Don't add any say() to gather - we want silent listening
+            # Transcriptions will send callbacks to /transcription/{call_sid}
             
             # Log the TwiML response for debugging
             twiml_xml = str(response)
             handler.logger.info(f"[TwiML] Outbound response for call {call_sid}:\n{twiml_xml}")
             
             return Response(content=twiml_xml, media_type='text/xml')
+        
+        @app.post('/transcription_keepalive/{call_sid}')
+        async def handle_transcription_keepalive(call_sid: str, request: Request):
+            """No-op endpoint for Gather - actual processing happens via transcription callbacks."""
+            handler.logger.debug(f"[TRANSCRIPTION_KEEPALIVE] Gather keepalive for call {call_sid} - ignoring, using transcription callbacks")
+            # Return empty response - transcriptions will handle the actual processing
+            response = VoiceResponse()
+            # Add another Gather to keep listening
+            gather = response.gather(
+                input='speech',
+                timeout=30,
+                speech_timeout='auto',
+                action=f'/transcription_keepalive/{call_sid}',
+                method='POST'
+            )
+            return Response(content=str(response), media_type='text/xml')
         
         # Start server in a separate thread using uvicorn
         config = uvicorn.Config(app, host=host, port=port, log_level="info")
