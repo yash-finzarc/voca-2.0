@@ -96,7 +96,7 @@ class TwilioVoiceHandler:
             transcription_callback_url = f'{base_url}/transcription/{call_sid}'
             start = Start()
             transcription = Transcription(
-                status_callback_url=transcription_callback_url,
+                statusCallbackUrl=transcription_callback_url,
                 transcription_engine='deepgram',
                 speech_model='nova-3',  # Use nova-3 for best accuracy
                 languageCode='hi-IN'   # Hindi language
@@ -512,9 +512,10 @@ class TwilioVoiceHandler:
             transcription_callback_url = f'{base_url}/transcription/{call_sid}'
             start = Start()
             transcription = Transcription(
-                status_callback_url=transcription_callback_url,
-                transcription_engine='deepgram',
-                speech_model='nova-3',  # Use nova-3 for best accuracy
+                statusCallbackUrl=transcription_callback_url,
+                transcriptionEngine='deepgram',
+                track='outbound_track',
+                speechModel='nova-3',  # Use nova-3 for best accuracy
                 languageCode='hi-IN'   # Hindi language
             )
             start.append(transcription)

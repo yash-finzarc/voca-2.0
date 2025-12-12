@@ -10,7 +10,8 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from src.voca.config import Config
 from src.voca.conversation_store import save_conversation_snapshot
 from src.voca.langgraph_agent import LangGraphAgent, LangGraphAgentResult
-from src.voca.stt import build_stt
+# STT removed - using Deepgram via Twilio Transcription API instead
+# from src.voca.stt import build_stt
 from src.voca.system_prompt import get_prompt, get_welcome_message
 from src.voca.tts import CoquiTTS
 from src.voca.conversation_logger import log_user, log_ai
@@ -56,37 +57,37 @@ class VocaOrchestrator:
         self.on_log(msg)
 
     def load_models(self):
-        self.log("Loading STT...")
-        self.stt = build_stt()
+        # STT not needed - using Deepgram via Twilio Transcription API
+        # self.log("Loading STT...")
+        # self.stt = build_stt()
         self.log("Loading TTS...")
         self.tts.load()
         self.log("Models ready.")
 
     def models_ready(self) -> bool:
-        stt_ready = (self.stt is not None) and getattr(self.stt, "is_ready", lambda: False)()
+        # STT not required - using Deepgram via Twilio Transcription API
+        # stt_ready = (self.stt is not None) and getattr(self.stt, "is_ready", lambda: False)()
         tts_ready = self.tts is not None and self.tts.is_ready()
-        return stt_ready and tts_ready
+        return tts_ready  # Only TTS is required now
 
     def ensure_models_loaded(self):
         if not self.models_ready():
             self.load_models()
 
-    def handle_audio_chunk(self, pcm16: np.ndarray):
-        # naive: do full utterance on each chunk; in practice, use VAD/segmenter
-        if self.stt is None or not getattr(self.stt, "is_ready", lambda: False)():
-            return
-        try:
-            text = self.stt.transcribe_pcm16(pcm16)
-            if text:
-                self.log(f"USER: {text}")
-                log_user(text)
-                reply = self.generate_reply(text, conversation_id="local_audio")
-                if reply:
-                    self.log(f"ASSISTANT: {reply}")
-                    log_ai(reply)
-                    self.tts.speak(reply)
-        except Exception as e:
-            self.log(f"Error processing audio: {e}")
+    def handle_audio_chunk(self, pcm16: np.ndarray, call_sid: Optional[str] = None):
+        """
+        Handle audio chunk for storage/debugging purposes.
+        Note: Transcription is handled by Deepgram via Twilio Transcription API.
+        This method is only used for audio storage when Config.audio_storage_enabled is True.
+        """
+        # STT not used - Deepgram handles transcription via Twilio
+        # Audio chunks are stored for debugging but not transcribed here
+        # Transcription comes from Twilio Deepgram webhooks to /transcription/{call_sid}
+        if Config.audio_storage_enabled and call_sid:
+            # Audio storage logic can be added here if needed
+            # For now, just log that audio was received
+            self.log(f"Audio chunk received for call {call_sid} (length: {len(pcm16)} samples)")
+        # No transcription here - that's handled by Twilio/Deepgram
 
     def _get_session(self, conversation_id: Optional[str], organization_id: Optional[str]) -> ConversationSession:
         key = conversation_id or "default"
@@ -278,35 +279,37 @@ class VocaOrchestrator:
         # Return early since sounddevice is not available
         self.log("Audio recording skipped - sounddevice not available")
         return
-        self.log("Transcribing...")
-        try:
-            text = self.stt.transcribe_pcm16(pcm16)
-        except Exception as e:
-            self.log(f"Transcription failed: {e}")
-            return
-
-        if not text:
-            self.log("No speech detected.")
-            return
-
-        self.log(f"USER: {text}")
-        log_user(text)
-        self.log("Generating reply...")
-        try:
-            reply = self.generate_reply(text, conversation_id="one_minute_test")
-        except Exception as e:
-            self.log(f"LLM error: {e}")
-            return
-
-        if not reply:
-            self.log("Empty reply.")
-            return
-        self.log(f"ASSISTANT: {reply}")
-        log_ai(reply)
-        try:
-            self.tts.speak(reply)
-        except Exception as e:
-            self.log(f"TTS error: {e}")
+        # Note: STT removed - using Deepgram via Twilio Transcription API
+        # The code below is unreachable but kept for reference
+        # self.log("Transcribing...")
+        # try:
+        #     text = self.stt.transcribe_pcm16(pcm16)
+        # except Exception as e:
+        #     self.log(f"Transcription failed: {e}")
+        #     return
+        #
+        # if not text:
+        #     self.log("No speech detected.")
+        #     return
+        #
+        # self.log(f"USER: {text}")
+        # log_user(text)
+        # self.log("Generating reply...")
+        # try:
+        #     reply = self.generate_reply(text, conversation_id="one_minute_test")
+        # except Exception as e:
+        #     self.log(f"LLM error: {e}")
+        #     return
+        #
+        # if not reply:
+        #     self.log("Empty reply.")
+        #     return
+        # self.log(f"ASSISTANT: {reply}")
+        # log_ai(reply)
+        # try:
+        #     self.tts.speak(reply)
+        # except Exception as e:
+        #     self.log(f"TTS error: {e}")
 
     def run_continuous_vad_loop(self, max_silence_ms: int = 2000, frame_ms: int = 30):
         """Continuously listen with VAD; when user stops, process utterance and keep the call up."""
