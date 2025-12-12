@@ -918,12 +918,13 @@ async def handle_outbound_call(request: Request):
     logger.info(f"📞 Call {call_sid[:8]}... | AI: {greeting}")
     response.say(greeting)
     
-    # Gather user input
+    # Gather user input (Hindi speech recognition)
     if call_sid:
         gather = response.gather(
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='hi-IN',
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
@@ -978,6 +979,7 @@ async def handle_incoming_call_webhook(request: Request):
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='hi-IN',
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
@@ -1062,6 +1064,7 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                     input='speech',
                     timeout=10,
                     speech_timeout='auto',
+                    language='hi-IN',
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
@@ -2385,12 +2388,13 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Gather user input (Hindi speech recognition)
     if call_sid:
         gather = response.gather(
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='hi-IN',
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
@@ -2438,11 +2442,13 @@ async def handle_incoming_call_webhook(request: Request):
     
     response.say(greeting)
     
+    # Gather user input (Hindi speech recognition)
     if call_sid:
         gather = response.gather(
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='hi-IN',
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
@@ -2524,6 +2530,7 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                     input='speech',
                     timeout=10,
                     speech_timeout='auto',
+                    language='hi-IN',
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
@@ -3847,12 +3854,13 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Gather user input (Hindi speech recognition)
     if call_sid:
         gather = response.gather(
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='hi-IN',
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
@@ -3900,11 +3908,13 @@ async def handle_incoming_call_webhook(request: Request):
     
     response.say(greeting)
     
+    # Gather user input (Hindi speech recognition)
     if call_sid:
         gather = response.gather(
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='hi-IN',
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
@@ -3986,6 +3996,7 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                     input='speech',
                     timeout=10,
                     speech_timeout='auto',
+                    language='hi-IN',
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
@@ -5154,12 +5165,13 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Gather user input (Hindi speech recognition)
     if call_sid:
         gather = response.gather(
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='hi-IN',
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
@@ -5207,11 +5219,13 @@ async def handle_incoming_call_webhook(request: Request):
     
     response.say(greeting)
     
+    # Gather user input (Hindi speech recognition)
     if call_sid:
         gather = response.gather(
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='hi-IN',
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
@@ -6616,12 +6630,13 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Gather user input (Hindi speech recognition)
     if call_sid:
         gather = response.gather(
             input='speech',
             timeout=10,
             speech_timeout='auto',
+            language='hi-IN',
             action=f'/process_speech/{call_sid}',
             method='POST'
         )
