@@ -893,17 +893,36 @@ async def handle_outbound_call(request: Request):
     logger.info(f"📞 Call {call_sid[:8]}... | AI: {greeting}")
     response.say(greeting)
     
-    # Gather user input
+    # Start real-time transcription with Deepgram Nova-3 for Hindi
     if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Get base URL for transcription callback
+        config = get_twilio_config()
+        base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+        transcription_callback = f"{base_url}/transcription/{call_sid}"
+        
+        # Start real-time transcription
+        # The Twilio Python library's Start class can accept child elements
+        # We'll construct the Transcription element and add it to Start
+        from twilio.twiml.voice_response import Start
+        start = Start()
+        # Add Transcription element with Deepgram settings
+        # Using the Start class's internal method to add child elements
+        # Add Transcription element with Deepgram settings
+        # The Twilio Python library doesn't have a Transcription class, so we construct it manually
+        # We'll add the Transcription XML directly to the Start element
+        import xml.etree.ElementTree as ET
+        transcription_elem = ET.Element('Transcription')
+        transcription_elem.set('statusCallbackUrl', transcription_callback)
+        transcription_elem.set('statusCallbackMethod', 'POST')
+        transcription_elem.set('transcriptionEngine', 'deepgram')
+        transcription_elem.set('speechModel', 'nova-3')
+        transcription_elem.set('languageCode', 'hi-IN')
+        # Add to Start element by converting to string and appending
+        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        response.append(start)
+        
+        logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
+        logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback}")
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -2335,17 +2354,36 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Start real-time transcription with Deepgram Nova-3 for Hindi
     if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Get base URL for transcription callback
+        config = get_twilio_config()
+        base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+        transcription_callback = f"{base_url}/transcription/{call_sid}"
+        
+        # Start real-time transcription
+        # The Twilio Python library's Start class can accept child elements
+        # We'll construct the Transcription element and add it to Start
+        from twilio.twiml.voice_response import Start
+        start = Start()
+        # Add Transcription element with Deepgram settings
+        # Using the Start class's internal method to add child elements
+        # Add Transcription element with Deepgram settings
+        # The Twilio Python library doesn't have a Transcription class, so we construct it manually
+        # We'll add the Transcription XML directly to the Start element
+        import xml.etree.ElementTree as ET
+        transcription_elem = ET.Element('Transcription')
+        transcription_elem.set('statusCallbackUrl', transcription_callback)
+        transcription_elem.set('statusCallbackMethod', 'POST')
+        transcription_elem.set('transcriptionEngine', 'deepgram')
+        transcription_elem.set('speechModel', 'nova-3')
+        transcription_elem.set('languageCode', 'hi-IN')
+        # Add to Start element by converting to string and appending
+        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        response.append(start)
+        
+        logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
+        logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback}")
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -3772,17 +3810,36 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Start real-time transcription with Deepgram Nova-3 for Hindi
     if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Get base URL for transcription callback
+        config = get_twilio_config()
+        base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+        transcription_callback = f"{base_url}/transcription/{call_sid}"
+        
+        # Start real-time transcription
+        # The Twilio Python library's Start class can accept child elements
+        # We'll construct the Transcription element and add it to Start
+        from twilio.twiml.voice_response import Start
+        start = Start()
+        # Add Transcription element with Deepgram settings
+        # Using the Start class's internal method to add child elements
+        # Add Transcription element with Deepgram settings
+        # The Twilio Python library doesn't have a Transcription class, so we construct it manually
+        # We'll add the Transcription XML directly to the Start element
+        import xml.etree.ElementTree as ET
+        transcription_elem = ET.Element('Transcription')
+        transcription_elem.set('statusCallbackUrl', transcription_callback)
+        transcription_elem.set('statusCallbackMethod', 'POST')
+        transcription_elem.set('transcriptionEngine', 'deepgram')
+        transcription_elem.set('speechModel', 'nova-3')
+        transcription_elem.set('languageCode', 'hi-IN')
+        # Add to Start element by converting to string and appending
+        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        response.append(start)
+        
+        logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
+        logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback}")
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -5054,17 +5111,36 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Start real-time transcription with Deepgram Nova-3 for Hindi
     if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Get base URL for transcription callback
+        config = get_twilio_config()
+        base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+        transcription_callback = f"{base_url}/transcription/{call_sid}"
+        
+        # Start real-time transcription
+        # The Twilio Python library's Start class can accept child elements
+        # We'll construct the Transcription element and add it to Start
+        from twilio.twiml.voice_response import Start
+        start = Start()
+        # Add Transcription element with Deepgram settings
+        # Using the Start class's internal method to add child elements
+        # Add Transcription element with Deepgram settings
+        # The Twilio Python library doesn't have a Transcription class, so we construct it manually
+        # We'll add the Transcription XML directly to the Start element
+        import xml.etree.ElementTree as ET
+        transcription_elem = ET.Element('Transcription')
+        transcription_elem.set('statusCallbackUrl', transcription_callback)
+        transcription_elem.set('statusCallbackMethod', 'POST')
+        transcription_elem.set('transcriptionEngine', 'deepgram')
+        transcription_elem.set('speechModel', 'nova-3')
+        transcription_elem.set('languageCode', 'hi-IN')
+        # Add to Start element by converting to string and appending
+        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        response.append(start)
+        
+        logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
+        logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback}")
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -6491,17 +6567,36 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Start real-time transcription with Deepgram Nova-3 for Hindi
     if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Get base URL for transcription callback
+        config = get_twilio_config()
+        base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+        transcription_callback = f"{base_url}/transcription/{call_sid}"
+        
+        # Start real-time transcription
+        # The Twilio Python library's Start class can accept child elements
+        # We'll construct the Transcription element and add it to Start
+        from twilio.twiml.voice_response import Start
+        start = Start()
+        # Add Transcription element with Deepgram settings
+        # Using the Start class's internal method to add child elements
+        # Add Transcription element with Deepgram settings
+        # The Twilio Python library doesn't have a Transcription class, so we construct it manually
+        # We'll add the Transcription XML directly to the Start element
+        import xml.etree.ElementTree as ET
+        transcription_elem = ET.Element('Transcription')
+        transcription_elem.set('statusCallbackUrl', transcription_callback)
+        transcription_elem.set('statusCallbackMethod', 'POST')
+        transcription_elem.set('transcriptionEngine', 'deepgram')
+        transcription_elem.set('speechModel', 'nova-3')
+        transcription_elem.set('languageCode', 'hi-IN')
+        # Add to Start element by converting to string and appending
+        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        response.append(start)
+        
+        logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
+        logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback}")
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -7791,17 +7886,36 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Start real-time transcription with Deepgram Nova-3 for Hindi
     if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Get base URL for transcription callback
+        config = get_twilio_config()
+        base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+        transcription_callback = f"{base_url}/transcription/{call_sid}"
+        
+        # Start real-time transcription
+        # The Twilio Python library's Start class can accept child elements
+        # We'll construct the Transcription element and add it to Start
+        from twilio.twiml.voice_response import Start
+        start = Start()
+        # Add Transcription element with Deepgram settings
+        # Using the Start class's internal method to add child elements
+        # Add Transcription element with Deepgram settings
+        # The Twilio Python library doesn't have a Transcription class, so we construct it manually
+        # We'll add the Transcription XML directly to the Start element
+        import xml.etree.ElementTree as ET
+        transcription_elem = ET.Element('Transcription')
+        transcription_elem.set('statusCallbackUrl', transcription_callback)
+        transcription_elem.set('statusCallbackMethod', 'POST')
+        transcription_elem.set('transcriptionEngine', 'deepgram')
+        transcription_elem.set('speechModel', 'nova-3')
+        transcription_elem.set('languageCode', 'hi-IN')
+        # Add to Start element by converting to string and appending
+        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        response.append(start)
+        
+        logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
+        logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback}")
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -9228,17 +9342,36 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Start real-time transcription with Deepgram Nova-3 for Hindi
     if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Get base URL for transcription callback
+        config = get_twilio_config()
+        base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+        transcription_callback = f"{base_url}/transcription/{call_sid}"
+        
+        # Start real-time transcription
+        # The Twilio Python library's Start class can accept child elements
+        # We'll construct the Transcription element and add it to Start
+        from twilio.twiml.voice_response import Start
+        start = Start()
+        # Add Transcription element with Deepgram settings
+        # Using the Start class's internal method to add child elements
+        # Add Transcription element with Deepgram settings
+        # The Twilio Python library doesn't have a Transcription class, so we construct it manually
+        # We'll add the Transcription XML directly to the Start element
+        import xml.etree.ElementTree as ET
+        transcription_elem = ET.Element('Transcription')
+        transcription_elem.set('statusCallbackUrl', transcription_callback)
+        transcription_elem.set('statusCallbackMethod', 'POST')
+        transcription_elem.set('transcriptionEngine', 'deepgram')
+        transcription_elem.set('speechModel', 'nova-3')
+        transcription_elem.set('languageCode', 'hi-IN')
+        # Add to Start element by converting to string and appending
+        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        response.append(start)
+        
+        logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
+        logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback}")
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -10511,17 +10644,36 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Start real-time transcription with Deepgram Nova-3 for Hindi
     if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Get base URL for transcription callback
+        config = get_twilio_config()
+        base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+        transcription_callback = f"{base_url}/transcription/{call_sid}"
+        
+        # Start real-time transcription
+        # The Twilio Python library's Start class can accept child elements
+        # We'll construct the Transcription element and add it to Start
+        from twilio.twiml.voice_response import Start
+        start = Start()
+        # Add Transcription element with Deepgram settings
+        # Using the Start class's internal method to add child elements
+        # Add Transcription element with Deepgram settings
+        # The Twilio Python library doesn't have a Transcription class, so we construct it manually
+        # We'll add the Transcription XML directly to the Start element
+        import xml.etree.ElementTree as ET
+        transcription_elem = ET.Element('Transcription')
+        transcription_elem.set('statusCallbackUrl', transcription_callback)
+        transcription_elem.set('statusCallbackMethod', 'POST')
+        transcription_elem.set('transcriptionEngine', 'deepgram')
+        transcription_elem.set('speechModel', 'nova-3')
+        transcription_elem.set('languageCode', 'hi-IN')
+        # Add to Start element by converting to string and appending
+        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        response.append(start)
+        
+        logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
+        logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback}")
     
     return Response(content=str(response), media_type='text/xml')
 
@@ -11794,17 +11946,36 @@ async def handle_outbound_call(request: Request):
     
     response.say(greeting)
     
-    # Gather user input
+    # Start real-time transcription with Deepgram Nova-3 for Hindi
     if call_sid:
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
-            action=f'/process_speech/{call_sid}',
-            method='POST'
-        )
-        gather.say("I'm listening...")
-        response.redirect(f'/process_speech/{call_sid}')
+        # Get base URL for transcription callback
+        config = get_twilio_config()
+        base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+        transcription_callback = f"{base_url}/transcription/{call_sid}"
+        
+        # Start real-time transcription
+        # The Twilio Python library's Start class can accept child elements
+        # We'll construct the Transcription element and add it to Start
+        from twilio.twiml.voice_response import Start
+        start = Start()
+        # Add Transcription element with Deepgram settings
+        # Using the Start class's internal method to add child elements
+        # Add Transcription element with Deepgram settings
+        # The Twilio Python library doesn't have a Transcription class, so we construct it manually
+        # We'll add the Transcription XML directly to the Start element
+        import xml.etree.ElementTree as ET
+        transcription_elem = ET.Element('Transcription')
+        transcription_elem.set('statusCallbackUrl', transcription_callback)
+        transcription_elem.set('statusCallbackMethod', 'POST')
+        transcription_elem.set('transcriptionEngine', 'deepgram')
+        transcription_elem.set('speechModel', 'nova-3')
+        transcription_elem.set('languageCode', 'hi-IN')
+        # Add to Start element by converting to string and appending
+        start.xml = ET.tostring(transcription_elem, encoding='unicode')
+        response.append(start)
+        
+        logger.info(f"[TRANSCRIPTION] Started real-time transcription for call {call_sid} with Deepgram Nova-3 (hi-IN)")
+        logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback}")
     
     return Response(content=str(response), media_type='text/xml')
 
