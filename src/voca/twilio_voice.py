@@ -186,7 +186,32 @@ class TwilioVoiceHandler:
             # If no input, redirect to process
             response.redirect(f'/process_speech/{call_sid}')
             
-            return Response(content=str(response), media_type='text/xml')
+            # Log the TwiML to verify language and model parameters are included
+            twiml_str = str(response)
+            handler.logger.info("=" * 80)
+            handler.logger.info(f"[TwiML DEBUG] Incoming call {call_sid} TwiML:")
+            handler.logger.info(twiml_str)
+            handler.logger.info("=" * 80)
+            
+            # Verify language parameter
+            if f'language="{stt_language}"' in twiml_str or f"language='{stt_language}'" in twiml_str:
+                handler.logger.info(f"[TwiML] ✓ Language parameter '{stt_language}' FOUND in TwiML")
+            else:
+                handler.logger.warning(f"[TwiML] ✗ Language parameter '{stt_language}' NOT FOUND in TwiML!")
+            
+            # Verify speech model parameter
+            model_found = (
+                f'speechModel="{stt_model}"' in twiml_str or 
+                f"speechModel='{stt_model}'" in twiml_str or
+                f'speech_model="{stt_model}"' in twiml_str or
+                f"speech_model='{stt_model}'" in twiml_str
+            )
+            if model_found:
+                handler.logger.info(f"[TwiML] ✓ Speech model '{stt_model}' FOUND in TwiML")
+            else:
+                handler.logger.warning(f"[TwiML] ✗ Speech model '{stt_model}' NOT FOUND in TwiML!")
+            
+            return Response(content=twiml_str, media_type='text/xml')
         
         @app.post('/process_speech/{call_sid}')
         async def handle_speech(call_sid: str, request: Request):
@@ -607,7 +632,32 @@ class TwilioVoiceHandler:
             # If no input, redirect to process
             response.redirect(f'/process_speech/{call_sid}')
             
-            return Response(content=str(response), media_type='text/xml')
+            # Log the TwiML to verify language and model parameters are included
+            twiml_str = str(response)
+            handler.logger.info("=" * 80)
+            handler.logger.info(f"[TwiML DEBUG] Outbound call {call_sid} TwiML:")
+            handler.logger.info(twiml_str)
+            handler.logger.info("=" * 80)
+            
+            # Verify language parameter
+            if f'language="{stt_language}"' in twiml_str or f"language='{stt_language}'" in twiml_str:
+                handler.logger.info(f"[TwiML] ✓ Language parameter '{stt_language}' FOUND in TwiML")
+            else:
+                handler.logger.warning(f"[TwiML] ✗ Language parameter '{stt_language}' NOT FOUND in TwiML!")
+            
+            # Verify speech model parameter (check multiple possible formats)
+            model_found = (
+                f'speechModel="{stt_model}"' in twiml_str or 
+                f"speechModel='{stt_model}'" in twiml_str or
+                f'speech_model="{stt_model}"' in twiml_str or
+                f"speech_model='{stt_model}'" in twiml_str
+            )
+            if model_found:
+                handler.logger.info(f"[TwiML] ✓ Speech model '{stt_model}' FOUND in TwiML")
+            else:
+                handler.logger.warning(f"[TwiML] ✗ Speech model '{stt_model}' NOT FOUND in TwiML!")
+            
+            return Response(content=twiml_str, media_type='text/xml')
         
         # Start server in a separate thread using uvicorn
         config = uvicorn.Config(app, host=host, port=port, log_level="info")
