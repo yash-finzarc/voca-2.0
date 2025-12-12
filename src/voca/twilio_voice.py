@@ -58,6 +58,55 @@ class TwilioVoiceHandler:
             
             handler.logger.info(f"Incoming call from {from_number}, SID: {call_sid}")
             
+            # Fetch call details from Twilio API to get language information
+            try:
+                config = get_twilio_config()
+                if config and config.account_sid and config.auth_token:
+                    client = Client(config.account_sid, config.auth_token)
+                    call = client.calls(call_sid).fetch()
+                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - Status: {call.status}, Direction: {call.direction}")
+                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - From: {call.from_formatted}, To: {call.to_formatted}")
+                    # Log any available language/region info
+                    if hasattr(call, 'price_unit'):
+                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - Price Unit: {call.price_unit}")
+                    
+                    # Fetch transcription records to get language information
+                    detected_languages = []
+                    try:
+                        transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                        handler.logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for call {call_sid}")
+                        for trans in transcriptions:
+                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                            trans_status = getattr(trans, 'status', 'N/A')
+                            trans_text = getattr(trans, 'transcription_text', None)
+                            if trans_lang:
+                                detected_languages.append(trans_lang)
+                            handler.logger.info(f"[CALL_INFO] Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                    except Exception as trans_e:
+                        handler.logger.debug(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}")
+                    
+                    # Log detected languages
+                    if detected_languages:
+                        unique_languages = list(set(detected_languages))
+                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
+                    else:
+                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+                    
+                    # Store call info in active_calls
+                    if call_sid in handler.active_calls:
+                        handler.active_calls[call_sid]['twilio_call_info'] = {
+                            'status': call.status,
+                            'direction': call.direction,
+                            'from': call.from_formatted,
+                            'to': call.to_formatted,
+                            'duration': getattr(call, 'duration', None),
+                            'price': getattr(call, 'price', None),
+                            'price_unit': getattr(call, 'price_unit', None),
+                            'detected_languages': detected_languages,
+                        }
+            except Exception as e:
+                handler.logger.warning(f"[CALL_INFO] Could not fetch call details from Twilio API: {e}")
+            
             # Store call information
             handler.active_calls[call_sid] = {
                 'from_number': from_number,
@@ -137,15 +186,54 @@ class TwilioVoiceHandler:
         
         @app.post('/process_speech/{call_sid}')
         async def handle_speech(call_sid: str, request: Request):
-            """Handle speech input from user."""
+            """Handle speech input from user (fallback - should use transcription callbacks instead)."""
+            handler.logger.warning(f"[PROCESS_SPEECH] Fallback endpoint called for call {call_sid} - Real-Time Transcriptions should be used instead")
+            
             if call_sid not in handler.active_calls:
                 raise HTTPException(status_code=404, detail="Call not found")
             
             form_data = await request.form()
             speech_result = form_data.get('SpeechResult', '')
             confidence = form_data.get('Confidence', '0')
+            language = form_data.get('Language', 'en-US')  # Default to en-US if not provided
             
-            handler.logger.info(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
+            handler.logger.info(f"[PROCESS_SPEECH] Speech received for call {call_sid}: {speech_result} (confidence: {confidence}, language: {language})")
+            
+            # Fetch call details from Twilio API to get language information
+            try:
+                config = get_twilio_config()
+                if config and config.account_sid and config.auth_token:
+                    client = Client(config.account_sid, config.auth_token)
+                    call = client.calls(call_sid).fetch()
+                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - Status: {call.status}, Direction: {call.direction}")
+                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - From: {call.from_formatted}, To: {call.to_formatted}")
+                    # Log any available language/region info
+                    if hasattr(call, 'price_unit'):
+                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - Price Unit: {call.price_unit}")
+                    
+                    # Fetch transcription records to get language information
+                    detected_languages = []
+                    try:
+                        transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                        handler.logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for call {call_sid}")
+                        for trans in transcriptions:
+                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                            trans_status = getattr(trans, 'status', 'N/A')
+                            trans_text = getattr(trans, 'transcription_text', None)
+                            if trans_lang:
+                                detected_languages.append(trans_lang)
+                            handler.logger.info(f"[CALL_INFO] Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                    except Exception as trans_e:
+                        handler.logger.debug(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}")
+                    
+                    # Log detected languages
+                    if detected_languages:
+                        unique_languages = list(set(detected_languages))
+                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
+                    else:
+                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+            except Exception as e:
+                handler.logger.warning(f"[CALL_INFO] Could not fetch call details from Twilio API: {e}")
             
             # Get session to check if we're collecting a name
             session = handler.orchestrator._get_session(call_sid, None)
@@ -395,8 +483,48 @@ class TwilioVoiceHandler:
             transcription_status = form_data.get('TranscriptionStatus', '')
             transcription_sid = form_data.get('TranscriptionSid', '')
             confidence = form_data.get('Confidence', '0')
+            language = form_data.get('Language', 'hi-IN')  # Should be hi-IN based on our config
             
-            handler.logger.info(f"[TRANSCRIPTION] Call {call_sid}: Status={transcription_status}, Text='{transcription_text}', Confidence={confidence}")
+            handler.logger.info(f"[TRANSCRIPTION] Call {call_sid}: Status={transcription_status}, Text='{transcription_text}', Confidence={confidence}, Language={language}")
+            
+            # Fetch call details from Twilio API to get language information
+            try:
+                config = get_twilio_config()
+                if config and config.account_sid and config.auth_token:
+                    client = Client(config.account_sid, config.auth_token)
+                    call = client.calls(call_sid).fetch()
+                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - Status: {call.status}, Direction: {call.direction}")
+                    handler.logger.info(f"[CALL_INFO] Call {call_sid} - From: {call.from_formatted}, To: {call.to_formatted}")
+                    
+                    # Fetch transcription records to get language information
+                    detected_languages = []
+                    try:
+                        transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                        handler.logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for call {call_sid}")
+                        for trans in transcriptions:
+                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                            trans_status = getattr(trans, 'status', 'N/A')
+                            trans_text = getattr(trans, 'transcription_text', None)
+                            if trans_lang:
+                                detected_languages.append(trans_lang)
+                            handler.logger.info(f"[CALL_INFO] Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                            # Store detected language
+                            if call_sid in handler.active_calls:
+                                if 'detected_languages' not in handler.active_calls[call_sid]:
+                                    handler.active_calls[call_sid]['detected_languages'] = []
+                                if trans_lang:
+                                    handler.active_calls[call_sid]['detected_languages'].append(trans_lang)
+                    except Exception as trans_e:
+                        handler.logger.debug(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}")
+                    
+                    # Log detected languages
+                    if detected_languages:
+                        unique_languages = list(set(detected_languages))
+                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
+                    else:
+                        handler.logger.info(f"[CALL_INFO] Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+            except Exception as e:
+                handler.logger.warning(f"[CALL_INFO] Could not fetch call details from Twilio API: {e}")
             
             # Only process completed transcriptions with text
             if transcription_status == 'completed' and transcription_text and transcription_text.strip():
@@ -462,6 +590,44 @@ class TwilioVoiceHandler:
             """Handle outbound call TwiML."""
             form_data = await request.form()
             call_sid = form_data.get('CallSid')
+            
+            handler.logger.info(f"Outbound call webhook received, SID: {call_sid}")
+            
+            # Fetch call details from Twilio API to get language information
+            try:
+                config = get_twilio_config()
+                if config and config.account_sid and config.auth_token:
+                    client = Client(config.account_sid, config.auth_token)
+                    call = client.calls(call_sid).fetch()
+                    handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Status: {call.status}, Direction: {call.direction}")
+                    handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - From: {call.from_formatted}, To: {call.to_formatted}")
+                    # Log any available language/region info
+                    if hasattr(call, 'price_unit'):
+                        handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Price Unit: {call.price_unit}")
+                    
+                    # Fetch transcription records to get language information
+                    detected_languages = []
+                    try:
+                        transcriptions = client.transcriptions.list(call_sid=call_sid, limit=10)
+                        handler.logger.info(f"[CALL_INFO] Found {len(transcriptions)} transcription records for outbound call {call_sid}")
+                        for trans in transcriptions:
+                            trans_lang = getattr(trans, 'language', None) or getattr(trans, 'language_code', None)
+                            trans_status = getattr(trans, 'status', 'N/A')
+                            trans_text = getattr(trans, 'transcription_text', None)
+                            if trans_lang:
+                                detected_languages.append(trans_lang)
+                            handler.logger.info(f"[CALL_INFO] Transcription: Status={trans_status}, Language={trans_lang or 'N/A'}, Text={trans_text[:50] if trans_text else 'N/A'}")
+                    except Exception as trans_e:
+                        handler.logger.debug(f"[CALL_INFO] Could not fetch transcriptions: {trans_e}")
+                    
+                    # Log detected languages
+                    if detected_languages:
+                        unique_languages = list(set(detected_languages))
+                        handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
+                    else:
+                        handler.logger.info(f"[CALL_INFO] Outbound Call {call_sid} - No language detected yet (transcriptions may be in progress)")
+            except Exception as e:
+                handler.logger.warning(f"[CALL_INFO] Could not fetch outbound call details from Twilio API: {e}")
             
             # Store call information
             handler.active_calls[call_sid] = {
