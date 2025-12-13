@@ -360,10 +360,12 @@ async def handle_transcription_webhook(call_sid: str, request: Request):
             response = VoiceResponse()
             return Response(content=str(response), media_type="text/xml")
 
-    # For in-progress or empty transcriptions, just acknowledge so Twilio keeps streaming
+    # For in-progress or empty transcriptions, return an empty but valid TwiML <Response>
+    # so Twilio keeps the call open and continues streaming.
     logger.debug(
         f"[TRANSCRIPTION] Ignoring transcription for call {call_sid}: "
         f"status={transcription_status}, has_text={bool(transcription_text)}"
     )
-    return Response(content="OK", media_type="text/plain")
+    empty = VoiceResponse()
+    return Response(content=str(empty), media_type="text/xml")
 
