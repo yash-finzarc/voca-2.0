@@ -5575,14 +5575,6 @@ async def handle_transcription_webhook(call_sid: str, request: Request):
         f"status={transcription_status}, has_text={bool(transcription_text)}"
     )
     return PlainTextResponse("OK")
-            
-        except Exception as e:
-            app_state._log_callback(f"Error processing speech: {e}")
-            response = VoiceResponse()
-            response.say("I'm sorry, I had trouble processing that. Please try again.")
-            if call_sid:
-                response.redirect(f'/process_speech/{call_sid}')
-            return Response(content=str(response), media_type='text/xml')
     else:
         response = VoiceResponse()
         response.say("I didn't catch that. Please speak clearly.")
