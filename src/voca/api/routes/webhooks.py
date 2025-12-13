@@ -222,10 +222,13 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         raise HTTPException(status_code=404, detail="Call not found")
     
     form_data = await request.form()
-    speech_result = form_data.get('SpeechResult', '')
-    confidence = form_data.get('Confidence', '0')
+    speech_result = form_data.get("SpeechResult", "")
+    confidence = form_data.get("Confidence", "0")
     
-    if speech_result and float(confidence) > 0.5:
+    # For Hindi, Twilio's confidence scores can be unreliable.
+    # Treat any non-empty SpeechResult as valid and let the LLM handle it,
+    # only falling back when we truly receive no text at all.
+    if speech_result and speech_result.strip():
         # Log user message clearly in terminal
         logger.info(f"📞 Call {call_sid[:8]}... | USER: {speech_result}")
         app_state._log_callback(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
@@ -295,14 +298,33 @@ async def handle_speech_webhook(call_sid: str, request: Request):
             response = VoiceResponse()
             response.say("I'm sorry, I had trouble processing that. Please try again.")
             if call_sid:
-                response.redirect(f'/process_speech/{call_sid}')
-            return Response(content=str(response), media_type='text/xml')
+                gather = response.gather(
+                    input="speech",
+                    timeout=60,
+                    speech_timeout="auto",
+                    language="hi-IN",
+                    action=f"/process_speech/{call_sid}",
+                    method="POST",
+                )
+                gather.say("I'm listening...")
+                response.redirect(f"/process_speech/{call_sid}")
+            return Response(content=str(response), media_type="text/xml")
     else:
+        # No speech or empty result – gently prompt again, but ALWAYS start a new <Gather>
         response = VoiceResponse()
         response.say("I didn't catch that. Please speak clearly.")
         if call_sid:
-            response.redirect(f'/process_speech/{call_sid}')
-        return Response(content=str(response), media_type='text/xml')
+            gather = response.gather(
+                input="speech",
+                timeout=60,
+                speech_timeout="auto",
+                language="hi-IN",
+                action=f"/process_speech/{call_sid}",
+                method="POST",
+            )
+            gather.say("I'm listening...")
+            response.redirect(f"/process_speech/{call_sid}")
+        return Response(content=str(response), media_type="text/xml")
 
 
 @router.post("/transcription/{call_sid}")
