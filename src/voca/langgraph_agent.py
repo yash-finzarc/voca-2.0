@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langgraph.graph import END, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.voca.config import Config
 
@@ -20,7 +20,12 @@ logger = logging.getLogger("voca.langgraph")
 class LeadData(BaseModel):
     """Structured representation of the key booking/lead fields."""
 
+    # Full name or primary name for the lead.
     name: Optional[str] = None
+    # Optional finer-grained name fields (may be None).
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+
     phone: Optional[str] = None
     email: Optional[str] = None
     service_type: Optional[str] = None
@@ -30,6 +35,23 @@ class LeadData(BaseModel):
     room_type: Optional[str] = None
     notes: Optional[str] = None
     custom_fields: Dict[str, Optional[str]] = Field(default_factory=dict)
+
+    @field_validator("custom_fields", mode="before")
+    @classmethod
+    def _coerce_custom_fields(cls, v: Any) -> Dict[str, Optional[str]]:
+        """
+        Ensure custom_fields is always a dictionary.
+
+        The LLM sometimes emits values like "null" or "None" for this field.
+        Those should be treated as an empty object rather than causing
+        schema validation failures.
+        """
+        if v is None or v == "" or v in ("null", "None"):
+            return {}
+        if isinstance(v, dict):
+            return v
+        # Any other unexpected type (e.g. list/str) -> ignore and use empty dict
+        return {}
 
 
 class LeadUpdate(BaseModel):
@@ -157,11 +179,21 @@ class LangGraphAgent:
         tracker_instructions = (
             "You are a CRM state tracker. "
             "Given the full conversation, extract any newly provided values for the lead fields "
-            "(name, phone, email, service_type, preferred_date, preferred_time, number_of_people, "
-            "room_type, notes) and store them in JSON. "
+            "(name, first_name, last_name, phone, email, service_type, preferred_date, "
+            "preferred_time, number_of_people, room_type, notes) and store them in JSON. "
             "Only include fields that are explicitly mentioned. "
             "Classify the lead as hot, warm, or cold depending on intent and readiness. "
-            "Set summary_requested to true only if the user explicitly requests a summary."
+            "Set summary_requested to true only if the user explicitly requests a summary. "
+            "\n\n"
+            "The conversation may be in Hindi or English. Users may say their names in Hindi "
+            "script (e.g. 'आदित्य शर्मा') or romanized English (e.g. 'Aditya Sharma'). When the "
+            "assistant asks for the user's name and the next user message is a short phrase "
+            "(1–3 words) that looks like a name, set lead.name to that value, and, when it is "
+            "naturally separable, set lead.first_name and lead.last_name as well. "
+            "\n\n"
+            "IMPORTANT: The custom_fields field MUST ALWAYS be a JSON object (dictionary). "
+            "If you have no custom fields, set custom_fields to {}. Do not set it to the "
+            "string 'null', 'None', or any other non-object value."
         )
         tracker_messages: List[BaseMessage] = [SystemMessage(content=tracker_instructions)]
         tracker_messages.extend(state.get("messages", []))
