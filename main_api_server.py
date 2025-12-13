@@ -25,8 +25,9 @@ def main():
     logger.info("Access API docs at http://localhost:8000/docs")
     
     # Run the FastAPI app with uvicorn using import string format for reload
+    # Use the new modular structure (main.py) for better organization
     uvicorn.run(
-        "src.voca.api:app",  # Use import string format for reload support
+        "src.voca.api.main:app",  # Use import string format for reload support
         host="0.0.0.0",
         port=8000,
         log_level="info",
