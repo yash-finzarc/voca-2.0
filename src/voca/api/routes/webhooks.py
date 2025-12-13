@@ -104,7 +104,24 @@ async def handle_outbound_call(request: Request):
         logger.info(f"📞 Call {call_sid[:8]}... | AI: {greeting}")
     response.say(greeting)
 
-    # No <Gather> here – Real-Time Transcriptions will stream speech to /transcription/{call_sid}
+    # IMPORTANT:
+    # Twilio Real-Time Transcriptions (Deepgram) do NOT use TwiML returned from the
+    # /transcription callback to control the call. The call is controlled ONLY by this
+    # initial TwiML. To keep the call open after the greeting, we also include a
+    # legacy <Gather> loop here. Deepgram still streams in parallel for better logs
+    # and future migration, while <Gather> ensures the call doesn't hang up.
+    if call_sid:
+        gather = response.gather(
+            input="speech",
+            timeout=60,
+            speech_timeout="auto",
+            language="hi-IN",
+            action=f"/process_speech/{call_sid}",
+            method="POST",
+        )
+        gather.say("I'm listening...")
+        response.redirect(f"/process_speech/{call_sid}")
+
     return Response(content=str(response), media_type="text/xml")
 
 
@@ -172,7 +189,21 @@ async def handle_incoming_call_webhook(request: Request):
         logger.info(f"📞 Call {call_sid[:8]}... | AI: {greeting}")
     response.say(greeting)
 
-    # No <Gather> here – Real-Time Transcriptions will stream speech to /transcription/{call_sid}
+    # See note in handle_outbound_call: we must keep a TwiML verb active to prevent
+    # Twilio from ending the call immediately. We therefore also use a legacy
+    # <Gather> loop here, while Deepgram continues streaming in parallel.
+    if call_sid:
+        gather = response.gather(
+            input="speech",
+            timeout=60,
+            speech_timeout="auto",
+            language="hi-IN",
+            action=f"/process_speech/{call_sid}",
+            method="POST",
+        )
+        gather.say("I'm listening...")
+        response.redirect(f"/process_speech/{call_sid}")
+
     return Response(content=str(response), media_type="text/xml")
 
 
