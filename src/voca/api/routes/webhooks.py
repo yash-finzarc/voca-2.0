@@ -64,7 +64,7 @@ async def handle_outbound_call(request: Request):
     
     response = VoiceResponse()
 
-    # Enable Real-Time Transcriptions with Deepgram Nova-3 for Hindi
+    # Enable Real-Time Transcriptions for Hindi using Google's short model (supported combo)
     if call_sid:
         config = get_twilio_config()
         webhook_url = config.get_webhook_url()
@@ -75,17 +75,19 @@ async def handle_outbound_call(request: Request):
         start = Start()
         transcription = Transcription(
             statusCallbackUrl=transcription_callback_url,
-            transcriptionEngine="deepgram",
-            track="outbound_track",
-            speechModel="nova-3",
+            transcriptionEngine="google",
+            speechModel="short",
             languageCode="hi-IN",
+            enableAutomaticPunctuation="true",
+            profanityFilter="true",
+            hints="संपर्क, सेवा, समर्थन, ग्राहक",
         )
         start.append(transcription)
 
         response.append(start)
         logger.info(
-            f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid} "
-            f"(callback={transcription_callback_url})"
+            f"[TRANSCRIPTION] Enabled Real-Time Transcription (google, hi-IN, short) "
+            f"for outbound call {call_sid} (callback={transcription_callback_url})"
         )
 
     # Generate greeting from system prompt
@@ -150,7 +152,7 @@ async def handle_incoming_call_webhook(request: Request):
     
     response = VoiceResponse()
 
-    # Enable Real-Time Transcriptions with Deepgram Nova-3 for Hindi
+    # Enable Real-Time Transcriptions for Hindi using Google's short model (supported combo)
     if call_sid:
         config = get_twilio_config()
         webhook_url = config.get_webhook_url()
@@ -160,17 +162,19 @@ async def handle_incoming_call_webhook(request: Request):
         start = Start()
         transcription = Transcription(
             statusCallbackUrl=transcription_callback_url,
-            transcriptionEngine="deepgram",
-            track="inbound_track",
-            speechModel="nova-3",
+            transcriptionEngine="google",
+            speechModel="short",
             languageCode="hi-IN",
+            enableAutomaticPunctuation="true",
+            profanityFilter="true",
+            hints="संपर्क, सेवा, समर्थन, ग्राहक",
         )
         start.append(transcription)
 
         response.append(start)
         logger.info(
-            f"[TRANSCRIPTION] Enabled Real-Time Transcription for inbound call {call_sid} "
-            f"(callback={transcription_callback_url})"
+            f"[TRANSCRIPTION] Enabled Real-Time Transcription (google, hi-IN, short) "
+            f"for inbound call {call_sid} (callback={transcription_callback_url})"
         )
 
     # Generate greeting from system prompt
@@ -222,20 +226,36 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         raise HTTPException(status_code=404, detail="Call not found")
     
     form_data = await request.form()
-    speech_result = form_data.get("SpeechResult", "")
+    speech_result = form_data.get("SpeechResult", "") or ""
     confidence = form_data.get("Confidence", "0")
-    
-    # For Hindi, Twilio's confidence scores can be unreliable.
-    # Treat any non-empty SpeechResult as valid and let the LLM handle it,
-    # only falling back when we truly receive no text at all.
-    if speech_result and speech_result.strip():
+
+    # Primary source of truth: latest completed Real-Time Transcription text
+    call_data = voice_handler.active_calls.get(call_sid, {})
+    transcripts = call_data.get("transcriptions", [])
+    user_text = ""
+
+    if transcripts:
+        latest = transcripts[-1]
+        t_text = (latest.get("text") or "").strip()
+        if t_text:
+            user_text = t_text
+
+    # Fallback: if we have no transcript text yet, fall back to SpeechResult
+    if not user_text and speech_result.strip():
+        user_text = speech_result.strip()
+
+    # If we still have nothing, go to the "no speech" branch
+    if user_text:
         # Log user message clearly in terminal
-        logger.info(f"📞 Call {call_sid[:8]}... | USER: {speech_result}")
-        app_state._log_callback(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence})")
+        logger.info(f"📞 Call {call_sid[:8]}... | USER: {user_text}")
+        app_state._log_callback(
+            f"Speech received for call {call_sid}: {user_text} "
+            f"(confidence={confidence}, source={'rt_transcription' if transcripts else 'gather'})"
+        )
         try:
             # User message and AI response are logged in orchestrator.generate_reply
             ai_response = voice_handler.orchestrator.generate_reply(
-                speech_result,
+                user_text,
                 conversation_id=call_sid,
                 call_sid=call_sid,
             )
