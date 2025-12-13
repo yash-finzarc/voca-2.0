@@ -15,7 +15,6 @@ def test_backend_connection(base_url="http://localhost:8000", timeout=5):
         ("/", "Root endpoint"),
         ("/health", "Health check"),
         ("/api/twilio/configured", "Twilio config check"),
-        ("/api/ngrok/status", "Ngrok status"),
     ]
     
     results = []

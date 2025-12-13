@@ -8,10 +8,13 @@ import logging
 import time
 import base64
 import io
+import os
+import wave
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List
 from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, FileResponse, JSONResponse
 import uvicorn
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription
@@ -41,6 +44,12 @@ class TwilioVoiceHandler:
         self._loop = None
         self.websocket_connections: Dict[str, websocket.WebSocket] = {}
         self.audio_buffers: Dict[str, list] = {}
+        
+        # Audio storage for testing/debugging
+        self.audio_storage_dir = Path(Config.audio_storage_dir)
+        self.audio_storage_dir.mkdir(parents=True, exist_ok=True)
+        self.audio_writers: Dict[str, wave.Wave_write] = {}  # call_sid -> wave writer
+        self.audio_chunk_counts: Dict[str, int] = {}  # Track chunk count per call
         
     def start_webhook_server(self, host='0.0.0.0', port=5000):
         """Start FastAPI server to handle Twilio webhooks with real-time audio streaming."""
@@ -355,18 +364,56 @@ class TwilioVoiceHandler:
                                 # Scale to int16 range
                                 audio_array = (linear * 16).astype(np.int16)
                                 
+                                # Save audio chunk BEFORE processing (for testing/debugging)
+                                handler._save_audio_chunk(call_sid, audio_array, sample_rate=8000)
+                                
+                                # Log audio info (every 50 chunks to avoid spam)
+                                if call_sid not in handler.audio_chunk_counts or handler.audio_chunk_counts.get(call_sid, 0) % 50 == 0:
+                                    handler.logger.info(f"[AUDIO_CAPTURE] Call {call_sid}: Received audio chunk - "
+                                                      f"size: {len(audio_array)} samples ({len(audio_array)/8000:.3f}s), "
+                                                      f"min: {audio_array.min()}, max: {audio_array.max()}, "
+                                                      f"mean: {audio_array.mean():.1f}")
+                                
                                 # Process through orchestrator with audio storage
                                 handler.orchestrator.handle_audio_chunk(audio_array, call_sid=call_sid)
                             except Exception as e:
                                 handler.logger.error(f"[AUDIO_DEBUG] Error processing media payload: {e}", exc_info=True)
                     elif event == 'stop':
                         handler.logger.info(f"[AUDIO_DEBUG] Media stream stopped for call {call_sid}")
+                        # Close audio writer if exists
+                        if call_sid in handler.audio_writers:
+                            try:
+                                writer = handler.audio_writers[call_sid]
+                                writer.close()
+                                chunk_count = handler.audio_chunk_counts.get(call_sid, 0)
+                                handler.logger.info(f"[AUDIO_CAPTURE] Closed audio file for call {call_sid} ({chunk_count} chunks saved)")
+                            except Exception as e:
+                                handler.logger.error(f"[AUDIO_CAPTURE] Error closing audio writer: {e}")
+                            del handler.audio_writers[call_sid]
                         break
                         
             except WebSocketDisconnect:
                 handler.logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket disconnected for call {call_sid}")
+                # Close audio writer if exists
+                if call_sid in handler.audio_writers:
+                    try:
+                        writer = handler.audio_writers[call_sid]
+                        writer.close()
+                        chunk_count = handler.audio_chunk_counts.get(call_sid, 0)
+                        handler.logger.info(f"[AUDIO_CAPTURE] Closed audio file for call {call_sid} ({chunk_count} chunks saved)")
+                    except Exception as e:
+                        handler.logger.error(f"[AUDIO_CAPTURE] Error closing audio writer: {e}")
+                    del handler.audio_writers[call_sid]
             except Exception as e:
                 handler.logger.error(f"[AUDIO_DEBUG] Error in Media Stream WebSocket: {e}")
+                # Close audio writer if exists
+                if call_sid in handler.audio_writers:
+                    try:
+                        writer = handler.audio_writers[call_sid]
+                        writer.close()
+                    except:
+                        pass
+                    del handler.audio_writers[call_sid]
         
         @app.post('/media/{call_sid}')
         async def handle_media_stream_fallback(call_sid: str, request: Request):
@@ -484,6 +531,105 @@ class TwilioVoiceHandler:
             
             return PlainTextResponse("OK")
         
+        @app.get('/audio/calls')
+        async def list_recorded_calls():
+            """List all calls that have recorded audio."""
+            try:
+                audio_dir = handler.audio_storage_dir
+                if not audio_dir.exists():
+                    return JSONResponse({"calls": []})
+                
+                calls = []
+                for call_dir in audio_dir.iterdir():
+                    if call_dir.is_dir():
+                        audio_file = call_dir / f"audio_{call_dir.name}.wav"
+                        if audio_file.exists():
+                            file_size = audio_file.stat().st_size
+                            file_mtime = datetime.fromtimestamp(audio_file.stat().st_mtime, tz=timezone.utc)
+                            chunk_count = handler.audio_chunk_counts.get(call_dir.name, 0)
+                            calls.append({
+                                "call_sid": call_dir.name,
+                                "audio_file": str(audio_file.name),
+                                "file_size": file_size,
+                                "file_size_mb": round(file_size / (1024 * 1024), 2),
+                                "modified_time": file_mtime.isoformat(),
+                                "chunk_count": chunk_count,
+                                "download_url": f"/audio/download/{call_dir.name}"
+                            })
+                
+                # Sort by modified time, most recent first
+                calls.sort(key=lambda x: x["modified_time"], reverse=True)
+                return JSONResponse({"calls": calls})
+            except Exception as e:
+                handler.logger.error(f"Error listing recorded calls: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @app.get('/audio/download/{call_sid}')
+        async def download_audio(call_sid: str):
+            """Download recorded audio file for a specific call."""
+            try:
+                call_dir = handler.audio_storage_dir / call_sid
+                audio_file = call_dir / f"audio_{call_sid}.wav"
+                
+                if not audio_file.exists():
+                    raise HTTPException(status_code=404, detail=f"Audio file not found for call {call_sid}")
+                
+                return FileResponse(
+                    path=str(audio_file),
+                    filename=f"audio_{call_sid}.wav",
+                    media_type="audio/wav"
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                handler.logger.error(f"Error downloading audio: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @app.get('/audio/info/{call_sid}')
+        async def get_audio_info(call_sid: str):
+            """Get information about recorded audio for a specific call."""
+            try:
+                call_dir = handler.audio_storage_dir / call_sid
+                audio_file = call_dir / f"audio_{call_sid}.wav"
+                
+                if not audio_file.exists():
+                    raise HTTPException(status_code=404, detail=f"Audio file not found for call {call_sid}")
+                
+                file_size = audio_file.stat().st_size
+                file_mtime = datetime.fromtimestamp(audio_file.stat().st_mtime, tz=timezone.utc)
+                chunk_count = handler.audio_chunk_counts.get(call_sid, 0)
+                
+                # Try to read WAV file info
+                with wave.open(str(audio_file), 'rb') as wav_file:
+                    n_frames = wav_file.getnframes()
+                    sample_rate = wav_file.getframerate()
+                    n_channels = wav_file.getnchannels()
+                    sample_width = wav_file.getsampwidth()
+                    duration = n_frames / sample_rate if sample_rate > 0 else 0
+                
+                return JSONResponse({
+                    "call_sid": call_sid,
+                    "audio_file": str(audio_file.name),
+                    "file_size": file_size,
+                    "file_size_mb": round(file_size / (1024 * 1024), 2),
+                    "modified_time": file_mtime.isoformat(),
+                    "chunk_count": chunk_count,
+                    "audio_info": {
+                        "sample_rate": sample_rate,
+                        "channels": n_channels,
+                        "sample_width": sample_width,
+                        "frames": n_frames,
+                        "duration_seconds": round(duration, 2),
+                        "duration_formatted": f"{int(duration // 60)}m {int(duration % 60)}s"
+                    },
+                    "download_url": f"/audio/download/{call_sid}"
+                })
+            except HTTPException:
+                raise
+            except Exception as e:
+                handler.logger.error(f"Error getting audio info: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+        
         @app.post('/outbound')
         async def handle_outbound_call(request: Request):
             """Handle outbound call TwiML."""
@@ -514,7 +660,7 @@ class TwilioVoiceHandler:
             transcription = Transcription(
                 statusCallbackUrl=transcription_callback_url,
                 transcriptionEngine='deepgram',
-                track='outbound_track',
+                track='both_tracks',
                 speechModel='nova-3',  # Use nova-3 for best accuracy
                 languageCode='hi-IN'   # Hindi language
             )
@@ -620,6 +766,37 @@ class TwilioVoiceHandler:
         """Get information about active calls."""
         return self.active_calls.copy()
     
+    def _save_audio_chunk(self, call_sid: str, audio_array: np.ndarray, sample_rate: int = 8000):
+        """Save audio chunk to WAV file for testing/debugging."""
+        try:
+            # Initialize wave writer if not exists
+            if call_sid not in self.audio_writers:
+                call_dir = self.audio_storage_dir / call_sid
+                call_dir.mkdir(parents=True, exist_ok=True)
+                audio_file = call_dir / f"audio_{call_sid}.wav"
+                
+                writer = wave.open(str(audio_file), 'wb')
+                writer.setnchannels(1)  # Mono
+                writer.setsampwidth(2)  # 16-bit = 2 bytes
+                writer.setframerate(sample_rate)
+                self.audio_writers[call_sid] = writer
+                self.audio_chunk_counts[call_sid] = 0
+                self.logger.info(f"[AUDIO_CAPTURE] Started saving audio to {audio_file}")
+            
+            # Write audio data
+            writer = self.audio_writers[call_sid]
+            audio_bytes = audio_array.tobytes()
+            writer.writeframes(audio_bytes)
+            self.audio_chunk_counts[call_sid] += 1
+            
+            # Log every 100 chunks to avoid spam
+            if self.audio_chunk_counts[call_sid] % 100 == 0:
+                self.logger.info(f"[AUDIO_CAPTURE] Call {call_sid}: Saved {self.audio_chunk_counts[call_sid]} chunks, "
+                               f"latest chunk size: {len(audio_array)} samples ({len(audio_array)/sample_rate:.2f}s)")
+            
+        except Exception as e:
+            self.logger.error(f"[AUDIO_CAPTURE] Error saving audio chunk: {e}", exc_info=True)
+    
     def process_audio_stream(self, call_sid: str, audio_data: bytes):
         """Process incoming audio stream from Twilio."""
         if call_sid not in self.active_calls:
@@ -635,6 +812,9 @@ class TwilioVoiceHandler:
         try:
             audio_array = np.frombuffer(audio_data, dtype=np.int16)
             
+            # Save audio chunk BEFORE processing (for testing)
+            self._save_audio_chunk(call_sid, audio_array, sample_rate=8000)
+            
             # Process through VOCA orchestrator
             self.orchestrator.handle_audio_chunk(audio_array, call_sid=call_sid)
             
@@ -643,6 +823,20 @@ class TwilioVoiceHandler:
     
     def cleanup_call(self, call_sid: str):
         """Clean up resources for a call."""
+        # Close and finalize audio writer
+        if call_sid in self.audio_writers:
+            try:
+                writer = self.audio_writers[call_sid]
+                writer.close()
+                chunk_count = self.audio_chunk_counts.get(call_sid, 0)
+                self.logger.info(f"[AUDIO_CAPTURE] Closed audio file for call {call_sid} ({chunk_count} chunks saved)")
+            except Exception as e:
+                self.logger.error(f"[AUDIO_CAPTURE] Error closing audio writer: {e}")
+            del self.audio_writers[call_sid]
+        
+        if call_sid in self.audio_chunk_counts:
+            del self.audio_chunk_counts[call_sid]
+        
         if call_sid in self.active_calls:
             del self.active_calls[call_sid]
         
