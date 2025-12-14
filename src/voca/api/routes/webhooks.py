@@ -79,9 +79,12 @@ async def sarvamtts(text: str, call_sid: str, base_url: str) -> str:
         if hasattr(response, 'audios'):
             audios = response.audios
             if audios and len(audios) > 0:
-                # Get first audio item - it might be bytes or have an audio_bytes attribute
+                # Get first audio item - it might be bytes, string (base64), or have an audio_bytes attribute
                 first_audio = audios[0]
                 if isinstance(first_audio, bytes):
+                    audio_data = first_audio
+                elif isinstance(first_audio, str):
+                    # It's a string (likely base64), we'll decode it later
                     audio_data = first_audio
                 elif hasattr(first_audio, 'audio_bytes'):
                     audio_data = first_audio.audio_bytes
