@@ -149,7 +149,8 @@ async def handle_outbound_call(request: Request):
         if error_audio_url:
             response.play(error_audio_url)
         else:
-            response.say(error_text)
+            logger.error(f"[SARVAM_TTS] Failed to generate audio for error message. Call {call_sid}")
+            # No fallback - just return empty response if Sarvam fails
         return Response(content=str(response), media_type='text/xml')
     
     # Get the voice handler from the manager
@@ -233,8 +234,8 @@ async def handle_outbound_call(request: Request):
         if greeting_audio_url:
             response.play(greeting_audio_url)
         else:
-            # Fallback to Twilio TTS if Sarvam fails
-            response.say(greeting)
+            logger.error(f"[SARVAM_TTS] Failed to generate audio for greeting. Call {call_sid}")
+            # No fallback - Sarvam TTS is required
 
     # IMPORTANT:
     # Twilio Real-Time Transcriptions (Deepgram) do NOT use TwiML returned from the
@@ -257,7 +258,8 @@ async def handle_outbound_call(request: Request):
         if listening_audio_url:
             gather.play(listening_audio_url)
         else:
-            gather.say(listening_text)
+            logger.error(f"[SARVAM_TTS] Failed to generate audio for 'I'm listening...'. Call {call_sid}")
+            # No fallback - Sarvam TTS is required
         response.redirect(f"/process_speech/{call_sid}")
 
     return Response(content=str(response), media_type="text/xml")
@@ -280,7 +282,8 @@ async def handle_incoming_call_webhook(request: Request):
         if error_audio_url:
             response.play(error_audio_url)
         else:
-            response.say(error_text)
+            logger.error(f"[SARVAM_TTS] Failed to generate audio for error message. Call {call_sid}")
+            # No fallback - just return empty response if Sarvam fails
         return Response(content=str(response), media_type='text/xml')
     
     voice_handler = twilio_manager.voice_handler
@@ -348,8 +351,8 @@ async def handle_incoming_call_webhook(request: Request):
         if greeting_audio_url:
             response.play(greeting_audio_url)
         else:
-            # Fallback to Twilio TTS if Sarvam fails
-            response.say(greeting)
+            logger.error(f"[SARVAM_TTS] Failed to generate audio for greeting. Call {call_sid}")
+            # No fallback - Sarvam TTS is required
 
     # See note in handle_outbound_call: we must keep a TwiML verb active to prevent
     # Twilio from ending the call immediately. We therefore also use a legacy
@@ -369,7 +372,8 @@ async def handle_incoming_call_webhook(request: Request):
         if listening_audio_url:
             gather.play(listening_audio_url)
         else:
-            gather.say(listening_text)
+            logger.error(f"[SARVAM_TTS] Failed to generate audio for 'I'm listening...'. Call {call_sid}")
+            # No fallback - Sarvam TTS is required
         response.redirect(f"/process_speech/{call_sid}")
 
     return Response(content=str(response), media_type="text/xml")
@@ -392,7 +396,8 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         if error_audio_url:
             response.play(error_audio_url)
         else:
-            response.say(error_text)
+            logger.error(f"[SARVAM_TTS] Failed to generate audio for error message. Call {call_sid}")
+            # No fallback - just return empty response if Sarvam fails
         return Response(content=str(response), media_type='text/xml')
     
     voice_handler = twilio_manager.voice_handler
@@ -456,8 +461,8 @@ async def handle_speech_webhook(call_sid: str, request: Request):
             if audio_url:
                 response.play(audio_url)
             else:
-                # Fallback to Twilio TTS if Sarvam fails
-                response.say(ai_response)
+                logger.error(f"[SARVAM_TTS] Failed to generate audio for AI response. Call {call_sid}")
+                # No fallback - Sarvam TTS is required
             
             # Check if user declined further assistance and AI responded with closing message
             speech_lower = speech_result.lower()
@@ -501,7 +506,8 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                 if listening_audio_url:
                     gather.play(listening_audio_url)
                 else:
-                    gather.say(listening_text)
+                    logger.error(f"[SARVAM_TTS] Failed to generate audio for 'I'm listening...'. Call {call_sid}")
+                    # No fallback - Sarvam TTS is required
                 response.redirect(f'/process_speech/{call_sid}')
             
             return Response(content=str(response), media_type='text/xml')
@@ -519,7 +525,8 @@ async def handle_speech_webhook(call_sid: str, request: Request):
             if error_audio_url:
                 response.play(error_audio_url)
             else:
-                response.say(error_text)
+                logger.error(f"[SARVAM_TTS] Failed to generate audio for error message. Call {call_sid}")
+                # No fallback - Sarvam TTS is required
             
             if call_sid:
                 gather = response.gather(
@@ -536,7 +543,8 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                 if listening_audio_url:
                     gather.play(listening_audio_url)
                 else:
-                    gather.say(listening_text)
+                    logger.error(f"[SARVAM_TTS] Failed to generate audio for 'I'm listening...'. Call {call_sid}")
+                    # No fallback - Sarvam TTS is required
                 response.redirect(f"/process_speech/{call_sid}")
             return Response(content=str(response), media_type="text/xml")
     else:
@@ -552,7 +560,8 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         if error_audio_url:
             response.play(error_audio_url)
         else:
-            response.say(error_text)
+            logger.error(f"[SARVAM_TTS] Failed to generate audio for error message. Call {call_sid}")
+            # No fallback - Sarvam TTS is required
         
         if call_sid:
             gather = response.gather(
@@ -569,7 +578,8 @@ async def handle_speech_webhook(call_sid: str, request: Request):
             if listening_audio_url:
                 gather.play(listening_audio_url)
             else:
-                gather.say(listening_text)
+                logger.error(f"[SARVAM_TTS] Failed to generate audio for 'I'm listening...'. Call {call_sid}")
+                # No fallback - Sarvam TTS is required
             response.redirect(f"/process_speech/{call_sid}")
         return Response(content=str(response), media_type="text/xml")
 
@@ -662,8 +672,8 @@ async def handle_transcription_webhook(call_sid: str, request: Request):
             if audio_url:
                 response.play(audio_url)
             else:
-                # Fallback to Twilio TTS if Sarvam fails
-                response.say(ai_response)
+                logger.error(f"[SARVAM_TTS] Failed to generate audio for AI response. Call {call_sid}")
+                # No fallback - Sarvam TTS is required
             
             return Response(content=str(response), media_type="text/xml")
 
