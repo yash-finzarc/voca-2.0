@@ -9,7 +9,6 @@ import logging
 import time
 import hashlib
 import uuid
-import base64
 from datetime import datetime, timezone
 from typing import Optional, Dict
 from io import BytesIO
@@ -74,61 +73,23 @@ async def sarvamtts(text: str, call_sid: str, base_url: str) -> str:
             model="bulbul:v2"
         )
         
-        # Get audio data from response
-        # Sarvam API returns TextToSpeechResponse object
-        audio_data = None
-        
-        # Try common attribute names for audio data
-        if hasattr(response, 'audio'):
-            audio_data = response.audio
-        elif hasattr(response, 'audio_data'):
-            audio_data = response.audio_data
-        elif hasattr(response, 'data'):
-            audio_data = response.data
-        elif hasattr(response, 'content'):
-            audio_data = response.content
-        elif hasattr(response, 'audio_bytes'):
-            audio_data = response.audio_bytes
-        elif hasattr(response, 'file'):
-            audio_data = response.file
-            # If it's a file-like object, read it
-            if hasattr(audio_data, 'read'):
-                audio_data = audio_data.read()
-        elif isinstance(response, bytes):
-            audio_data = response
-        elif hasattr(response, 'read'):
-            # If it's a file-like object, read it
-            audio_data = response.read()
-        
-        # If audio_data is still None, try to inspect the object
-        if audio_data is None:
-            # Log available attributes for debugging
-            if hasattr(response, '__dict__'):
-                attrs = [attr for attr in dir(response) if not attr.startswith('_')]
-                logger.error(f"[SARVAM_TTS] Available attributes on response: {attrs}")
-                logger.error(f"[SARVAM_TTS] Response dict: {response.__dict__}")
-            else:
-                logger.error(f"[SARVAM_TTS] Response type: {type(response)}, value: {response}")
-            return ""
-        
-        # Handle base64 encoded strings
-        if isinstance(audio_data, str):
-            try:
-                audio_data = base64.b64decode(audio_data)
-            except Exception:
-                # If it's not base64, treat as regular string and encode
-                audio_data = audio_data.encode('utf-8')
-        
-        # Ensure we have bytes
-        if not isinstance(audio_data, bytes):
-            try:
-                audio_data = bytes(audio_data)
-            except (TypeError, ValueError) as e:
-                logger.error(f"[SARVAM_TTS] Could not convert audio_data to bytes: {e}")
-                return ""
+        # Get audio bytes from Sarvam TextToSpeechResponse
+        # The response object has an 'audio_bytes' attribute containing the audio data
+        audio_data = response.audio_bytes if hasattr(response, 'audio_bytes') else None
         
         if not audio_data:
-            logger.error("[SARVAM_TTS] No audio data received from Sarvam API")
+            # Try alternative attribute names
+            if hasattr(response, 'audio'):
+                audio_data = response.audio
+            elif hasattr(response, 'data'):
+                audio_data = response.data
+            else:
+                logger.error(f"[SARVAM_TTS] Could not find audio data in response. Type: {type(response)}, Attributes: {[a for a in dir(response) if not a.startswith('_')]}")
+                return ""
+        
+        # Ensure it's bytes
+        if not isinstance(audio_data, bytes):
+            logger.error(f"[SARVAM_TTS] Audio data is not bytes, got: {type(audio_data)}")
             return ""
         
         # Generate unique audio ID
