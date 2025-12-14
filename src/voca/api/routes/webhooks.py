@@ -7,20 +7,128 @@ This module now supports two paths:
 """
 import logging
 import time
+import hashlib
+import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Dict
+from io import BytesIO
 
 from fastapi import Request, Response, HTTPException
 from fastapi.routing import APIRouter
-from twilio.twiml.voice_response import VoiceResponse, Start, Transcription
+from fastapi.responses import StreamingResponse
+from twilio.twiml.voice_response import VoiceResponse, Start, Transcription, Play
 
 from src.voca.api.app_state import app_state
 from src.voca.api.utils import resolve_org_id
 from src.voca.twilio_config import get_twilio_config
+from src.voca.config import Config
 
 logger = logging.getLogger(__name__)
 
+# Import SarvamAI
+try:
+    from sarvamai import SarvamAI
+    SARVAM_AVAILABLE = True
+except ImportError:
+    SARVAM_AVAILABLE = False
+    logger.warning("SarvamAI not available. Install with: pip install sarvamai")
+
 router = APIRouter(tags=["webhooks"])
+
+# In-memory storage for audio files (audio_id -> audio_bytes)
+_audio_cache: Dict[str, bytes] = {}
+
+
+async def sarvamtts(text: str, call_sid: str, base_url: str) -> str:
+    """
+    Convert text to audio using Sarvam TTS and return URL for Twilio to play.
+    
+    Args:
+        text: Text to convert to speech
+        call_sid: Call SID for logging
+        base_url: Base URL for constructing audio URL
+        
+    Returns:
+        URL to the generated audio file
+    """
+    if not SARVAM_AVAILABLE or not Config.sarvam_api_key:
+        logger.warning("Sarvam TTS not available, returning empty URL (will fallback)")
+        return ""
+    
+    try:
+        # Initialize Sarvam client
+        client = SarvamAI(api_subscription_key=Config.sarvam_api_key)
+        
+        # Generate audio using Sarvam TTS
+        logger.info(f"[SARVAM_TTS] Generating audio for call {call_sid[:8]}... (text length: {len(text)})")
+        response = client.text_to_speech.convert(
+            text=text,
+            target_language_code="hi-IN",
+            speaker="anushka",
+            pitch=0,
+            pace=1,
+            loudness=1,
+            speech_sample_rate=22050,
+            enable_preprocessing=True,
+            model="bulbul:v2"
+        )
+        
+        # Get audio data from response
+        # Sarvam API returns bytes directly or a file-like object
+        audio_data = None
+        if isinstance(response, bytes):
+            audio_data = response
+        elif hasattr(response, 'read'):
+            # If it's a file-like object, read it
+            audio_data = response.read()
+        elif hasattr(response, 'audio'):
+            audio_data = response.audio
+        elif hasattr(response, 'data'):
+            audio_data = response.data
+        else:
+            # Try to convert to bytes if possible
+            try:
+                audio_data = bytes(response) if response else None
+            except (TypeError, ValueError):
+                logger.error(f"[SARVAM_TTS] Unknown response format: {type(response)}")
+                return ""
+        
+        if not audio_data:
+            logger.error("[SARVAM_TTS] No audio data received from Sarvam API")
+            return ""
+        
+        # Generate unique audio ID
+        audio_id = hashlib.md5(f"{call_sid}_{text}_{time.time()}".encode()).hexdigest()
+        
+        # Store audio in cache
+        _audio_cache[audio_id] = audio_data
+        
+        # Construct and return URL
+        audio_url = f"{base_url}/audio/{audio_id}"
+        logger.info(f"[SARVAM_TTS] Generated audio URL: {audio_url}")
+        return audio_url
+        
+    except Exception as e:
+        logger.error(f"[SARVAM_TTS] Error converting text to audio: {e}", exc_info=True)
+        return ""
+
+
+@router.get("/audio/{audio_id}")
+async def serve_audio(audio_id: str):
+    """Serve generated audio file for Twilio Play verb."""
+    if audio_id not in _audio_cache:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    
+    audio_data = _audio_cache[audio_id]
+    
+    # Return audio as streaming response
+    # Twilio supports WAV, MP3, and other formats
+    # Assume the audio from Sarvam is in a compatible format
+    return StreamingResponse(
+        BytesIO(audio_data),
+        media_type="audio/wav",  # Adjust based on Sarvam's output format
+        headers={"Content-Disposition": f"inline; filename=audio_{audio_id}.wav"}
+    )
 
 
 @router.post("/outbound")
@@ -30,7 +138,18 @@ async def handle_outbound_call(request: Request):
     if not twilio_manager:
         # Return basic TwiML if Twilio not configured
         response = VoiceResponse()
-        response.say("Service temporarily unavailable")
+        # Use Sarvam TTS for error message
+        form_data = await request.form()
+        call_sid = form_data.get('CallSid', 'unknown')
+        config = get_twilio_config()
+        webhook_url = config.get_webhook_url()
+        base_url = webhook_url.replace("/webhook/voice", "")
+        error_text = "Service temporarily unavailable"
+        error_audio_url = await sarvamtts(error_text, call_sid, base_url)
+        if error_audio_url:
+            response.play(error_audio_url)
+        else:
+            response.say(error_text)
         return Response(content=str(response), media_type='text/xml')
     
     # Get the voice handler from the manager
@@ -104,7 +223,18 @@ async def handle_outbound_call(request: Request):
     # Log greeting as AI response
     if call_sid:
         logger.info(f"📞 Call {call_sid[:8]}... | AI: {greeting}")
-    response.say(greeting)
+    
+    # Convert greeting to audio using Sarvam TTS
+    if call_sid:
+        config = get_twilio_config()
+        webhook_url = config.get_webhook_url()
+        base_url = webhook_url.replace("/webhook/voice", "")
+        greeting_audio_url = await sarvamtts(greeting, call_sid, base_url)
+        if greeting_audio_url:
+            response.play(greeting_audio_url)
+        else:
+            # Fallback to Twilio TTS if Sarvam fails
+            response.say(greeting)
 
     # IMPORTANT:
     # Twilio Real-Time Transcriptions (Deepgram) do NOT use TwiML returned from the
@@ -121,7 +251,13 @@ async def handle_outbound_call(request: Request):
             action=f"/process_speech/{call_sid}",
             method="POST",
         )
-        gather.say("I'm listening...")
+        # Convert "I'm listening..." to audio using Sarvam TTS
+        listening_text = "I'm listening..."
+        listening_audio_url = await sarvamtts(listening_text, call_sid, base_url)
+        if listening_audio_url:
+            gather.play(listening_audio_url)
+        else:
+            gather.say(listening_text)
         response.redirect(f"/process_speech/{call_sid}")
 
     return Response(content=str(response), media_type="text/xml")
@@ -133,7 +269,18 @@ async def handle_incoming_call_webhook(request: Request):
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         response = VoiceResponse()
-        response.say("Service temporarily unavailable")
+        # Use Sarvam TTS for error message
+        form_data = await request.form()
+        call_sid = form_data.get('CallSid', 'unknown')
+        config = get_twilio_config()
+        webhook_url = config.get_webhook_url()
+        base_url = webhook_url.replace("/webhook/voice", "")
+        error_text = "Service temporarily unavailable"
+        error_audio_url = await sarvamtts(error_text, call_sid, base_url)
+        if error_audio_url:
+            response.play(error_audio_url)
+        else:
+            response.say(error_text)
         return Response(content=str(response), media_type='text/xml')
     
     voice_handler = twilio_manager.voice_handler
@@ -191,7 +338,18 @@ async def handle_incoming_call_webhook(request: Request):
     # Log greeting as AI response
     if call_sid:
         logger.info(f"📞 Call {call_sid[:8]}... | AI: {greeting}")
-    response.say(greeting)
+    
+    # Convert greeting to audio using Sarvam TTS
+    if call_sid:
+        config = get_twilio_config()
+        webhook_url = config.get_webhook_url()
+        base_url = webhook_url.replace("/webhook/voice", "")
+        greeting_audio_url = await sarvamtts(greeting, call_sid, base_url)
+        if greeting_audio_url:
+            response.play(greeting_audio_url)
+        else:
+            # Fallback to Twilio TTS if Sarvam fails
+            response.say(greeting)
 
     # See note in handle_outbound_call: we must keep a TwiML verb active to prevent
     # Twilio from ending the call immediately. We therefore also use a legacy
@@ -205,7 +363,13 @@ async def handle_incoming_call_webhook(request: Request):
             action=f"/process_speech/{call_sid}",
             method="POST",
         )
-        gather.say("I'm listening...")
+        # Convert "I'm listening..." to audio using Sarvam TTS
+        listening_text = "I'm listening..."
+        listening_audio_url = await sarvamtts(listening_text, call_sid, base_url)
+        if listening_audio_url:
+            gather.play(listening_audio_url)
+        else:
+            gather.say(listening_text)
         response.redirect(f"/process_speech/{call_sid}")
 
     return Response(content=str(response), media_type="text/xml")
@@ -217,7 +381,18 @@ async def handle_speech_webhook(call_sid: str, request: Request):
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         response = VoiceResponse()
-        response.say("Service temporarily unavailable")
+        # Use Sarvam TTS for error message
+        form_data = await request.form()
+        call_sid = form_data.get('CallSid', 'unknown')
+        config = get_twilio_config()
+        webhook_url = config.get_webhook_url()
+        base_url = webhook_url.replace("/webhook/voice", "")
+        error_text = "Service temporarily unavailable"
+        error_audio_url = await sarvamtts(error_text, call_sid, base_url)
+        if error_audio_url:
+            response.play(error_audio_url)
+        else:
+            response.say(error_text)
         return Response(content=str(response), media_type='text/xml')
     
     voice_handler = twilio_manager.voice_handler
@@ -270,7 +445,19 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                 ai_response = ai_response[:500] + "..."
             
             response = VoiceResponse()
-            response.say(ai_response)
+            
+            # Convert text to audio using Sarvam TTS
+            config = get_twilio_config()
+            webhook_url = config.get_webhook_url()
+            # Get base URL by removing known webhook paths
+            base_url = webhook_url.replace("/webhook/voice", "")
+            audio_url = await sarvamtts(ai_response, call_sid, base_url)
+            
+            if audio_url:
+                response.play(audio_url)
+            else:
+                # Fallback to Twilio TTS if Sarvam fails
+                response.say(ai_response)
             
             # Check if user declined further assistance and AI responded with closing message
             speech_lower = speech_result.lower()
@@ -308,7 +495,13 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                     action=f'/process_speech/{call_sid}',
                     method='POST'
                 )
-                gather.say("I'm listening...")
+                # Convert "I'm listening..." to audio using Sarvam TTS
+                listening_text = "I'm listening..."
+                listening_audio_url = await sarvamtts(listening_text, call_sid, base_url)
+                if listening_audio_url:
+                    gather.play(listening_audio_url)
+                else:
+                    gather.say(listening_text)
                 response.redirect(f'/process_speech/{call_sid}')
             
             return Response(content=str(response), media_type='text/xml')
@@ -316,7 +509,18 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         except Exception as e:
             app_state._log_callback(f"Error processing speech: {e}")
             response = VoiceResponse()
-            response.say("I'm sorry, I had trouble processing that. Please try again.")
+            
+            # Convert error message to audio using Sarvam TTS
+            config = get_twilio_config()
+            webhook_url = config.get_webhook_url()
+            base_url = webhook_url.replace("/webhook/voice", "")
+            error_text = "I'm sorry, I had trouble processing that. Please try again."
+            error_audio_url = await sarvamtts(error_text, call_sid, base_url)
+            if error_audio_url:
+                response.play(error_audio_url)
+            else:
+                response.say(error_text)
+            
             if call_sid:
                 gather = response.gather(
                     input="speech",
@@ -326,13 +530,30 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                     action=f"/process_speech/{call_sid}",
                     method="POST",
                 )
-                gather.say("I'm listening...")
+                # Convert "I'm listening..." to audio using Sarvam TTS
+                listening_text = "I'm listening..."
+                listening_audio_url = await sarvamtts(listening_text, call_sid, base_url)
+                if listening_audio_url:
+                    gather.play(listening_audio_url)
+                else:
+                    gather.say(listening_text)
                 response.redirect(f"/process_speech/{call_sid}")
             return Response(content=str(response), media_type="text/xml")
     else:
         # No speech or empty result – gently prompt again, but ALWAYS start a new <Gather>
         response = VoiceResponse()
-        response.say("I didn't catch that. Please speak clearly.")
+        
+        # Convert error message to audio using Sarvam TTS
+        config = get_twilio_config()
+        webhook_url = config.get_webhook_url()
+        base_url = webhook_url.replace("/webhook/voice", "")
+        error_text = "I didn't catch that. Please speak clearly."
+        error_audio_url = await sarvamtts(error_text, call_sid, base_url)
+        if error_audio_url:
+            response.play(error_audio_url)
+        else:
+            response.say(error_text)
+        
         if call_sid:
             gather = response.gather(
                 input="speech",
@@ -342,7 +563,13 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                 action=f"/process_speech/{call_sid}",
                 method="POST",
             )
-            gather.say("I'm listening...")
+            # Convert "I'm listening..." to audio using Sarvam TTS
+            listening_text = "I'm listening..."
+            listening_audio_url = await sarvamtts(listening_text, call_sid, base_url)
+            if listening_audio_url:
+                gather.play(listening_audio_url)
+            else:
+                gather.say(listening_text)
             response.redirect(f"/process_speech/{call_sid}")
         return Response(content=str(response), media_type="text/xml")
 
@@ -424,7 +651,20 @@ async def handle_transcription_webhook(call_sid: str, request: Request):
 
             # Respond with TwiML to speak the AI response
             response = VoiceResponse()
-            response.say(ai_response)
+            
+            # Convert text to audio using Sarvam TTS
+            config = get_twilio_config()
+            webhook_url = config.get_webhook_url()
+            # Get base URL by removing known webhook paths
+            base_url = webhook_url.replace("/webhook/voice", "")
+            audio_url = await sarvamtts(ai_response, call_sid, base_url)
+            
+            if audio_url:
+                response.play(audio_url)
+            else:
+                # Fallback to Twilio TTS if Sarvam fails
+                response.say(ai_response)
+            
             return Response(content=str(response), media_type="text/xml")
 
         except Exception as e:

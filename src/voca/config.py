@@ -35,6 +35,9 @@ class Config:
     tts_model_name: Optional[str] = os.getenv('TTS_MODEL_NAME')
     device: str = os.getenv('DEVICE', 'cpu')  # 'cpu' or 'cuda'
     
+    # Sarvam TTS settings
+    sarvam_api_key: Optional[str] = os.getenv('SARVAM_API_KEY')
+    
     # Supabase settings
     supabase_url: Optional[str] = os.getenv('SUPABASE_URL')
     supabase_key: Optional[str] = os.getenv('SUPABASE_KEY')
