@@ -227,7 +227,13 @@ async def handle_speech_webhook(call_sid: str, request: Request):
     
     form_data = await request.form()
     speech_result = form_data.get("SpeechResult", "") or ""
-    confidence = form_data.get("Confidence", "0")
+    confidence_str = form_data.get("Confidence", "0")
+    try:
+        confidence = float(confidence_str)
+        # Clamp confidence to valid range [0.0, 1.0]
+        confidence = max(0.0, min(1.0, confidence))
+    except (ValueError, TypeError):
+        confidence = 0.0
 
     # Primary source of truth: latest completed Real-Time Transcription text
     call_data = voice_handler.active_calls.get(call_sid, {})
