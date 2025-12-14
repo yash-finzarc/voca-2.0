@@ -99,9 +99,16 @@ async def sarvamtts(text: str, call_sid: str, base_url: str) -> str:
                 logger.error(f"[SARVAM_TTS] audios type: {type(response.audios)}, value: {response.audios}")
             return ""
         
-        # Ensure it's bytes
-        if not isinstance(audio_data, bytes):
-            logger.error(f"[SARVAM_TTS] Audio data is not bytes, got: {type(audio_data)}")
+        # Convert to bytes if it's a string (likely base64 encoded)
+        if isinstance(audio_data, str):
+            try:
+                import base64
+                audio_data = base64.b64decode(audio_data)
+            except Exception as e:
+                logger.error(f"[SARVAM_TTS] Failed to decode base64 audio string: {e}")
+                return ""
+        elif not isinstance(audio_data, bytes):
+            logger.error(f"[SARVAM_TTS] Audio data is not bytes or string, got: {type(audio_data)}")
             return ""
         
         # Generate unique audio ID
