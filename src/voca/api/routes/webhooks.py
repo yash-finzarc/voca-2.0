@@ -74,18 +74,30 @@ async def sarvamtts(text: str, call_sid: str, base_url: str) -> str:
         )
         
         # Get audio bytes from Sarvam TextToSpeechResponse
-        # The response object has an 'audio_bytes' attribute containing the audio data
-        audio_data = response.audio_bytes if hasattr(response, 'audio_bytes') else None
+        # The response object has 'audios' attribute (plural) - this is a list of audio items
+        audio_data = None
+        if hasattr(response, 'audios'):
+            audios = response.audios
+            if audios and len(audios) > 0:
+                # Get first audio item - it might be bytes or have an audio_bytes attribute
+                first_audio = audios[0]
+                if isinstance(first_audio, bytes):
+                    audio_data = first_audio
+                elif hasattr(first_audio, 'audio_bytes'):
+                    audio_data = first_audio.audio_bytes
+                elif hasattr(first_audio, 'audio'):
+                    audio_data = first_audio.audio
+                elif hasattr(first_audio, 'data'):
+                    audio_data = first_audio.data
+                else:
+                    # Try to use it directly if it's already bytes-like
+                    audio_data = first_audio
         
         if not audio_data:
-            # Try alternative attribute names
-            if hasattr(response, 'audio'):
-                audio_data = response.audio
-            elif hasattr(response, 'data'):
-                audio_data = response.data
-            else:
-                logger.error(f"[SARVAM_TTS] Could not find audio data in response. Type: {type(response)}, Attributes: {[a for a in dir(response) if not a.startswith('_')]}")
-                return ""
+            logger.error(f"[SARVAM_TTS] Could not extract audio from response.audios. Type: {type(response)}")
+            if hasattr(response, 'audios'):
+                logger.error(f"[SARVAM_TTS] audios type: {type(response.audios)}, value: {response.audios}")
+            return ""
         
         # Ensure it's bytes
         if not isinstance(audio_data, bytes):
