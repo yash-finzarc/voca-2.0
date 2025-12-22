@@ -14,12 +14,22 @@ logger = logging.getLogger(__name__)
 @router.websocket("/conversation/{call_sid}")
 async def handle_conversation_relay(websocket: WebSocket, call_sid: str):
     """Handle ConversationRelay WebSocket connection from Twilio."""
-    await websocket.accept()
-    logger.info(f"[CONVERSATION_RELAY] WebSocket connected for call {call_sid}")
+    logger.info(f"[CONVERSATION_RELAY] WebSocket connection attempt for call {call_sid}")
+    
+    try:
+        await websocket.accept()
+        logger.info(f"[CONVERSATION_RELAY] WebSocket connected for call {call_sid}")
+    except Exception as e:
+        logger.error(f"[CONVERSATION_RELAY] Error accepting WebSocket for call {call_sid}: {e}", exc_info=True)
+        return
     
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
-        await websocket.close()
+        logger.error(f"[CONVERSATION_RELAY] Twilio manager not available for call {call_sid}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
         return
     
     voice_handler = twilio_manager.voice_handler
