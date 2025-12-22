@@ -33,9 +33,9 @@ async def get_logs(limit: int = 100):
     return logs
 
 
-@router.get("/ws/test")
-async def websocket_test_get():
-    """HTTP GET endpoint to test if the /ws/test route is accessible."""
+@router.get("/api/ws/test/info")
+async def websocket_test_info():
+    """HTTP GET endpoint to check WebSocket endpoint status."""
     return {
         "status": "ok",
         "message": "WebSocket endpoint is registered. Use wscat or a WebSocket client to connect.",
