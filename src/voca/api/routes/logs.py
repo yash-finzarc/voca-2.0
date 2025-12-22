@@ -33,6 +33,46 @@ async def get_logs(limit: int = 100):
     return logs
 
 
+@router.websocket("/ws/test")
+async def websocket_test(websocket: WebSocket):
+    """Simple test WebSocket endpoint for debugging."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    client_info = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "unknown"
+    logger.info(f"[WS_TEST] WebSocket connection attempt from {client_info}")
+    logger.info(f"[WS_TEST] WebSocket URL: {websocket.url}")
+    logger.info(f"[WS_TEST] WebSocket headers: {dict(websocket.headers)}")
+    
+    try:
+        await websocket.accept()
+        logger.info("[WS_TEST] WebSocket connected successfully")
+        
+        # Send a welcome message
+        await websocket.send_json({"type": "welcome", "message": "WebSocket connection successful!"})
+        
+        try:
+            while True:
+                # Wait for messages from client
+                try:
+                    data = await websocket.receive_json()
+                    logger.info(f"[WS_TEST] Received: {data}")
+                    
+                    # Echo back the message
+                    await websocket.send_json({"type": "echo", "received": data})
+                except ValueError as e:
+                    logger.warning(f"[WS_TEST] Invalid JSON received: {e}")
+                    await websocket.send_json({"type": "error", "message": "Invalid JSON"})
+        except Exception as e:
+            logger.info(f"[WS_TEST] WebSocket closed: {e}")
+    except Exception as e:
+        logger.error(f"[WS_TEST] Error in WebSocket: {e}", exc_info=True)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @router.websocket("/ws/logs")
 async def websocket_logs(websocket: WebSocket):
     """WebSocket endpoint for real-time logs."""
