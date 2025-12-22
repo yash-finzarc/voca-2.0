@@ -93,12 +93,12 @@ class TwilioVoiceHandler:
             payload = {
                 'text': text,
                 'model': model,
-                'encoding': 'linear16',  # WAV format
-                'sample_rate': 8000,  # Twilio-compatible sample rate
-                'container': 'none'
+                'encoding': 'linear16',  # WAV format (PCM)
+                'sample_rate': 8000  # Twilio-compatible sample rate
             }
             
             self.logger.info(f"[TTS] Calling Deepgram API for model: {model}, text length: {len(text)} chars")
+            self.logger.debug(f"[TTS] Payload: {payload}")
             response = requests.post(url, headers=headers, json=payload, timeout=10)
             
             if response.status_code == 200:
