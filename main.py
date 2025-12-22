@@ -1,6 +1,10 @@
 """
 Main FastAPI server entry point for VOCA frontend integration.
 Run this file to start the API server for the web frontend.
+
+This module exports the FastAPI app instance so it can be used with:
+- python main.py (runs via main() function)
+- uvicorn main:app (direct uvicorn invocation for production/systemd)
 """
 import logging
 import sys
@@ -36,6 +40,12 @@ logging.getLogger("absl").setLevel(logging.ERROR)
 logging.getLogger("grpc").setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
+
+# Import the FastAPI app instance so it can be used with uvicorn main:app
+from src.voca.api.app import app
+
+# Export app for uvicorn: uvicorn main:app
+__all__ = ["app"]
 
 
 def main():
