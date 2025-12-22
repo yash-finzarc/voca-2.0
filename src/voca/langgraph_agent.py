@@ -13,6 +13,7 @@ from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
 from src.voca.config import Config
+from src.voca.system_prompt import get_state_tracker_prompt
 
 logger = logging.getLogger("voca.langgraph")
 
@@ -167,15 +168,16 @@ class LangGraphAgent:
         return new_state
 
     def _state_tracker_node(self, state: GraphState) -> GraphState:
-        tracker_instructions = (
-            "You are a CRM state tracker. "
-            "Given the full conversation, extract any newly provided values for the lead fields "
-            "(name, phone, email, service_type, preferred_date, preferred_time, number_of_people, "
-            "room_type, notes) and store them in JSON. "
-            "Only include fields that are explicitly mentioned. "
-            "Classify the lead as hot, warm, or cold depending on intent and readiness. "
-            "Set summary_requested to true only if the user explicitly requests a summary."
-        )
+        # Get state tracker prompt from Supabase
+        organization_id = state.get("organization_id")
+        try:
+            tracker_instructions = get_state_tracker_prompt(organization_id=organization_id)
+        except Exception as e:
+            self.logger.error(f"Failed to fetch state tracker prompt from Supabase: {e}")
+            # Fallback: return state without updating (don't use hardcoded prompt)
+            self.logger.warning("State tracker node skipped - no prompt available from Supabase")
+            return state
+        
         tracker_messages: List[BaseMessage] = [SystemMessage(content=tracker_instructions)]
         tracker_messages.extend(state.get("messages", []))
 

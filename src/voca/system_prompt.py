@@ -14,14 +14,6 @@ from src.voca.supabase_client import get_supabase_client, is_supabase_configured
 
 logger = logging.getLogger("voca.system_prompt")
 
-# Default system prompt (fallback)
-DEFAULT_SYSTEM_PROMPT = (
-    "You are Voca, a helpful voice assistant. "
-    "Respond concisely and naturally. "
-    "If asked how you can help, say: 'I can assist you with the information that is available to me.' "
-    "Keep responses brief and conversational."
-)
-
 # In-memory cache to reduce DB calls (keyed by organization ID or '__default__')
 _cached_prompts: Dict[str, Optional[str]] = {}
 _cached_names: Dict[str, Optional[str]] = {}
@@ -56,8 +48,14 @@ def _write_cache(cache_key: str, prompt: Optional[str], name: Optional[str], wel
 
 
 def get_default_prompt() -> str:
-    """Get the default system prompt."""
-    return DEFAULT_SYSTEM_PROMPT
+    """
+    Get the default system prompt from Supabase.
+    Raises RuntimeError if Supabase is unavailable or no prompt is found.
+    """
+    prompt_data = get_prompt_with_name(organization_id=None)
+    if not prompt_data or not prompt_data.get("prompt"):
+        raise RuntimeError("No system prompt found in Supabase. Please create a system prompt first.")
+    return prompt_data["prompt"]
 
 
 def extract_json_from_prompt(prompt_text: str) -> Optional[Dict]:
@@ -120,7 +118,7 @@ def get_prompt_with_name(organization_id: Optional[str] = None) -> dict:
     """
     Get the current system prompt and name from Supabase.
     Returns dict with 'prompt', 'name', 'welcome_message', and 'service_type' keys.
-    Falls back to default if Supabase is unavailable.
+    Raises RuntimeError if Supabase is unavailable or no prompt is found.
     """
     cache_key = _cache_key(organization_id)
     cached = _read_cache(cache_key)
@@ -128,19 +126,23 @@ def get_prompt_with_name(organization_id: Optional[str] = None) -> dict:
         # Add service_type to cached data if not present (for backward compatibility)
         if "service_type" not in cached:
             cached["service_type"] = "conversational"
+        if not cached.get("prompt"):
+            raise RuntimeError("No system prompt found in cache. Please create a system prompt in Supabase first.")
         return cached
 
     if not is_supabase_configured():
-        logger.debug("Supabase not configured, using default prompt")
-        return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None, "service_type": "conversational"}
+        logger.error("Supabase not configured. System prompts must be stored in Supabase.")
+        raise RuntimeError("Supabase is not configured. Please configure Supabase and create a system prompt.")
 
     client = get_supabase_client()
     if client is None:
-        logger.warning("Supabase client unavailable, using default prompt")
-        return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None, "service_type": "conversational"}
+        logger.error("Supabase client unavailable. System prompts must be stored in Supabase.")
+        raise RuntimeError("Supabase client is unavailable. Please check your Supabase configuration.")
 
     try:
         prompt_data = _fetch_prompt_for_organization(client, organization_id)
+        if not prompt_data or not prompt_data.get("prompt"):
+            raise RuntimeError(f"No system prompt found in Supabase for organization {organization_id or 'default'}. Please create a system prompt first.")
         _write_cache(
             cache_key,
             prompt_data["prompt"],
@@ -148,9 +150,11 @@ def get_prompt_with_name(organization_id: Optional[str] = None) -> dict:
             prompt_data.get("welcome_message")
         )
         return prompt_data
+    except RuntimeError:
+        raise
     except Exception as e:
         logger.error(f"Error fetching system prompt from Supabase: {e}")
-        return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None, "service_type": "conversational"}
+        raise RuntimeError(f"Failed to fetch system prompt from Supabase: {str(e)}")
 
 
 def update_prompt(
@@ -215,10 +219,36 @@ def update_prompt(
 
 def reset_prompt(organization_id: Optional[str] = None) -> bool:
     """
-    Reset the system prompt to default in Supabase.
+    Reset the system prompt by deleting organization-specific prompt (if exists).
+    This will cause the system to fall back to the default prompt from Supabase.
     Returns True if successful, False otherwise.
     """
-    return update_prompt(DEFAULT_SYSTEM_PROMPT, name="Default", organization_id=organization_id)
+    if not is_supabase_configured():
+        logger.error("Supabase not configured, cannot reset prompt")
+        return False
+
+    client = get_supabase_client()
+    if client is None:
+        logger.error("Supabase client unavailable, cannot reset prompt")
+        return False
+
+    if organization_id:
+        try:
+            # Deactivate organization-specific prompt
+            client.table("organization_system_prompts").update({"is_active": False}).eq("organization_id", organization_id).eq("is_active", True).execute()
+            cache_key = _cache_key(organization_id)
+            _cached_prompts.pop(cache_key, None)
+            _cached_names.pop(cache_key, None)
+            _cached_welcome_messages.pop(cache_key, None)
+            _cache_timestamps.pop(cache_key, None)
+            logger.info(f"Organization {organization_id} prompt reset - will use default from Supabase")
+            return True
+        except Exception as e:
+            logger.error(f"Error resetting organization prompt: {e}")
+            return False
+    else:
+        logger.warning("Cannot reset default prompt. Please manage default prompts directly in Supabase.")
+        return False
 
 
 def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> dict:
@@ -240,7 +270,9 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
         )
         if response.data:
             data = response.data[0]
-            prompt = data.get("prompt", DEFAULT_SYSTEM_PROMPT)
+            prompt = data.get("prompt")
+            if not prompt:
+                raise RuntimeError(f"Organization prompt found but has no prompt text for organization {organization_id}")
             name = data.get("name", "Custom")
             welcome_message = data.get("welcome_message")
             logger.debug("Organization prompt fetched from Supabase")
@@ -289,16 +321,17 @@ def _fetch_prompt_for_organization(client, organization_id: Optional[str]) -> di
 
     if response.data:
         data = response.data[0]
-        prompt = data.get("prompt", DEFAULT_SYSTEM_PROMPT)
+        prompt = data.get("prompt")
+        if not prompt:
+            raise RuntimeError("System prompt found in Supabase but has no prompt text. Please update the prompt.")
         name = data.get("name", "Default")
         welcome_message = data.get("welcome_message")
         service_type = data.get("service_type", "conversational")  # Default to conversational if not present
         logger.debug("System prompt fetched from Supabase")
         return {"prompt": prompt, "name": name, "welcome_message": welcome_message, "service_type": service_type}
 
-    logger.info("No system prompt rows found, initializing with default")
-    _initialize_default_prompt(client)
-    return {"prompt": DEFAULT_SYSTEM_PROMPT, "name": "Default", "welcome_message": None, "service_type": "conversational"}
+    logger.error("No system prompt rows found in Supabase")
+    raise RuntimeError("No system prompt found in Supabase. Please create a system prompt in Supabase first.")
 
 
 def _update_default_prompt(client, prompt: str, name: Optional[str], welcome_message: Optional[str] = None) -> bool:
@@ -362,8 +395,13 @@ def _update_default_prompt(client, prompt: str, name: Optional[str], welcome_mes
 
 
 def _initialize_default_prompt(client) -> bool:
-    """Initialize the system_prompts table with default prompt."""
-    return _initialize_prompt(client, DEFAULT_SYSTEM_PROMPT, "Default", None)
+    """
+    Initialize the system_prompts table.
+    This function is deprecated - prompts should be created via Supabase directly.
+    Returns False as prompts must be created in Supabase.
+    """
+    logger.warning("_initialize_default_prompt called but prompts must be created in Supabase")
+    return False
 
 
 def _initialize_prompt(client, prompt: str, name: Optional[str] = None, welcome_message: Optional[str] = None) -> bool:
@@ -446,6 +484,74 @@ def get_welcome_message(organization_id: Optional[str] = None) -> Optional[str]:
     """
     prompt_data = get_prompt_with_name(organization_id=organization_id)
     return prompt_data.get("welcome_message")
+
+
+def get_state_tracker_prompt(organization_id: Optional[str] = None) -> str:
+    """
+    Get the state tracker prompt from Supabase for the given organization.
+    Raises RuntimeError if Supabase is unavailable or no prompt is found.
+    """
+    if not is_supabase_configured():
+        logger.error("Supabase not configured. State tracker prompts must be stored in Supabase.")
+        raise RuntimeError("Supabase is not configured. Please configure Supabase and create a state tracker prompt.")
+
+    client = get_supabase_client()
+    if client is None:
+        logger.error("Supabase client unavailable. State tracker prompts must be stored in Supabase.")
+        raise RuntimeError("Supabase client is unavailable. Please check your Supabase configuration.")
+
+    try:
+        # Try to get organization-specific state tracker prompt first
+        if organization_id:
+            response = (
+                client.table("organization_system_prompts")
+                .select("state_tracker_prompt")
+                .eq("organization_id", organization_id)
+                .eq("is_active", True)
+                .order("updated_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if response.data and response.data[0].get("state_tracker_prompt"):
+                tracker_prompt = response.data[0]["state_tracker_prompt"]
+                return tracker_prompt
+
+        # Fall back to default state tracker prompt
+        try:
+            response = (
+                client.table("system_prompts")
+                .select("state_tracker_prompt")
+                .eq("is_active", True)
+                .order("updated_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            # If is_active column doesn't exist, try is_default
+            try:
+                response = (
+                    client.table("system_prompts")
+                    .select("state_tracker_prompt")
+                    .eq("is_default", True)
+                    .order("updated_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+            except Exception:
+                response = type('obj', (object,), {'data': None})()
+
+        if response.data and response.data[0].get("state_tracker_prompt"):
+            tracker_prompt = response.data[0]["state_tracker_prompt"]
+            return tracker_prompt
+
+        # If no state_tracker_prompt is found, raise an error
+        logger.error("No state tracker prompt found in Supabase")
+        raise RuntimeError("No state tracker prompt found in Supabase. Please create a state tracker prompt in Supabase first.")
+    except RuntimeError:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching state tracker prompt from Supabase: {e}")
+        raise RuntimeError(f"Failed to fetch state tracker prompt from Supabase: {str(e)}")
 
 
 def create_prompt(

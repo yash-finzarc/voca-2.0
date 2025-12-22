@@ -13,7 +13,6 @@ from src.voca.api.models import (
 from src.voca.api.utils import resolve_org_id
 from src.voca.config import Config
 from src.voca.system_prompt import (
-    DEFAULT_SYSTEM_PROMPT,
     activate_prompt_by_id,
     create_prompt,
     create_prompt_with_id,
@@ -57,11 +56,13 @@ async def list_system_prompts(
     results: List[SystemPromptListItem] = []
 
     if not is_supabase_configured():
-        return [SystemPromptListItem(name="Default", prompt=DEFAULT_SYSTEM_PROMPT, is_default=True)]
+        logger.error("Supabase not configured. System prompts must be stored in Supabase.")
+        raise HTTPException(status_code=500, detail="Supabase is not configured. Please configure Supabase to manage system prompts.")
 
     client = get_supabase_client()
     if client is None:
-        return results
+        logger.error("Supabase client unavailable. System prompts must be stored in Supabase.")
+        raise HTTPException(status_code=500, detail="Supabase client is unavailable. Please check your Supabase configuration.")
 
     try:
         resolved_org = resolve_org_id(query_value=organization_id, header_value=x_organization_id)

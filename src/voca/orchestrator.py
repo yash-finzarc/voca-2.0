@@ -17,7 +17,6 @@ from src.voca.system_prompt import (
     get_welcome_message,
     get_prompt_with_name,
     extract_json_from_prompt,
-    DEFAULT_SYSTEM_PROMPT,
 )
 from src.voca.deepgramtts import DeepgramTTS
 from src.voca.conversation_logger import log_user, log_ai
@@ -203,19 +202,13 @@ class VocaOrchestrator:
         log_user(user_text)
 
         org_id = session.organization_id or self.default_organization_id
-        system_prompt = get_prompt(organization_id=org_id)
-        
-        # If greeting has already been sent, modify the system prompt to prevent re-greeting
-        if session.greeting_sent:
-            # Add instruction to not greet again
-            system_prompt = (
-                system_prompt + 
-                "\n\nIMPORTANT: A greeting has already been given at the start of this call. "
-                "Do NOT greet the user again. If they say 'hi', 'hello', or similar greetings, "
-                "simply acknowledge them naturally and continue the conversation. "
-                "For example, respond with 'Hi! How can I help you?' or 'Hello! What can I do for you?' "
-                "instead of repeating the full greeting."
-            )
+        try:
+            system_prompt = get_prompt(organization_id=org_id)
+            if not system_prompt:
+                raise RuntimeError("System prompt is empty")
+        except Exception as e:
+            self.log(f"Error fetching system prompt: {e}")
+            return "I'm sorry, there was an error with the system configuration. Please contact support."
 
         try:
             result: LangGraphAgentResult = self.llm.generate_reply(
@@ -287,10 +280,19 @@ class VocaOrchestrator:
         org_id = organization_id or self.default_organization_id
         
         # Get system prompt with service_type
-        prompt_data = get_prompt_with_name(organization_id=org_id)
-        system_prompt_text = prompt_data.get("prompt", DEFAULT_SYSTEM_PROMPT)
-        service_type = prompt_data.get("service_type", "conversational")
-        welcome_message = prompt_data.get("welcome_message")
+        try:
+            prompt_data = get_prompt_with_name(organization_id=org_id)
+            system_prompt_text = prompt_data.get("prompt")
+            if not system_prompt_text:
+                raise RuntimeError("System prompt is empty")
+            service_type = prompt_data.get("service_type", "conversational")
+            welcome_message = prompt_data.get("welcome_message")
+        except Exception as e:
+            self.log(f"Error fetching system prompt: {e}")
+            # Return fallback greeting for announcement mode
+            greeting = "नमस्कार।"
+            fallback_message = "कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।"
+            return f"{greeting} {fallback_message}"
         
         # Get welcome message (greeting) - same as conversational mode
         greeting = ""
@@ -406,9 +408,11 @@ class VocaOrchestrator:
             return greeting
         
         # If no welcome_message in database, generate one from system prompt
-        system_prompt = get_prompt(organization_id=org_id)
-        
         try:
+            system_prompt = get_prompt(organization_id=org_id)
+            if not system_prompt:
+                raise RuntimeError("System prompt is empty")
+            
             # Use the LLM to generate a greeting based on the system prompt
             from langchain_core.messages import HumanMessage, SystemMessage
             messages = [
