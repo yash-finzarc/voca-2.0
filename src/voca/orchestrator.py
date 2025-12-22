@@ -63,8 +63,16 @@ class VocaOrchestrator:
         self.on_log(msg)
 
     def load_models(self):
+        """Load all models (STT, TTS, LLM) at startup. Should be called once at application startup."""
         self.log("Loading STT...")
-        self.stt = build_stt()
+        try:
+            # Initialize STT client (connection created lazily on first audio to avoid timeout)
+            self.stt = build_stt(load_connection=True)  # Initialize client, connection on first use
+            self.log("STT client ready (Deepgram) - connection will be established on first audio.")
+        except Exception as e:
+            self.log(f"Failed to load Deepgram STT: {e}")
+            self.stt = None
+        
         self.log("Loading TTS...")
         # Initialize TTS if Deepgram API key is available
         if Config.deepgram_api_key:
@@ -78,7 +86,11 @@ class VocaOrchestrator:
         else:
             self.log("No Deepgram API key found, TTS not available")
             self.tts = None
-        self.log("Models ready.")
+        
+        # LLM is already initialized in __init__, just verify it's ready
+        self.log("LLM ready (already initialized).")
+        
+        self.log("All models ready.")
 
     def models_ready(self) -> bool:
         stt_ready = (self.stt is not None) and getattr(self.stt, "is_ready", lambda: False)()

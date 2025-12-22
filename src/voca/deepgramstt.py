@@ -20,7 +20,7 @@ class DeepgramSTT:
     Handles PCM16 audio chunks and returns transcriptions.
     """
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "nova-3", language: str = "en-IN"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "nova-3", language: str = "en-IN", auto_load: bool = False):
         """
         Initialize Deepgram STT.
         
@@ -28,6 +28,7 @@ class DeepgramSTT:
             api_key: Deepgram API key (defaults to Config.deepgram_api_key)
             model: Deepgram model to use (default: "nova-3")
             language: Language code (default: "en-IN")
+            auto_load: If True, establish connection immediately. If False, call load() separately.
         """
         self.api_key = api_key or Config.deepgram_api_key
         if not self.api_key:
@@ -48,6 +49,10 @@ class DeepgramSTT:
         self._connection_thread = None
         self._lock = threading.Lock()
         self._actual_model_info = None  # Store actual model info from API responses
+        
+        # Auto-load client if requested (doesn't establish connection, just verifies client)
+        if auto_load:
+            self.load()  # This just verifies client, doesn't establish connection
         
     def _setup_connection(self):
         """Set up Deepgram streaming connection."""
@@ -148,15 +153,24 @@ class DeepgramSTT:
                 self.connection = None
             raise
     
+    def load(self):
+        """
+        Load/initialize the STT client (lightweight).
+        Note: Connection is established lazily when first audio arrives to avoid Deepgram timeout.
+        The client is ready, but connection will be created on first use.
+        """
+        # Just verify client is initialized - don't establish connection yet
+        # Connection will be created lazily in transcribe_pcm16() to avoid timeout
+        if not self.client:
+            raise RuntimeError("Deepgram client not initialized")
+        self.log.info(f"Deepgram STT client initialized (model: {self.model}, connection will be established on first use)")
+    
     def is_ready(self) -> bool:
         """
         Check if STT is ready to transcribe.
-        Returns True if connection exists and is connected, or if we can create one.
+        Returns True if client is initialized (connection will be created on first use).
         """
-        # If connection exists and is connected, we're ready
-        if self.is_connected and self.connection is not None:
-            return True
-        # If we have API key and client, we can create a connection when needed
+        # Client must be initialized - connection is created lazily
         return self.api_key is not None and self.client is not None
     
     def get_model_info(self) -> dict:
@@ -196,7 +210,7 @@ class DeepgramSTT:
     def transcribe_pcm16(self, pcm16: np.ndarray) -> Optional[str]:
         """
         Transcribe PCM16 audio chunk.
-        Creates connection lazily on first use (during actual calls).
+        Connection is created lazily on first use to avoid Deepgram timeout.
         
         Args:
             pcm16: NumPy array of PCM16 audio data (int16)
@@ -204,16 +218,15 @@ class DeepgramSTT:
         Returns:
             Transcribed text if available, None otherwise
         """
-        # Lazy connection setup - only create when we actually have audio to transcribe
+        # Lazy connection setup - create connection when first audio arrives
+        # This avoids Deepgram timeout (connections timeout if no audio is sent)
         if not self.is_connected or self.connection is None:
             try:
                 self._setup_connection()
+                self.log.debug("Deepgram STT connection established on first audio")
             except Exception as e:
-                self.log.error(f"Failed to initialize Deepgram connection: {e}")
+                self.log.error(f"Failed to establish Deepgram connection: {e}")
                 return None
-        
-        if self.connection is None:
-            return None
         
         try:
             # Convert numpy array to bytes
@@ -268,19 +281,21 @@ class DeepgramSTT:
                         break
 
 
-def build_stt():
+def build_stt(load_connection: bool = False):
     """
     Build and return a Deepgram STT instance.
-    Connection is created lazily when first audio is transcribed (not at startup).
+    By default, only initializes client (connection created lazily on first audio).
+    This avoids Deepgram timeout - connections timeout if no audio is sent.
     This function is expected by the orchestrator.
+    
+    Args:
+        load_connection: If True, call load() (still won't establish connection, just verify client).
     
     Returns:
         DeepgramSTT instance
     """
     try:
-        stt = DeepgramSTT()
-        # Don't initialize connection here - it will be created when needed (during calls)
-        # This prevents timeout errors when no audio is being sent
+        stt = DeepgramSTT(auto_load=load_connection)
         return stt
     except Exception as e:
         logging.getLogger("voca.deepgram_stt").error(f"Failed to build Deepgram STT: {e}")

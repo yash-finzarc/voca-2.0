@@ -110,6 +110,11 @@ def main():
         ]
     )
     
+    # Disable Twilio HTTP client logging to reduce log noise
+    logging.getLogger("twilio.http_client").setLevel(logging.WARNING)
+    logging.getLogger("twilio.rest").setLevel(logging.WARNING)
+    logging.getLogger("twilio").setLevel(logging.WARNING)
+    
     logger = logging.getLogger(__name__)
     
     # Check configuration

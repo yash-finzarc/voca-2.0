@@ -74,21 +74,22 @@ async def startup_event():
     """Initialize components on startup."""
     logger = logging.getLogger(__name__)
     logger.info("VOCA API server starting up")
+    
+    # Disable Twilio HTTP client logging to reduce log noise
+    logging.getLogger("twilio.http_client").setLevel(logging.WARNING)
+    logging.getLogger("twilio.rest").setLevel(logging.WARNING)
+    logging.getLogger("twilio").setLevel(logging.WARNING)
 
     try:
-        # Get orchestrator - don't load STT at startup (it will be created during calls)
-        # Only load TTS if available since it doesn't need a persistent connection
+        # Get orchestrator and load all models (STT, TTS, LLM) at startup
         orchestrator = app_state.get_orchestrator()
-        if Config.deepgram_api_key:
-            try:
-                # Only load TTS at startup, STT will be created lazily during calls
-                if not orchestrator.tts:
-                    from src.voca.deepgramtts import DeepgramTTS
-                    orchestrator.tts = DeepgramTTS()
-                    orchestrator.tts.load()
-                    logger.debug("TTS loaded at startup")
-            except Exception as e:
-                logger.debug(f"Could not load TTS at startup: {e}")
+        logger.info("Loading all models at startup...")
+        try:
+            orchestrator.load_models()
+            logger.info("All models loaded successfully at startup")
+        except Exception as e:
+            logger.error(f"Failed to load models at startup: {e}")
+            raise
         
         twilio_manager = app_state.get_twilio_manager()
         if not twilio_manager:
@@ -101,12 +102,12 @@ async def startup_event():
     
     # Log initial model info after a short delay to allow models to initialize
     async def log_initial_models():
-        await asyncio.sleep(1)  # Give models time to initialize
+        await asyncio.sleep(2)  # Give models time to fully initialize connections
         try:
             model_info = app_state.get_model_info()
-            # Only log STT if it's actually connected (will be created during calls)
-            if model_info.get("stt") and model_info["stt"].get("model") and model_info["stt"].get("is_connected"):
-                logger.info(f"Active STT: {model_info['stt']['model']} (Language: {model_info['stt'].get('language', 'N/A')})")
+            # Log STT model info
+            if model_info.get("stt") and model_info["stt"].get("model"):
+                logger.info(f"Active STT: {model_info['stt']['model']} (Language: {model_info['stt'].get('language', 'N/A')}, Connected: {model_info['stt'].get('is_connected', False)})")
             if model_info.get("tts") and model_info["tts"].get("model"):
                 logger.info(f"Active TTS: {model_info['tts']['model']} (Format: {model_info['tts'].get('output_format', 'N/A')})")
             if model_info.get("llm") and model_info["llm"].get("model"):

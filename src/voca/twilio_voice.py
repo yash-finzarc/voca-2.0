@@ -528,12 +528,18 @@ class TwilioCallManager:
     
     def start(self, host='0.0.0.0', port=5000):
         """Start the Twilio call manager with real-time AI processing."""
-        # Ensure models are loaded
-        try:
-            self.orchestrator.ensure_models_loaded()
-        except Exception as e:
-            self.logger.error(f"Failed to load VOCA models: {e}")
-            raise
+        # Models should already be loaded at application startup
+        # Just verify they're ready
+        if not self.orchestrator.models_ready():
+            self.logger.warning("Models not ready - they should have been loaded at startup")
+            # Fallback: try to load them now if they weren't loaded at startup
+            try:
+                self.orchestrator.ensure_models_loaded()
+            except Exception as e:
+                self.logger.error(f"Failed to load VOCA models: {e}")
+                raise
+        else:
+            self.logger.info("All models are ready (loaded at startup)")
         
         # Start webhook server
         self.voice_handler.start_webhook_server(host, port)
