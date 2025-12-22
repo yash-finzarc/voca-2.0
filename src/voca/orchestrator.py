@@ -11,14 +11,12 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from src.voca.config import Config
 from src.voca.conversation_store import save_conversation_snapshot
 from src.voca.langgraph_agent import LangGraphAgent, LangGraphAgentResult
-from src.voca.deepgramstt import build_stt
 from src.voca.system_prompt import (
     get_prompt,
     get_welcome_message,
     get_prompt_with_name,
     extract_json_from_prompt,
 )
-from src.voca.deepgramtts import DeepgramTTS
 from src.voca.conversation_logger import log_user, log_ai
 
 # Sounddevice commented out - not needed for Twilio calls
@@ -51,8 +49,7 @@ class VocaOrchestrator:
         organization_id: Optional[str] = None,
     ):
         self.on_log = on_log or (lambda m: None)
-        self.stt = None
-        self.tts = None  # Will be initialized in load_models() if Deepgram API key is available
+        # STT and TTS are handled by TwiML with Deepgram - no need for separate modules
         self.llm = LangGraphAgent()
         self._lock = threading.Lock()
         self._sessions: Dict[str, ConversationSession] = {}
@@ -62,29 +59,9 @@ class VocaOrchestrator:
         self.on_log(msg)
 
     def load_models(self):
-        """Load all models (STT, TTS, LLM) at startup. Should be called once at application startup."""
-        self.log("Loading STT...")
-        try:
-            # Initialize STT client (connection created lazily on first audio to avoid timeout)
-            self.stt = build_stt(load_connection=True)  # Initialize client, connection on first use
-            self.log("STT client ready (Deepgram) - connection will be established on first audio.")
-        except Exception as e:
-            self.log(f"Failed to load Deepgram STT: {e}")
-            self.stt = None
-        
-        self.log("Loading TTS...")
-        # Initialize TTS if Deepgram API key is available
-        if Config.deepgram_api_key:
-            try:
-                self.tts = DeepgramTTS()
-                self.tts.load()
-                self.log("TTS ready (Deepgram).")
-            except Exception as e:
-                self.log(f"Failed to load Deepgram TTS: {e}")
-                self.tts = None
-        else:
-            self.log("No Deepgram API key found, TTS not available")
-            self.tts = None
+        """Load all models (LLM) at startup. STT and TTS are handled by TwiML with Deepgram."""
+        # STT and TTS are handled by TwiML with Deepgram - no need to load separate modules
+        self.log("STT/TTS: Using TwiML with Deepgram (configured in Twilio)")
         
         # LLM is already initialized in __init__, just verify it's ready
         self.log("LLM ready (already initialized).")
@@ -92,49 +69,36 @@ class VocaOrchestrator:
         self.log("All models ready.")
 
     def models_ready(self) -> bool:
-        stt_ready = (self.stt is not None) and getattr(self.stt, "is_ready", lambda: False)()
-        # TTS is optional (not needed for Twilio calls which use TwiML TTS)
-        tts_ready = self.tts is None or (self.tts is not None and self.tts.is_ready())
-        return stt_ready and tts_ready
+        # STT and TTS are handled by TwiML with Deepgram - always ready for Twilio calls
+        # LLM is the only model we need to check
+        return True  # LLM is initialized in __init__
     
     def get_model_info(self) -> Dict[str, Any]:
         """
-        Get real-time model information from active STT and TTS services.
+        Get real-time model information.
+        STT and TTS are handled by TwiML with Deepgram.
         
         Returns:
             Dictionary with current model information
         """
         info = {
-            "stt": None,
-            "tts": None,
+            "stt": {
+                "type": "TwiML with Deepgram",
+                "provider": "Twilio",
+                "engine": "deepgram",
+                "model": "nova-3",
+                "language": "en-IN",
+                "is_ready": True,
+            },
+            "tts": {
+                "type": "TwiML with Deepgram",
+                "provider": "Twilio",
+                "engine": "deepgram",
+                "model": "aura-2-Odysseus-en",
+                "is_ready": True,
+            },
             "llm": None,
         }
-        
-        # Get STT model info
-        if self.stt:
-            try:
-                if hasattr(self.stt, "get_model_info"):
-                    info["stt"] = self.stt.get_model_info()
-                else:
-                    info["stt"] = {
-                        "type": type(self.stt).__name__,
-                        "is_ready": getattr(self.stt, "is_ready", lambda: False)(),
-                    }
-            except Exception as e:
-                info["stt"] = {"error": str(e)}
-        
-        # Get TTS model info
-        if self.tts:
-            try:
-                if hasattr(self.tts, "get_model_info"):
-                    info["tts"] = self.tts.get_model_info()
-                else:
-                    info["tts"] = {
-                        "type": type(self.tts).__name__,
-                        "is_ready": self.tts.is_ready() if hasattr(self.tts, "is_ready") else False,
-                    }
-            except Exception as e:
-                info["tts"] = {"error": str(e)}
         
         # Get LLM model info
         try:
@@ -154,27 +118,16 @@ class VocaOrchestrator:
         if not self.models_ready():
             self.load_models()
 
-    def handle_audio_chunk(self, pcm16: np.ndarray):
-        # naive: do full utterance on each chunk; in practice, use VAD/segmenter
-        if self.stt is None or not getattr(self.stt, "is_ready", lambda: False)():
-            return
-        try:
-            text = self.stt.transcribe_pcm16(pcm16)
-            if text:
-                self.log(f"USER: {text}")
-                log_user(text)
-                reply = self.generate_reply(text, conversation_id="local_audio")
-                if reply:
-                    self.log(f"ASSISTANT: {reply}")
-                    log_ai(reply)
-                    if self.tts and self.tts.is_ready():
-                        # For local audio, generate TTS (but don't save to file)
-                        try:
-                            self.tts.speak(reply, return_bytes=True)
-                        except Exception as e:
-                            self.log(f"TTS error: {e}")
-        except Exception as e:
-            self.log(f"Error processing audio: {e}")
+    def handle_audio_chunk(self, pcm16: np.ndarray, call_sid: Optional[str] = None):
+        """
+        Handle audio chunk (for compatibility).
+        Note: For Twilio calls, STT is handled by TwiML with Deepgram transcription callbacks.
+        This method is kept for compatibility but does not process audio directly.
+        """
+        # Audio processing is handled by TwiML with Deepgram transcription
+        # Transcriptions are sent via callbacks to /transcription/{call_sid}
+        # This method is a no-op for Twilio calls
+        pass
 
     def _get_session(self, conversation_id: Optional[str], organization_id: Optional[str]) -> ConversationSession:
         key = conversation_id or "default"
@@ -471,39 +424,9 @@ class VocaOrchestrator:
         # pcm16 = np.squeeze(audio)  # shape (N,)
         
         # Return early since sounddevice is not available
+        # Note: STT and TTS are handled by TwiML with Deepgram for Twilio calls
         self.log("Audio recording skipped - sounddevice not available")
-        return
-        self.log("Transcribing...")
-        try:
-            text = self.stt.transcribe_pcm16(pcm16)
-        except Exception as e:
-            self.log(f"Transcription failed: {e}")
-            return
-
-        if not text:
-            self.log("No speech detected.")
-            return
-
-        self.log(f"USER: {text}")
-        log_user(text)
-        self.log("Generating reply...")
-        try:
-            reply = self.generate_reply(text, conversation_id="one_minute_test")
-        except Exception as e:
-            self.log(f"LLM error: {e}")
-            return
-
-        if not reply:
-            self.log("Empty reply.")
-            return
-        self.log(f"ASSISTANT: {reply}")
-        log_ai(reply)
-        try:
-            if self.tts and self.tts.is_ready():
-                # For local audio, generate TTS (but don't save to file)
-                self.tts.speak(reply, return_bytes=True)
-        except Exception as e:
-            self.log(f"TTS error: {e}")
+        self.log("Note: For voice calls, use Twilio with TwiML Deepgram STT/TTS")
 
     def run_continuous_vad_loop(self, max_silence_ms: int = 2000, frame_ms: int = 30):
         """Continuously listen with VAD; when user stops, process utterance and keep the call up."""

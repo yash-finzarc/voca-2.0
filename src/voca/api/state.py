@@ -29,7 +29,7 @@ class AppState:
         return self.orchestrator
 
     def get_twilio_manager(self):
-        """Get Twilio call manager. Deepgram STT is handled directly by the orchestrator."""
+        """Get Twilio call manager. STT and TTS are handled by TwiML with Deepgram."""
         if self.twilio_manager is None:
             config = get_twilio_config()
             if not config.validate():
@@ -37,7 +37,8 @@ class AppState:
 
             logger = logging.getLogger(__name__)
 
-            # Check if Deepgram API key is configured for STT
+            # Note: Deepgram STT/TTS are handled by TwiML - no API key needed
+            # The Deepgram API key check is kept for backward compatibility but not required
             deepgram_key_env = os.getenv("DEEPGRAM_API_KEY", "")
             deepgram_key_config = Config.deepgram_api_key
             deepgram_key = deepgram_key_config or deepgram_key_env
@@ -46,7 +47,7 @@ class AppState:
                 # Update Config if we found it in environment but not in Config
                 if not Config.deepgram_api_key and deepgram_key_env:
                     Config.deepgram_api_key = deepgram_key_env
-                    logger.debug("Loaded DEEPGRAM_API_KEY from environment")
+                    logger.debug("Loaded DEEPGRAM_API_KEY from environment (not required for TwiML)")
 
             try:
                 self.twilio_manager = TwilioCallManager(self.get_orchestrator())

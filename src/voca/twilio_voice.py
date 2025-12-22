@@ -8,13 +8,18 @@ import logging
 import time
 import base64
 import io
+import os
+import wave
+import hashlib
+import requests
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List
-from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import PlainTextResponse, FileResponse, JSONResponse
 import uvicorn
 from twilio.rest import Client
-from twilio.twiml.voice_response import VoiceResponse, Start, Stream
+from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription, Play
 from twilio.twiml.messaging_response import MessagingResponse
 import threading
 import queue
@@ -25,6 +30,7 @@ from urllib.parse import urlencode
 
 from .twilio_config import get_twilio_config
 from .orchestrator import VocaOrchestrator
+from .config import Config
 
 
 class TwilioVoiceHandler:
@@ -41,12 +47,138 @@ class TwilioVoiceHandler:
         self.websocket_connections: Dict[str, websocket.WebSocket] = {}
         self.audio_buffers: Dict[str, list] = {}
         
+        # Audio storage for testing/debugging
+        self.audio_storage_dir = Path(Config.audio_storage_dir)
+        self.audio_storage_dir.mkdir(parents=True, exist_ok=True)
+        self.audio_writers: Dict[str, wave.Wave_write] = {}  # call_sid -> wave writer
+        self.audio_chunk_counts: Dict[str, int] = {}  # Track chunk count per call
+        
+        # TTS audio cache directory
+        self.tts_cache_dir = self.audio_storage_dir / "tts_cache"
+        self.tts_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.webhook_host = None
+        self.webhook_port = None
+        
+    def generate_deepgram_tts(self, text: str, model: str = 'aura-2-Odysseus-en') -> Optional[str]:
+        """
+        Generate TTS audio using Deepgram API and return the file path.
+        
+        Args:
+            text: Text to convert to speech
+            model: Deepgram TTS model name (language is specified in model name, e.g., 'aura-2-Odysseus-en' for English)
+        
+        Returns:
+            Path to the generated audio file, or None if generation failed
+        """
+        if not Config.deepgram_api_key:
+            self.logger.error("Deepgram API key not configured - TTS generation failed")
+            return None
+        
+        try:
+            # Create hash of text for caching (model name already contains language info)
+            text_hash = hashlib.md5(f"{text}_{model}".encode()).hexdigest()
+            cache_file = self.tts_cache_dir / f"{text_hash}.wav"
+            
+            # Return cached file if it exists
+            if cache_file.exists():
+                self.logger.debug(f"Using cached TTS audio for text: {text[:50]}...")
+                return str(cache_file)
+            
+            # Generate TTS using Deepgram API
+            url = "https://api.deepgram.com/v1/speak"
+            headers = {
+                'Authorization': f'Token {Config.deepgram_api_key}',
+                'Content-Type': 'application/json'
+            }
+            payload = {
+                'text': text,
+                'model': model,
+                'encoding': 'linear16',  # WAV format
+                'sample_rate': 8000,  # Twilio-compatible sample rate
+                'container': 'none'
+            }
+            
+            self.logger.info(f"Generating Deepgram TTS for text: {text[:50]}...")
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            
+            if response.status_code == 200:
+                # Save audio file
+                with open(cache_file, 'wb') as f:
+                    f.write(response.content)
+                self.logger.info(f"Generated Deepgram TTS audio: {cache_file}")
+                return str(cache_file)
+            else:
+                self.logger.error(f"Deepgram TTS API error: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error generating Deepgram TTS: {e}", exc_info=True)
+            return None
+    
+    def get_tts_audio_url(self, text: str, base_url: str, language: str = 'hi-IN') -> Optional[str]:
+        """
+        Get URL for TTS audio file, generating it if necessary.
+        
+        Args:
+            text: Text to convert to speech
+            base_url: Base URL for the webhook server
+            language: Language code
+        
+        Returns:
+            URL to the TTS audio file, or None if generation failed
+        """
+        # Determine model based on language
+        model_map = {
+            'en-US': 'aura-2-Odysseus-en',  # English
+            'en': 'aura-2-Odysseus-en',
+        }
+        model = model_map.get(language, 'aura-2-Odysseus-en')
+        
+        audio_path = self.generate_deepgram_tts(text, model=model)
+        if audio_path:
+            # Generate a unique ID for this text to serve it
+            text_hash = hashlib.md5(f"{text}_{language}_{model}".encode()).hexdigest()
+            return f"{base_url}/tts/{text_hash}"
+        return None
+    
     def start_webhook_server(self, host='0.0.0.0', port=5000):
         """Start FastAPI server to handle Twilio webhooks with real-time audio streaming."""
         app = FastAPI(title="VOCA Twilio Webhook Server")
         
+        # Store host and port for TTS URL generation
+        self.webhook_host = host
+        self.webhook_port = port
+        
+        # Helper function to add TTS to TwiML response
+        def add_tts_to_response(response: VoiceResponse, text: str, base_url: str, language: str = 'hi-IN'):
+            """Add Deepgram TTS audio to TwiML response. Logs error if TTS generation fails (no fallback)."""
+            tts_url = handler.get_tts_audio_url(text, base_url, language=language)
+            if tts_url:
+                response.play(tts_url)
+                handler.logger.debug(f"Using Deepgram TTS: {tts_url}")
+            else:
+                # TTS generation failed - log error but don't add anything to response (no fallback to say())
+                handler.logger.error(f"Deepgram TTS generation failed for text: {text[:50]}... - no audio will be played")
+        
         # Store reference to self for route handlers
         handler = self
+        
+        @app.get('/tts/{text_hash}')
+        async def serve_tts_audio(text_hash: str):
+            """Serve TTS audio file generated by Deepgram."""
+            try:
+                audio_file = handler.tts_cache_dir / f"{text_hash}.wav"
+                if audio_file.exists():
+                    return FileResponse(
+                        path=str(audio_file),
+                        media_type="audio/wav",
+                        headers={"Cache-Control": "public, max-age=31536000"}  # Cache for 1 year
+                    )
+                else:
+                    raise HTTPException(status_code=404, detail="TTS audio file not found")
+            except Exception as e:
+                handler.logger.error(f"Error serving TTS audio: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
         
         @app.post('/webhook/voice')
         async def handle_incoming_call(request: Request):
@@ -84,23 +216,53 @@ class TwilioVoiceHandler:
                 handler.logger.error(f"Error generating greeting: {e}")
                 greeting = "Hello! How can I help you today?"
             
-            # Say welcome message
-            response.say(greeting)
+            # Enable Real-Time Transcriptions with Deepgram Nova-3
+            # This provides real-time transcriptions via callbacks (no Deepgram API key needed)
+            config = get_twilio_config()
+            webhook_url = config.get_webhook_url()
+            base_url = webhook_url.replace('/webhook/voice', '')
             
-            # Gather user input
-            gather = response.gather(
-                input='speech',
-                timeout=10,
-                speech_timeout='auto',
-                language='en-US',
-                enhanced=True,
-                action=f'/process_speech/{call_sid}',
-                method='POST'
+            # Set up Real-Time Transcription with Deepgram Nova-3
+            # This provides real-time transcriptions via callbacks (no Deepgram API key needed)
+            transcription_callback_url = f'{base_url}/transcription/{call_sid}'
+            start = Start()
+            transcription = Transcription(
+                statusCallbackUrl=transcription_callback_url,
+                transcription_engine='deepgram',
+                speech_model='nova-3',  # Use nova-3 model
+                languageCode='en-IN'   # English (India) language
             )
-            gather.say("I'm listening...")
+            start.append(transcription)
+            response.append(start)
+            handler.logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for call {call_sid}")
+            handler.logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback_url}")
             
-            # Don't redirect - gather will POST to action URL when user speaks or times out
-            # Removing redirect prevents infinite loop - let gather handle timeout naturally
+            # Enable Media Streams for audio storage/debugging (if enabled)
+            # This streams raw audio to /media/{call_sid} WebSocket endpoint for storage
+            if Config.audio_storage_enabled:
+                # Twilio Media Streams require WebSocket (wss://) not HTTP
+                # Convert http:// to wss:// or https:// to wss://
+                if base_url.startswith('http://'):
+                    wss_base_url = base_url.replace('http://', 'wss://')
+                elif base_url.startswith('https://'):
+                    wss_base_url = base_url.replace('https://', 'wss://')
+                elif not base_url.startswith('wss://'):
+                    wss_base_url = f"wss://{base_url.lstrip('/')}"
+                else:
+                    wss_base_url = base_url
+                
+                stream_url = f"{wss_base_url}/media/{call_sid}"
+                stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
+                start.stream(stream)
+                handler.logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
+                handler.logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
+            
+            # Use Deepgram TTS for welcome message
+            add_tts_to_response(response, greeting, base_url, language='hi-IN')
+            
+            # No need for Gather - Real-Time Transcriptions will handle speech recognition
+            # Transcriptions will be sent to /transcription/{call_sid} callback
+            # The callback will process transcriptions and generate AI responses
             
             return Response(content=str(response), media_type='text/xml')
         
@@ -111,18 +273,11 @@ class TwilioVoiceHandler:
                 raise HTTPException(status_code=404, detail="Call not found")
             
             form_data = await request.form()
-            
             speech_result = form_data.get('SpeechResult', '')
             confidence = form_data.get('Confidence', '0')
-            speech_error = form_data.get('SpeechError', '')
-            digits = form_data.get('Digits', '')
+            language = form_data.get('Language', 'N/A')
             
-            if speech_result:
-                handler.logger.debug(f"Call {call_sid}: Speech recognized - {speech_result[:50]} (confidence: {confidence})")
-            else:
-                handler.logger.debug(f"Call {call_sid}: No speech recognized (confidence: {confidence})")
-                if speech_error:
-                    handler.logger.debug(f"Call {call_sid}: Speech error - {speech_error}")
+            handler.logger.info(f"Speech received for call {call_sid}: {speech_result} (confidence: {confidence}, language: {language})")
             
             # Get session to check if we're collecting a name
             session = handler.orchestrator._get_session(call_sid, None)
@@ -150,12 +305,7 @@ class TwilioVoiceHandler:
                 (not session.collected_data.get('name') or len(str(session.collected_data.get('name', '')).strip()) < 2)
             )
             
-            # Lower confidence threshold from 0.5 to 0.3 to catch more speech
-            # Also accept speech even with empty confidence if speech_result is not empty
-            confidence_value = float(confidence) if confidence else 0.0
-            has_valid_speech = speech_result and (confidence_value > 0.3 or confidence_value == 0.0)
-            
-            if has_valid_speech:
+            if speech_result and float(confidence) > 0.5:
                 # Reset unclear count on successful speech recognition
                 if call_sid in handler.active_calls:
                     handler.active_calls[call_sid]['unclear_count'] = 0
@@ -174,7 +324,7 @@ class TwilioVoiceHandler:
                             conversation_id=call_sid,
                             call_sid=call_sid,
                         )
-                        handler.logger.debug(f"Call {call_sid}: AI response generated - {ai_response[:100]}")
+                        handler.logger.info(f"AI Response: {ai_response}")
                         
                         # Check if AI is asking to repeat and we're in a name collection loop
                         ai_response_lower = ai_response.lower() if ai_response else ''
@@ -210,24 +360,18 @@ class TwilioVoiceHandler:
                         else:
                             ai_response = "I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?"
                     
-                    # Create TwiML response
+                    # Create TwiML response with Deepgram TTS
                     response = VoiceResponse()
-                    response.say(ai_response)
+                    # Get base_url for TTS (use webhook_url from config)
+                    config = get_twilio_config()
+                    webhook_url = config.get_webhook_url()
+                    tts_base_url = webhook_url.replace('/webhook/voice', '').replace('/process_speech/' + call_sid, '')
+                    # Detect language from transcription if available
+                    detected_language = language if language else 'hi-IN'
+                    add_tts_to_response(response, ai_response, tts_base_url, language=detected_language)
                     
-                    # Continue the conversation
-                    gather = response.gather(
-                        input='speech',
-                        timeout=10,
-                        speech_timeout='auto',
-                        language='en-US',
-                        enhanced=True,
-                        action=f'/process_speech/{call_sid}',
-                        method='POST'
-                    )
-                    gather.say("I'm listening...")
-                    
-                    # Don't redirect - gather will POST to action URL when user speaks or times out
-                    # Removing redirect prevents infinite loop on empty responses
+                    # No need for Gather - Real-Time Transcriptions continue automatically
+                    # Transcriptions will be sent to /transcription/{call_sid} callback
                     
                     twiml_str = str(response)
                     handler.logger.info(f"TwiML Response: {twiml_str}")
@@ -236,31 +380,21 @@ class TwilioVoiceHandler:
                 except Exception as e:
                     handler.logger.error(f"Error processing speech: {e}")
                     response = VoiceResponse()
+                    config = get_twilio_config()
+                    webhook_url = config.get_webhook_url()
+                    tts_base_url = webhook_url.replace('/webhook/voice', '').replace('/process_speech/' + call_sid, '')
                     # Never mention technical errors - use graceful response
                     if 'name' in speech_result.lower() if speech_result else False:
-                        response.say("I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name.")
+                        error_text = "I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name."
+                        add_tts_to_response(response, error_text, tts_base_url, language='hi-IN')
                     else:
-                        response.say("I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?")
-                    # Continue the conversation - don't cut off
-                    gather = response.gather(
-                        input='speech',
-                        timeout=10,
-                        speech_timeout='auto',
-                        language='en-US',
-                        enhanced=True,
-                        action=f'/process_speech/{call_sid}',
-                        method='POST'
-                    )
-                    gather.say("I'm listening...")
-                    
-                    # Don't redirect immediately - let gather wait for user input
-                    # The gather action will handle the next request when user speaks or times out
+                        error_text = "I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?"
+                        add_tts_to_response(response, error_text, tts_base_url, language='hi-IN')
+                    # No need for Gather - Real-Time Transcriptions continue automatically
                     twiml_str = str(response)
                     return Response(content=twiml_str, media_type='text/xml')
             else:
                 # No speech or low confidence
-                handler.logger.debug(f"Call {call_sid}: Low confidence speech - {speech_result or '(empty)'} (confidence: {confidence})")
-                
                 # Track unclear responses
                 if call_sid in handler.active_calls:
                     handler.active_calls[call_sid]['unclear_count'] = handler.active_calls[call_sid].get('unclear_count', 0) + 1
@@ -295,61 +429,234 @@ class TwilioVoiceHandler:
                 )
                 
                 response = VoiceResponse()
+                config = get_twilio_config()
+                webhook_url = config.get_webhook_url()
+                tts_base_url = webhook_url.replace('/webhook/voice', '').replace('/process_speech/' + call_sid, '')
                 
-                # Maximum retry limit to prevent infinite loops
-                MAX_UNCLEAR_ATTEMPTS = 3
-                
-                # If we've exceeded max attempts, gracefully handle the situation
-                if unclear_count >= MAX_UNCLEAR_ATTEMPTS:
-                    if is_collecting_name:
-                        response.say("I'm having trouble understanding your name over the phone. Let's skip that for now. How can I help you today?")
-                    else:
-                        response.say("I'm having trouble understanding you. Let me try a different approach. Please say your question or request again, and I'll do my best to help.")
-                    
-                    # Reset unclear count after max attempts to give user a fresh chance
-                    if call_sid in handler.active_calls:
-                        handler.active_calls[call_sid]['unclear_count'] = 0
                 # If we're in a loop and it's about a name, ask to spell it
-                elif unclear_count >= 2 and is_collecting_name:
-                    response.say("I'm having trouble understanding your name. Could you please spell it for me? First, tell me your first name letter by letter, and then your last name.")
+                if unclear_count >= 2 and is_collecting_name:
+                    error_text = "I'm having trouble understanding your name. Could you please spell it for me? First, tell me your first name letter by letter, and then your last name."
+                    add_tts_to_response(response, error_text, tts_base_url, language='hi-IN')
                 elif unclear_count >= 2:
                     # After multiple unclear attempts, be more helpful
-                    response.say("I'm having trouble understanding. Could you please speak a bit slower and more clearly?")
+                    error_text = "I'm having trouble understanding. Could you please speak a bit slower and more clearly?"
+                    add_tts_to_response(response, error_text, tts_base_url, language='hi-IN')
                 else:
-                    response.say("I didn't catch that. Please speak clearly.")
+                    error_text = "I didn't catch that. Please speak clearly."
+                    add_tts_to_response(response, error_text, tts_base_url, language='hi-IN')
                 
-                # Always add gather element to give user a chance to respond
-                # Don't redirect immediately - let gather wait for user input
-                # The action on gather will handle the next request
-                gather = response.gather(
-                    input='speech',
-                    timeout=10,
-                    speech_timeout='auto',
-                    language='en-US',
-                    enhanced=True,
-                    action=f'/process_speech/{call_sid}',
-                    method='POST'
-                )
-                gather.say("I'm listening...")
-                
-                # Don't redirect immediately - let the gather timeout handle it
-                # If gather times out without input, it will POST to /process_speech/{call_sid} with empty result
-                # That's handled by the else block above
+                # No need for Gather or redirect - Real-Time Transcriptions continue automatically
+                # Transcriptions will be sent to /transcription/{call_sid} callback
                 return Response(content=str(response), media_type='text/xml')
         
-        @app.post('/media/{call_sid}')
-        async def handle_media_stream(call_sid: str, request: Request):
-            """Handle incoming media stream from Twilio."""
-            if call_sid not in handler.active_calls:
-                raise HTTPException(status_code=404, detail="Call not found")
+        @app.websocket('/media/{call_sid}')
+        async def handle_media_stream_websocket(websocket: WebSocket, call_sid: str):
+            """Handle Twilio Media Streams via WebSocket."""
+            from fastapi import WebSocketDisconnect
+            await websocket.accept()
+            handler.logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket connected for call {call_sid}")
             
-            # Get audio data from request body
-            audio_data = await request.body()
-            if audio_data:
-                # Process audio through VOCA orchestrator
-                handler.process_audio_stream(call_sid, audio_data)
+            try:
+                while True:
+                    # Receive JSON messages from Twilio Media Streams
+                    data = await websocket.receive_json()
+                    event = data.get('event')
+                    
+                    if event == 'connected':
+                        handler.logger.info(f"[AUDIO_DEBUG] Media stream connected for call {call_sid}")
+                    elif event == 'start':
+                        handler.logger.info(f"[AUDIO_DEBUG] Media stream started for call {call_sid}")
+                    elif event == 'media':
+                        # Extract base64 audio payload
+                        media_payload = data.get('media', {}).get('payload')
+                        if media_payload:
+                            try:
+                                audio_bytes = base64.b64decode(media_payload)
+                                # Twilio Media Streams use μ-law encoding at 8kHz
+                                # Convert μ-law to linear PCM16
+                                # Simple μ-law to linear conversion
+                                mu_law_array = np.frombuffer(audio_bytes, dtype=np.uint8)
+                                # μ-law decoder: expand 8-bit μ-law to 16-bit linear
+                                sign = (mu_law_array & 0x80) >> 7
+                                exponent = (mu_law_array & 0x70) >> 4
+                                mantissa = mu_law_array & 0x0F
+                                
+                                # Decode μ-law
+                                linear = np.zeros(len(mu_law_array), dtype=np.int16)
+                                for i in range(len(mu_law_array)):
+                                    mu = mu_law_array[i]
+                                    sign_bit = (mu & 0x80) >> 7
+                                    exponent_bits = (mu & 0x70) >> 4
+                                    mantissa_bits = mu & 0x0F
+                                    
+                                    # μ-law expansion formula
+                                    if exponent_bits == 0:
+                                        sample = (mantissa_bits << 1) + 33
+                                    else:
+                                        sample = ((mantissa_bits << 1) + 33) << (exponent_bits - 1)
+                                    
+                                    if sign_bit == 1:
+                                        sample = -sample
+                                    
+                                    linear[i] = np.int16(sample - 33)
+                                
+                                # Scale to int16 range
+                                audio_array = (linear * 16).astype(np.int16)
+                                
+                                # Save audio chunk BEFORE processing (for testing/debugging)
+                                handler._save_audio_chunk(call_sid, audio_array, sample_rate=8000)
+                                
+                                # Log audio info (every 50 chunks to avoid spam)
+                                if call_sid not in handler.audio_chunk_counts or handler.audio_chunk_counts.get(call_sid, 0) % 50 == 0:
+                                    handler.logger.info(f"[AUDIO_CAPTURE] Call {call_sid}: Received audio chunk - "
+                                                      f"size: {len(audio_array)} samples ({len(audio_array)/8000:.3f}s), "
+                                                      f"min: {audio_array.min()}, max: {audio_array.max()}, "
+                                                      f"mean: {audio_array.mean():.1f}")
+                                
+                                # Process through orchestrator with audio storage
+                                handler.orchestrator.handle_audio_chunk(audio_array, call_sid=call_sid)
+                            except Exception as e:
+                                handler.logger.error(f"[AUDIO_DEBUG] Error processing media payload: {e}", exc_info=True)
+                    elif event == 'stop':
+                        handler.logger.info(f"[AUDIO_DEBUG] Media stream stopped for call {call_sid}")
+                        # Close audio writer if exists
+                        if call_sid in handler.audio_writers:
+                            try:
+                                writer = handler.audio_writers[call_sid]
+                                writer.close()
+                                chunk_count = handler.audio_chunk_counts.get(call_sid, 0)
+                                handler.logger.info(f"[AUDIO_CAPTURE] Closed audio file for call {call_sid} ({chunk_count} chunks saved)")
+                            except Exception as e:
+                                handler.logger.error(f"[AUDIO_CAPTURE] Error closing audio writer: {e}")
+                            del handler.audio_writers[call_sid]
+                        break
+                        
+            except WebSocketDisconnect:
+                handler.logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket disconnected for call {call_sid}")
+                # Close audio writer if exists
+                if call_sid in handler.audio_writers:
+                    try:
+                        writer = handler.audio_writers[call_sid]
+                        writer.close()
+                        chunk_count = handler.audio_chunk_counts.get(call_sid, 0)
+                        handler.logger.info(f"[AUDIO_CAPTURE] Closed audio file for call {call_sid} ({chunk_count} chunks saved)")
+                    except Exception as e:
+                        handler.logger.error(f"[AUDIO_CAPTURE] Error closing audio writer: {e}")
+                    del handler.audio_writers[call_sid]
+            except Exception as e:
+                handler.logger.error(f"[AUDIO_DEBUG] Error in Media Stream WebSocket: {e}")
+                # Close audio writer if exists
+                if call_sid in handler.audio_writers:
+                    try:
+                        writer = handler.audio_writers[call_sid]
+                        writer.close()
+                    except:
+                        pass
+                    del handler.audio_writers[call_sid]
+        
+        @app.post('/media/{call_sid}')
+        async def handle_media_stream_fallback(call_sid: str, request: Request):
+            """Fallback HTTP POST endpoint for Media Streams (if WebSocket not available)."""
+            try:
+                data = await request.json()
+                event = data.get('event')
+                
+                if event == 'media':
+                    media_payload = data.get('media', {}).get('payload')
+                    if media_payload:
+                        audio_bytes = base64.b64decode(media_payload)
+                        audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+                        handler.orchestrator.handle_audio_chunk(audio_array, call_sid=call_sid)
+            except Exception as e:
+                handler.logger.error(f"[AUDIO_DEBUG] Error in fallback media stream: {e}")
             
             return PlainTextResponse("OK")
+        
+        @app.post('/transcription/{call_sid}')
+        async def handle_transcription(call_sid: str, request: Request):
+            """Handle real-time transcription callbacks from Twilio with Deepgram."""
+            form_data = await request.form()
+            
+            # Extract transcription data
+            transcription_text = form_data.get('TranscriptionText', '')
+            transcription_status = form_data.get('TranscriptionStatus', '')
+            transcription_sid = form_data.get('TranscriptionSid', '')
+            confidence = form_data.get('Confidence', '0')
+            # Check for language in webhook (may not be present for all transcription services)
+            language = form_data.get('Language', None) or form_data.get('LanguageCode', None)
+            
+            handler.logger.info(f"[TRANSCRIPTION] Call {call_sid}: Status={transcription_status}, Text='{transcription_text}', Confidence={confidence}, Language={language or 'N/A'}")
+            
+            # Only process completed transcriptions with text
+            if transcription_status == 'completed' and transcription_text and transcription_text.strip():
+                try:
+                    # If language not in webhook, try to fetch from Twilio API using transcription_sid
+                    if not language and transcription_sid:
+                        try:
+                            trans_obj = handler.client.transcriptions(transcription_sid).fetch()
+                            language = getattr(trans_obj, 'language', None) or getattr(trans_obj, 'languageCode', None)
+                            if language:
+                                handler.logger.info(f"[TRANSCRIPTION] Fetched language from API: {language}")
+                        except Exception as lang_e:
+                            handler.logger.debug(f"[TRANSCRIPTION] Could not fetch language from API: {lang_e}")
+                    
+                    # Process transcription through VOCA orchestrator
+                    ai_response = handler.orchestrator.generate_reply(
+                        transcription_text,
+                        conversation_id=call_sid,
+                        call_sid=call_sid,
+                    )
+                    handler.logger.info(f"[TRANSCRIPTION] AI Response: {ai_response}")
+                    
+                    # Store transcription in call metadata
+                    if call_sid in handler.active_calls:
+                        if 'transcriptions' not in handler.active_calls[call_sid]:
+                            handler.active_calls[call_sid]['transcriptions'] = []
+                        handler.active_calls[call_sid]['transcriptions'].append({
+                            'text': transcription_text,
+                            'status': transcription_status,
+                            'transcription_sid': transcription_sid,
+                            'confidence': confidence,
+                            'language': language,
+                            'languageCode': language,  # Alias for compatibility
+                            'timestamp': datetime.now(timezone.utc).isoformat()
+                        })
+                        
+                        # Log language detection when we have transcriptions with language
+                        if language:
+                            # Get all unique languages from all transcriptions for this call
+                            all_languages = []
+                            for trans in handler.active_calls[call_sid]['transcriptions']:
+                                trans_lang = trans.get('language') or trans.get('languageCode')
+                                if trans_lang:
+                                    all_languages.append(trans_lang)
+                            if all_languages:
+                                unique_languages = list(set(all_languages))
+                                handler.logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
+                    
+                    # Generate TwiML response with AI reply using Deepgram TTS
+                    # No need for Gather - Real-Time Transcriptions continue automatically
+                    # The transcription service will keep sending transcriptions as user speaks
+                    response = VoiceResponse()
+                    config = get_twilio_config()
+                    webhook_url = config.get_webhook_url()
+                    tts_base_url = webhook_url.replace('/webhook/voice', '').replace('/transcription/' + call_sid, '')
+                    # Use detected language from transcription
+                    detected_language = language if language else 'hi-IN'
+                    add_tts_to_response(response, ai_response, tts_base_url, language=detected_language)
+                    
+                    # Return response - transcriptions will continue automatically
+                    return Response(content=str(response), media_type='text/xml')
+                    
+                except Exception as e:
+                    handler.logger.error(f"[TRANSCRIPTION] Error processing transcription: {e}", exc_info=True)
+                    # Return empty response to continue call
+                    response = VoiceResponse()
+                    return Response(content=str(response), media_type='text/xml')
+            else:
+                # For in-progress or empty transcriptions, just acknowledge
+                handler.logger.debug(f"[TRANSCRIPTION] Ignoring transcription: status={transcription_status}, has_text={bool(transcription_text)}")
+                return PlainTextResponse("OK")
         
         @app.post('/call/status')
         async def handle_call_status(request: Request):
@@ -367,6 +674,105 @@ class TwilioVoiceHandler:
                     handler.cleanup_call(call_sid)
             
             return PlainTextResponse("OK")
+        
+        @app.get('/audio/calls')
+        async def list_recorded_calls():
+            """List all calls that have recorded audio."""
+            try:
+                audio_dir = handler.audio_storage_dir
+                if not audio_dir.exists():
+                    return JSONResponse({"calls": []})
+                
+                calls = []
+                for call_dir in audio_dir.iterdir():
+                    if call_dir.is_dir():
+                        audio_file = call_dir / f"audio_{call_dir.name}.wav"
+                        if audio_file.exists():
+                            file_size = audio_file.stat().st_size
+                            file_mtime = datetime.fromtimestamp(audio_file.stat().st_mtime, tz=timezone.utc)
+                            chunk_count = handler.audio_chunk_counts.get(call_dir.name, 0)
+                            calls.append({
+                                "call_sid": call_dir.name,
+                                "audio_file": str(audio_file.name),
+                                "file_size": file_size,
+                                "file_size_mb": round(file_size / (1024 * 1024), 2),
+                                "modified_time": file_mtime.isoformat(),
+                                "chunk_count": chunk_count,
+                                "download_url": f"/audio/download/{call_dir.name}"
+                            })
+                
+                # Sort by modified time, most recent first
+                calls.sort(key=lambda x: x["modified_time"], reverse=True)
+                return JSONResponse({"calls": calls})
+            except Exception as e:
+                handler.logger.error(f"Error listing recorded calls: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @app.get('/audio/download/{call_sid}')
+        async def download_audio(call_sid: str):
+            """Download recorded audio file for a specific call."""
+            try:
+                call_dir = handler.audio_storage_dir / call_sid
+                audio_file = call_dir / f"audio_{call_sid}.wav"
+                
+                if not audio_file.exists():
+                    raise HTTPException(status_code=404, detail=f"Audio file not found for call {call_sid}")
+                
+                return FileResponse(
+                    path=str(audio_file),
+                    filename=f"audio_{call_sid}.wav",
+                    media_type="audio/wav"
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                handler.logger.error(f"Error downloading audio: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @app.get('/audio/info/{call_sid}')
+        async def get_audio_info(call_sid: str):
+            """Get information about recorded audio for a specific call."""
+            try:
+                call_dir = handler.audio_storage_dir / call_sid
+                audio_file = call_dir / f"audio_{call_sid}.wav"
+                
+                if not audio_file.exists():
+                    raise HTTPException(status_code=404, detail=f"Audio file not found for call {call_sid}")
+                
+                file_size = audio_file.stat().st_size
+                file_mtime = datetime.fromtimestamp(audio_file.stat().st_mtime, tz=timezone.utc)
+                chunk_count = handler.audio_chunk_counts.get(call_sid, 0)
+                
+                # Try to read WAV file info
+                with wave.open(str(audio_file), 'rb') as wav_file:
+                    n_frames = wav_file.getnframes()
+                    sample_rate = wav_file.getframerate()
+                    n_channels = wav_file.getnchannels()
+                    sample_width = wav_file.getsampwidth()
+                    duration = n_frames / sample_rate if sample_rate > 0 else 0
+                
+                return JSONResponse({
+                    "call_sid": call_sid,
+                    "audio_file": str(audio_file.name),
+                    "file_size": file_size,
+                    "file_size_mb": round(file_size / (1024 * 1024), 2),
+                    "modified_time": file_mtime.isoformat(),
+                    "chunk_count": chunk_count,
+                    "audio_info": {
+                        "sample_rate": sample_rate,
+                        "channels": n_channels,
+                        "sample_width": sample_width,
+                        "frames": n_frames,
+                        "duration_seconds": round(duration, 2),
+                        "duration_formatted": f"{int(duration // 60)}m {int(duration % 60)}s"
+                    },
+                    "download_url": f"/audio/download/{call_sid}"
+                })
+            except HTTPException:
+                raise
+            except Exception as e:
+                handler.logger.error(f"Error getting audio info: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
         
         @app.post('/outbound')
         async def handle_outbound_call(request: Request):
@@ -387,6 +793,43 @@ class TwilioVoiceHandler:
             
             response = VoiceResponse()
             
+            # Enable Real-Time Transcriptions with Deepgram Nova-3 for Hindi
+            config = get_twilio_config()
+            webhook_url = config.get_webhook_url()
+            base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+            
+            # Set up Real-Time Transcription with Deepgram
+            transcription_callback_url = f'{base_url}/transcription/{call_sid}'
+            start = Start()
+            transcription = Transcription(
+                statusCallbackUrl=transcription_callback_url,
+                transcriptionEngine='deepgram',
+                track='both_tracks',
+                speechModel='nova-3',  # Use nova-3 model
+                languageCode='en-IN'   # English (India) language
+            )
+            start.append(transcription)
+            
+            # Enable Media Streams for audio storage/debugging (if enabled)
+            if Config.audio_storage_enabled:
+                # Convert to WebSocket URL (wss://)
+                if base_url.startswith('http://'):
+                    wss_base_url = base_url.replace('http://', 'wss://')
+                elif base_url.startswith('https://'):
+                    wss_base_url = base_url.replace('https://', 'wss://')
+                elif not base_url.startswith('wss://'):
+                    wss_base_url = f"wss://{base_url.lstrip('/')}"
+                else:
+                    wss_base_url = base_url
+                
+                stream_url = f"{wss_base_url}/media/{call_sid}"
+                stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
+                start.stream(stream)
+                handler.logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for outbound call {call_sid}: {stream_url}")
+            
+            response.append(start)
+            handler.logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
+            
             # Generate greeting from system prompt
             try:
                 # Get organization_id from call metadata if available
@@ -400,22 +843,15 @@ class TwilioVoiceHandler:
                 handler.logger.error(f"Error generating greeting: {e}")
                 greeting = "Hello! This is VOCA calling. How can I help you today?"
             
-            response.say(greeting)
+            # Use Deepgram TTS for greeting
+            config = get_twilio_config()
+            webhook_url = config.get_webhook_url()
+            tts_base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+            add_tts_to_response(response, greeting, tts_base_url, language='hi-IN')
             
-            # Gather user input
-            gather = response.gather(
-                input='speech',
-                timeout=10,
-                speech_timeout='auto',
-                language='en-US',
-                enhanced=True,
-                action=f'/process_speech/{call_sid}',
-                method='POST'
-            )
-            gather.say("I'm listening...")
-            
-            # Don't redirect - gather will POST to action URL when user speaks or times out
-            # Removing redirect prevents infinite loop - let gather handle timeout naturally
+            # No need for Gather - Real-Time Transcriptions will handle speech recognition
+            # Transcriptions will be sent to /transcription/{call_sid} callback automatically
+            # The callback will process transcriptions and generate AI responses
             
             return Response(content=str(response), media_type='text/xml')
         
@@ -478,6 +914,37 @@ class TwilioVoiceHandler:
         """Get information about active calls."""
         return self.active_calls.copy()
     
+    def _save_audio_chunk(self, call_sid: str, audio_array: np.ndarray, sample_rate: int = 8000):
+        """Save audio chunk to WAV file for testing/debugging."""
+        try:
+            # Initialize wave writer if not exists
+            if call_sid not in self.audio_writers:
+                call_dir = self.audio_storage_dir / call_sid
+                call_dir.mkdir(parents=True, exist_ok=True)
+                audio_file = call_dir / f"audio_{call_sid}.wav"
+                
+                writer = wave.open(str(audio_file), 'wb')
+                writer.setnchannels(1)  # Mono
+                writer.setsampwidth(2)  # 16-bit = 2 bytes
+                writer.setframerate(sample_rate)
+                self.audio_writers[call_sid] = writer
+                self.audio_chunk_counts[call_sid] = 0
+                self.logger.info(f"[AUDIO_CAPTURE] Started saving audio to {audio_file}")
+            
+            # Write audio data
+            writer = self.audio_writers[call_sid]
+            audio_bytes = audio_array.tobytes()
+            writer.writeframes(audio_bytes)
+            self.audio_chunk_counts[call_sid] += 1
+            
+            # Log every 100 chunks to avoid spam
+            if self.audio_chunk_counts[call_sid] % 100 == 0:
+                self.logger.info(f"[AUDIO_CAPTURE] Call {call_sid}: Saved {self.audio_chunk_counts[call_sid]} chunks, "
+                               f"latest chunk size: {len(audio_array)} samples ({len(audio_array)/sample_rate:.2f}s)")
+            
+        except Exception as e:
+            self.logger.error(f"[AUDIO_CAPTURE] Error saving audio chunk: {e}", exc_info=True)
+    
     def process_audio_stream(self, call_sid: str, audio_data: bytes):
         """Process incoming audio stream from Twilio."""
         if call_sid not in self.active_calls:
@@ -493,14 +960,31 @@ class TwilioVoiceHandler:
         try:
             audio_array = np.frombuffer(audio_data, dtype=np.int16)
             
+            # Save audio chunk BEFORE processing (for testing)
+            self._save_audio_chunk(call_sid, audio_array, sample_rate=8000)
+            
             # Process through VOCA orchestrator
-            self.orchestrator.handle_audio_chunk(audio_array)
+            self.orchestrator.handle_audio_chunk(audio_array, call_sid=call_sid)
             
         except Exception as e:
             self.logger.error(f"Error processing audio for call {call_sid}: {e}")
     
     def cleanup_call(self, call_sid: str):
         """Clean up resources for a call."""
+        # Close and finalize audio writer
+        if call_sid in self.audio_writers:
+            try:
+                writer = self.audio_writers[call_sid]
+                writer.close()
+                chunk_count = self.audio_chunk_counts.get(call_sid, 0)
+                self.logger.info(f"[AUDIO_CAPTURE] Closed audio file for call {call_sid} ({chunk_count} chunks saved)")
+            except Exception as e:
+                self.logger.error(f"[AUDIO_CAPTURE] Error closing audio writer: {e}")
+            del self.audio_writers[call_sid]
+        
+        if call_sid in self.audio_chunk_counts:
+            del self.audio_chunk_counts[call_sid]
+        
         if call_sid in self.active_calls:
             del self.active_calls[call_sid]
         
@@ -528,23 +1012,22 @@ class TwilioCallManager:
     
     def start(self, host='0.0.0.0', port=5000):
         """Start the Twilio call manager with real-time AI processing."""
-        # Models should already be loaded at application startup
-        # Just verify they're ready
-        if not self.orchestrator.models_ready():
-            self.logger.warning("Models not ready - they should have been loaded at startup")
-            # Fallback: try to load them now if they weren't loaded at startup
-            try:
-                self.orchestrator.ensure_models_loaded()
-            except Exception as e:
-                self.logger.error(f"Failed to load VOCA models: {e}")
-                raise
-        else:
-            self.logger.info("All models are ready (loaded at startup)")
+        self.logger.info("Starting Twilio Call Manager with VOCA AI...")
+        
+        # Ensure models are loaded
+        try:
+            self.orchestrator.ensure_models_loaded()
+            self.logger.info("VOCA models loaded successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to load VOCA models: {e}")
+            raise
         
         # Start webhook server
         self.voice_handler.start_webhook_server(host, port)
         
-        self.logger.info(f"Twilio Call Manager started - Webhook: http://{host}:{port}/webhook/voice")
+        self.logger.info("Twilio Call Manager started successfully")
+        self.logger.info(f"Webhook URL: http://{host}:{port}/webhook/voice")
+        self.logger.info("Ready to receive calls with real-time AI processing!")
     
     def make_call(self, phone_number: str, message: str = None) -> Optional[str]:
         """Make an outbound call with AI assistant."""
