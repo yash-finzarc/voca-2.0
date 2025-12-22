@@ -38,7 +38,20 @@ async def handle_conversation_relay(websocket: WebSocket, call_sid: str):
     try:
         while True:
             # Receive messages from Twilio ConversationRelay
-            data = await websocket.receive_json()
+            try:
+                data = await websocket.receive_json()
+            except ValueError as e:
+                logger.error(f"[CONVERSATION_RELAY] Invalid JSON received for call {call_sid}: {e}")
+                continue
+            except Exception as e:
+                logger.error(f"[CONVERSATION_RELAY] Error receiving message for call {call_sid}: {e}")
+                break
+            
+            # Validate data structure
+            if not isinstance(data, dict):
+                logger.warning(f"[CONVERSATION_RELAY] Received non-dict data for call {call_sid}: {type(data)}")
+                continue
+            
             event_type = data.get('event', {}).get('type')
             
             logger.debug(f"[CONVERSATION_RELAY] Received event: {event_type} for call {call_sid}")
@@ -67,8 +80,12 @@ async def handle_conversation_relay(websocket: WebSocket, call_sid: str):
                                 'text': greeting
                             }
                         }
-                        await websocket.send_json(welcome_message)
-                        logger.info(f"[CONVERSATION_RELAY] Sent welcome message to ConversationRelay")
+                        try:
+                            await websocket.send_json(welcome_message)
+                            logger.info(f"[CONVERSATION_RELAY] Sent welcome message to ConversationRelay")
+                        except Exception as send_error:
+                            logger.error(f"[CONVERSATION_RELAY] Error sending welcome message: {send_error}")
+                            raise
                         
                         # Mark welcome as sent, increment turn count, and track activity
                         call_state['welcome_sent'] = True
@@ -124,8 +141,12 @@ async def handle_conversation_relay(websocket: WebSocket, call_sid: str):
                             'text': ai_response
                         }
                     }
-                    await websocket.send_json(response_message)
-                    logger.info(f"[CONVERSATION_RELAY] Sent AI response to ConversationRelay")
+                    try:
+                        await websocket.send_json(response_message)
+                        logger.info(f"[CONVERSATION_RELAY] Sent AI response to ConversationRelay")
+                    except Exception as send_error:
+                        logger.error(f"[CONVERSATION_RELAY] Error sending AI response: {send_error}")
+                        # Don't raise - allow conversation to continue
                     
                     # Increment turn count and update last activity
                     call_state['turn_count'] = call_state.get('turn_count', 0) + 1
