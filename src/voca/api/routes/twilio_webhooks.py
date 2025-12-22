@@ -11,10 +11,19 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+@router.get("/conversation/{call_sid}/test")
+async def test_conversation_route(call_sid: str):
+    """Test endpoint to verify the conversation route is accessible."""
+    logger.info(f"[CONVERSATION_RELAY] Test endpoint hit for call {call_sid}")
+    return {"status": "ok", "call_sid": call_sid, "message": "Route is accessible"}
+
+
 @router.websocket("/conversation/{call_sid}")
 async def handle_conversation_relay(websocket: WebSocket, call_sid: str):
     """Handle ConversationRelay WebSocket connection from Twilio."""
     logger.info(f"[CONVERSATION_RELAY] WebSocket connection attempt for call {call_sid}")
+    logger.info(f"[CONVERSATION_RELAY] WebSocket client: {websocket.client if hasattr(websocket, 'client') else 'N/A'}")
+    logger.info(f"[CONVERSATION_RELAY] WebSocket URL: {websocket.url if hasattr(websocket, 'url') else 'N/A'}")
     
     try:
         await websocket.accept()
