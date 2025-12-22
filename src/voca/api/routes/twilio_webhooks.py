@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from twilio.twiml.voice_response import VoiceResponse
 
 from src.voca.api.state import app_state
-from src.voca.twilio_config import get_twilio_config
+from src.voca.Twilio.twilio_config import get_twilio_config
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

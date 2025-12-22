@@ -38,35 +38,36 @@ for router in routers:
     app.include_router(router)
 
 
-async def model_info_logger():
-    """Background task to periodically log real-time model information."""
-    logger = logging.getLogger(__name__)
-    while True:
-        try:
-            await asyncio.sleep(30)  # Log every 30 seconds
-            model_info = app_state.get_model_info()
-            
-            # Log STT model info (only if connection is active)
-            if model_info.get("stt"):
-                stt_info = model_info["stt"]
-                if stt_info.get("model") and stt_info.get("is_ready"):
-                    logger.info(f"STT Model: {stt_info.get('model')} (Language: {stt_info.get('language', 'N/A')}, Ready: {stt_info.get('is_ready', False)})")
-            
-            # Log TTS model info
-            if model_info.get("tts"):
-                tts_info = model_info["tts"]
-                if tts_info.get("model"):
-                    logger.info(f"TTS Model: {tts_info.get('model')} (Format: {tts_info.get('output_format', 'N/A')}, Ready: {tts_info.get('is_ready', False)})")
-            
-            # Log LLM model info
-            if model_info.get("llm"):
-                llm_info = model_info["llm"]
-                if llm_info.get("model"):
-                    logger.info(f"LLM Model: {llm_info.get('model')}")
-                    
-        except Exception as e:
-            logger.error(f"Error in model info logger: {e}")
-            await asyncio.sleep(60)  # Wait longer on error
+# Model info logger removed - get_model_info() function has been deleted
+# async def model_info_logger():
+#     """Background task to periodically log real-time model information."""
+#     logger = logging.getLogger(__name__)
+#     while True:
+#         try:
+#             await asyncio.sleep(30)  # Log every 30 seconds
+#             model_info = app_state.get_model_info()
+#             
+#             # Log STT model info (only if connection is active)
+#             if model_info.get("stt"):
+#                 stt_info = model_info["stt"]
+#                 if stt_info.get("model") and stt_info.get("is_ready"):
+#                     logger.info(f"STT Model: {stt_info.get('model')} (Language: {stt_info.get('language', 'N/A')}, Ready: {stt_info.get('is_ready', False)})")
+#             
+#             # Log TTS model info
+#             if model_info.get("tts"):
+#                 tts_info = model_info["tts"]
+#                 if tts_info.get("model"):
+#                     logger.info(f"TTS Model: {tts_info.get('model')} (Format: {tts_info.get('output_format', 'N/A')}, Ready: {tts_info.get('is_ready', False)})")
+#             
+#             # Log LLM model info
+#             if model_info.get("llm"):
+#                 llm_info = model_info["llm"]
+#                 if llm_info.get("model"):
+#                     logger.info(f"LLM Model: {llm_info.get('model')}")
+#                     
+#         except Exception as e:
+#             logger.error(f"Error in model info logger: {e}")
+#             await asyncio.sleep(60)  # Wait longer on error
 
 
 @app.on_event("startup")
@@ -79,14 +80,19 @@ async def startup_event():
     logging.getLogger("twilio.http_client").setLevel(logging.WARNING)
     logging.getLogger("twilio.rest").setLevel(logging.WARNING)
     logging.getLogger("twilio").setLevel(logging.WARNING)
+    
+    # Suppress Google/gRPC/absl warnings and errors
+    logging.getLogger("absl").setLevel(logging.ERROR)
+    logging.getLogger("grpc").setLevel(logging.ERROR)
+    import os
+    os.environ["GRPC_VERBOSITY"] = "ERROR"
+    os.environ["GLOG_minloglevel"] = "2"
 
     try:
         # Get orchestrator and load all models (STT, TTS, LLM) at startup
         orchestrator = app_state.get_orchestrator()
-        logger.info("Loading all models at startup...")
         try:
             orchestrator.load_models()
-            logger.info("All models loaded successfully at startup")
         except Exception as e:
             logger.error(f"Failed to load models at startup: {e}")
             raise
@@ -98,24 +104,24 @@ async def startup_event():
         logger.error(f"Error initializing components: {e}")
 
     asyncio.create_task(log_broadcaster())
-    asyncio.create_task(model_info_logger())
+    # asyncio.create_task(model_info_logger())  # Commented out - model_info_logger removed
     
-    # Log initial model info after a short delay to allow models to initialize
-    async def log_initial_models():
-        await asyncio.sleep(2)  # Give models time to fully initialize connections
-        try:
-            model_info = app_state.get_model_info()
-            # Log STT model info
-            if model_info.get("stt") and model_info["stt"].get("model"):
-                logger.info(f"Active STT: {model_info['stt']['model']} (Language: {model_info['stt'].get('language', 'N/A')}, Connected: {model_info['stt'].get('is_connected', False)})")
-            if model_info.get("tts") and model_info["tts"].get("model"):
-                logger.info(f"Active TTS: {model_info['tts']['model']} (Format: {model_info['tts'].get('output_format', 'N/A')})")
-            if model_info.get("llm") and model_info["llm"].get("model"):
-                logger.info(f"Active LLM: {model_info['llm']['model']}")
-        except Exception as e:
-            logger.debug(f"Could not get initial model info: {e}")
-    
-    asyncio.create_task(log_initial_models())
+    # Log initial model info removed - get_model_info() function has been deleted
+    # async def log_initial_models():
+    #     await asyncio.sleep(2)  # Give models time to fully initialize connections
+    #     try:
+    #         model_info = app_state.get_model_info()
+    #         # Log STT model info
+    #         if model_info.get("stt") and model_info["stt"].get("model"):
+    #             logger.info(f"Active STT: {model_info['stt']['model']} (Language: {model_info['stt'].get('language', 'N/A')}, Connected: {model_info['stt'].get('is_connected', False)})")
+    #         if model_info.get("tts") and model_info["tts"].get("model"):
+    #             logger.info(f"Active TTS: {model_info['tts']['model']} (Format: {model_info['tts'].get('output_format', 'N/A')})")
+    #         if model_info.get("llm") and model_info["llm"].get("model"):
+    #             logger.info(f"Active LLM: {model_info['llm']['model']}")
+    #     except Exception as e:
+    #         logger.debug(f"Could not get initial model info: {e}")
+    # 
+    # asyncio.create_task(log_initial_models())
 
 
 @app.on_event("shutdown")

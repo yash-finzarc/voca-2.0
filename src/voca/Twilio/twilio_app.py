@@ -8,10 +8,10 @@ import sys
 import time
 from typing import Optional
 
-from .orchestrator import VocaOrchestrator
+from src.voca.orchestrator import VocaOrchestrator
 from .twilio_voice import TwilioCallManager
 from .websocket_handler import TwilioWebSocketHandler, TwilioMediaStreamHandler
-from .config import Config
+from src.voca.config import Config
 
 
 class TwilioVocaApp:

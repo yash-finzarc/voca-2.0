@@ -14,7 +14,7 @@ import websocket
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
-from .orchestrator import VocaOrchestrator
+from src.voca.orchestrator import VocaOrchestrator
 
 
 class TwilioWebSocketHandler:

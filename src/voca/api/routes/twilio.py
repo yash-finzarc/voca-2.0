@@ -16,7 +16,7 @@ from src.voca.api.models import (
 )
 from src.voca.api.state import app_state
 from src.voca.config import Config
-from src.voca.twilio_config import get_twilio_config
+from src.voca.Twilio.twilio_config import get_twilio_config
 
 router = APIRouter(prefix="/api/twilio")
 logger = logging.getLogger(__name__)

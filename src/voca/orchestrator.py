@@ -9,13 +9,11 @@ import numpy as np
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from src.voca.config import Config
-from src.voca.conversation_store import save_conversation_snapshot
+# from src.voca.conversation_store import save_conversation_snapshot  # Module doesn't exist - functionality not implemented
 from src.voca.langgraph_agent import LangGraphAgent, LangGraphAgentResult
 from src.voca.system_prompt import (
     get_prompt,
     get_welcome_message,
-    get_prompt_with_name,
-    extract_json_from_prompt,
 )
 from src.voca.conversation_logger import log_user, log_ai
 
@@ -72,47 +70,6 @@ class VocaOrchestrator:
         # STT and TTS are handled by TwiML with Deepgram - always ready for Twilio calls
         # LLM is the only model we need to check
         return True  # LLM is initialized in __init__
-    
-    def get_model_info(self) -> Dict[str, Any]:
-        """
-        Get real-time model information.
-        STT and TTS are handled by TwiML with Deepgram.
-        
-        Returns:
-            Dictionary with current model information
-        """
-        info = {
-            "stt": {
-                "type": "TwiML with Deepgram",
-                "provider": "Twilio",
-                "engine": "deepgram",
-                "model": "nova-3",
-                "language": "en-IN",
-                "is_ready": True,
-            },
-            "tts": {
-                "type": "TwiML with Deepgram",
-                "provider": "Twilio",
-                "engine": "deepgram",
-                "model": "aura-2-Odysseus-en",
-                "is_ready": True,
-            },
-            "llm": None,
-        }
-        
-        # Get LLM model info
-        try:
-            if hasattr(self.llm, "get_model_info"):
-                info["llm"] = self.llm.get_model_info()
-            elif hasattr(self.llm, "model_name"):
-                info["llm"] = {
-                    "model": getattr(self.llm, "model_name", "unknown"),
-                    "type": type(self.llm).__name__,
-                }
-        except Exception as e:
-            info["llm"] = {"error": str(e)}
-        
-        return info
 
     def ensure_models_loaded(self):
         if not self.models_ready():
@@ -180,14 +137,15 @@ class VocaOrchestrator:
             session.transcript = result.transcript
             session.summary_requested = result.summary_requested
 
-            if org_id:
-                save_conversation_snapshot(
-                    organization_id=org_id,
-                    call_sid=call_sid or conversation_id,
-                    transcript=session.transcript,
-                    lead_data=session.collected_data,
-                    lead_status=session.lead_status,
-                )
+            # Conversation snapshot saving not implemented - conversation_store module doesn't exist
+            # if org_id:
+            #     save_conversation_snapshot(
+            #         organization_id=org_id,
+            #         call_sid=call_sid or conversation_id,
+            #         transcript=session.transcript,
+            #         lead_data=session.collected_data,
+            #         lead_status=session.lead_status,
+            #     )
 
             # Ensure we have a valid reply
             reply = result.reply.strip() if result.reply else ""
@@ -218,117 +176,6 @@ class VocaOrchestrator:
                 log_ai(reply)
             
             return reply
-
-    def generate_announcement(
-        self,
-        *,
-        conversation_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
-    ) -> str:
-        """
-        Generate announcement script for announcement mode.
-        Extracts JSON from system prompt, processes with LLM, and returns Hindi announcement script.
-        Used for one-way announcement calls (no STT, no conversation loop).
-        """
-        org_id = organization_id or self.default_organization_id
-        
-        # Get system prompt with service_type
-        try:
-            prompt_data = get_prompt_with_name(organization_id=org_id)
-            system_prompt_text = prompt_data.get("prompt")
-            if not system_prompt_text:
-                raise RuntimeError("System prompt is empty")
-            service_type = prompt_data.get("service_type", "conversational")
-            welcome_message = prompt_data.get("welcome_message")
-        except Exception as e:
-            self.log(f"Error fetching system prompt: {e}")
-            # Return fallback greeting for announcement mode
-            greeting = "नमस्कार।"
-            fallback_message = "कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।"
-            return f"{greeting} {fallback_message}"
-        
-        # Get welcome message (greeting) - same as conversational mode
-        greeting = ""
-        if welcome_message and welcome_message.strip():
-            greeting = welcome_message.strip()
-            # Limit length for TTS
-            if len(greeting) > 300:
-                greeting = greeting[:300] + "..."
-            self.log(f"Using welcome_message from database for announcement: {greeting}")
-        else:
-            # Fallback greeting if no welcome_message
-            greeting = "नमस्कार।"
-        
-        # Extract JSON from prompt
-        json_data = extract_json_from_prompt(system_prompt_text)
-        
-        # If no JSON found, use demo JSON from prompt instructions
-        if not json_data:
-            # Try to find demo JSON in the prompt text
-            demo_json_str = """{
-  "patient": {
-    "name": "josh",
-    "age": 52,
-    "gender": "male"
-  },
-  "tests": [
-    { "name": "Blood Pressure", "status": "red" },
-    { "name": "HbA1c", "status": "yellow" },
-    { "name": "Fasting Blood Sugar", "status": "yellow" },
-    { "name": "Cholesterol", "status": "green" },
-    { "name": "Hemoglobin", "status": "green" }
-  ]
-}"""
-            try:
-                json_data = json.loads(demo_json_str)
-            except Exception:
-                json_data = None
-        
-        # Format JSON as user message for LLM
-        if json_data:
-            user_message = f"Process this test data and generate the announcement script: {json.dumps(json_data, indent=2)}"
-        else:
-            # Fallback: use prompt text itself as context
-            user_message = "Generate the announcement script based on the system prompt instructions."
-        
-        # Call LLM with system prompt and JSON data
-        try:
-            # Create a temporary session for announcement
-            session = self._get_session(conversation_id, organization_id)
-            
-            # Call LLM to generate announcement
-            result: LangGraphAgentResult = self.llm.generate_reply(
-                organization_id=org_id,
-                system_prompt=system_prompt_text,
-                messages=[HumanMessage(content=user_message)],
-                collected_data={},
-                lead_status=None,
-                transcript=[],
-                summary_requested=False,
-            )
-            
-            announcement_script = result.reply.strip() if result.reply else ""
-            
-            if not announcement_script:
-                # Fallback message
-                announcement_script = "कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।"
-            
-            # Combine greeting (welcome_message) and announcement script
-            if greeting:
-                full_script = f"{greeting} {announcement_script}"
-            else:
-                full_script = announcement_script
-            
-            self.log(f"Generated announcement script with welcome_message (total length: {len(full_script)} chars)")
-            return full_script
-            
-        except Exception as e:
-            self.log(f"Error generating announcement: {e}")
-            # Return greeting + fallback message
-            fallback_message = "कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।"
-            if greeting:
-                return f"{greeting} {fallback_message}"
-            return fallback_message
 
     def generate_greeting(
         self,
@@ -399,132 +246,132 @@ class VocaOrchestrator:
         log_ai(fallback_greeting)
         return fallback_greeting
 
-    def run_one_minute_interaction(self, duration_sec: int = 30):
-        """Record mic audio for duration, transcribe once, query LLM, then speak reply."""
-        # Auto-load if needed
-        try:
-            self.ensure_models_loaded()
-        except Exception as e:
-            self.log(f"Model load failed: {e}")
-            return
-        if sd is None:
-            self.log("sounddevice not available. Cannot record microphone.")
-            return
+    # def run_one_minute_interaction(self, duration_sec: int = 30):
+    #     """Record mic audio for duration, transcribe once, query LLM, then speak reply."""
+    #     # Auto-load if needed
+    #     try:
+    #         self.ensure_models_loaded()
+    #     except Exception as e:
+    #         self.log(f"Model load failed: {e}")
+    #         return
+    #     if sd is None:
+    #         self.log("sounddevice not available. Cannot record microphone.")
+    #         return
+    #
+    #     sr = Config.sample_rate
+    #     self.log(f"Recording microphone for {duration_sec}s at {sr} Hz...")
+    #     # Sounddevice commented out - not available
+    #     # try:
+    #     #     audio = sd.rec(int(duration_sec * sr), samplerate=sr, channels=1, dtype='int16')
+    #     #     sd.wait()
+    #     # except Exception as e:
+    #     #     self.log(f"Audio capture failed: {e}")
+    #     #     return
+    #     # 
+    #     # pcm16 = np.squeeze(audio)  # shape (N,)
+    #     
+    #     # Return early since sounddevice is not available
+    #     # Note: STT and TTS are handled by TwiML with Deepgram for Twilio calls
+    #     self.log("Audio recording skipped - sounddevice not available")
+    #     self.log("Note: For voice calls, use Twilio with TwiML Deepgram STT/TTS")
 
-        sr = Config.sample_rate
-        self.log(f"Recording microphone for {duration_sec}s at {sr} Hz...")
-        # Sounddevice commented out - not available
-        # try:
-        #     audio = sd.rec(int(duration_sec * sr), samplerate=sr, channels=1, dtype='int16')
-        #     sd.wait()
-        # except Exception as e:
-        #     self.log(f"Audio capture failed: {e}")
-        #     return
-        # 
-        # pcm16 = np.squeeze(audio)  # shape (N,)
-        
-        # Return early since sounddevice is not available
-        # Note: STT and TTS are handled by TwiML with Deepgram for Twilio calls
-        self.log("Audio recording skipped - sounddevice not available")
-        self.log("Note: For voice calls, use Twilio with TwiML Deepgram STT/TTS")
-
-    def run_continuous_vad_loop(self, max_silence_ms: int = 2000, frame_ms: int = 30):
-        """Continuously listen with VAD; when user stops, process utterance and keep the call up."""
-        if sd is None:
-            self.log("sounddevice not available.")
-            return
-        try:
-            self.ensure_models_loaded()
-        except Exception as e:
-            self.log(f"Model load failed: {e}")
-            return
-        sr = Config.sample_rate
-        use_webrtc = webrtcvad is not None
-        vad = webrtcvad.Vad(1) if use_webrtc else None  # 0-3; 1 is more sensitive
-        if not use_webrtc:
-            self.log("Using energy-based VAD (no webrtcvad wheel found)")
-        bytes_per_sample = 2
-        frame_samples = int(sr * frame_ms / 1000)
-        silence_limit_frames = int(max_silence_ms / frame_ms)
-        min_utterance_frames = int(300 / frame_ms)  # Minimum 300ms of speech before processing
-
-        self._vad_stop = False
-        self.log("VAD loop started. Speak to interact.")
-
-        def stream_callback(indata, frames, time_info, status):
-            pass
-
-        buffer = []
-        silence_count = 0
-        speech_count = 0
-        consecutive_silence = 0
-
-        # Sounddevice commented out - not available
-        # with sd.RawInputStream(samplerate=sr, blocksize=frame_samples, channels=1, dtype='int16') as stream:
-        #     while not getattr(self, "_vad_stop", False):
-        #         chunk = stream.read(frame_samples)[0]
-        #         if use_webrtc:
-        #             is_speech = vad.is_speech(chunk, sr)
-        #         else:
-        #             # Energy-based VAD: compute RMS and compare to adaptive threshold
-        #             arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
-        #             rms = float(np.sqrt(np.mean(arr * arr)) + 1e-6)
-        #             # Initialize adaptive threshold using first 50 frames (~1.5s)
-        #             if not hasattr(self, "_rms_noise_floor"):
-        #                 self._rms_noise_floor = rms
-        #                 self._rms_thresh = max(200.0, self._rms_noise_floor * 2.0)  # Even lower threshold
-        #             else:
-        #                 # Slowly adapt noise floor when detected as silence
-        #                 if rms < getattr(self, "_rms_thresh", 500.0) * 0.6:  # More lenient
-        #                     self._rms_noise_floor = 0.995 * self._rms_noise_floor + 0.005 * rms
-        #                     self._rms_thresh = max(200.0, self._rms_noise_floor * 2.0)
-        #             is_speech = rms >= getattr(self, "_rms_thresh", 500.0)
-        #         buffer.append(chunk)
-        #         if is_speech:
-        #             silence_count = 0
-        #             speech_count += 1
-        #             consecutive_silence = 0
-        #         else:
-        #             silence_count += 1
-        #             consecutive_silence += 1
-        #         # If we've observed speech and then enough silence, finalize utterance
-        #         if silence_count >= silence_limit_frames and buffer and speech_count >= min_utterance_frames:
-        #             pcm = np.frombuffer(b"".join(buffer), dtype=np.int16)
-        #             buffer.clear()
-        #             silence_count = 0
-        #             speech_count = 0
-        #             consecutive_silence = 0
-        #             try:
-        #                 # Apply simple noise reduction and normalization
-        #                 pcm_float = pcm.astype(np.float32) / 32768.0
-        #                 # Simple high-pass filter to remove low-frequency noise
-        #                 pcm_float = np.diff(pcm_float, prepend=pcm_float[0])
-        #                 # Normalize
-        #                 if np.max(np.abs(pcm_float)) > 0:
-        #                     pcm_float = pcm_float / np.max(np.abs(pcm_float)) * 0.95
-        #                 pcm_clean = (pcm_float * 32768.0).astype(np.int16)
-        #                 text = self.stt.transcribe_pcm16(pcm_clean)
-        #                 if text and len(text.strip()) > 2:  # Only process if meaningful text
-        #                     self.log(f"USER: {text}")
-        #                     log_user(text)
-        #                     reply = self.generate_reply(text, conversation_id="continuous_vad")
-        #                     if reply:
-        #                         self.log(f"ASSISTANT: {reply}")
-        #                         log_ai(reply)
-        #                         if self.tts and self.tts.is_ready():
-        #                             # For local audio, generate TTS (but don't save to file)
-        #                             try:
-        #                                 self.tts.speak(reply, return_bytes=True)
-        #                             except Exception as e:
-        #                                 self.log(f"TTS error: {e}")
-        #             except Exception as e:
-        #                 self.log(f"Pipeline error: {e}")
-        #         elif silence_count >= silence_limit_frames and buffer:
-        #             # Reset if we had audio but not enough speech
-        #             buffer.clear()
-        #             silence_count = 0
-        #             speech_count = 0
-        #             consecutive_silence = 0
-        self.log("VAD loop stopped.")
+    # def run_continuous_vad_loop(self, max_silence_ms: int = 2000, frame_ms: int = 30):
+    #     """Continuously listen with VAD; when user stops, process utterance and keep the call up."""
+    #     if sd is None:
+    #         self.log("sounddevice not available.")
+    #         return
+    #     try:
+    #         self.ensure_models_loaded()
+    #     except Exception as e:
+    #         self.log(f"Model load failed: {e}")
+    #         return
+    #     sr = Config.sample_rate
+    #     use_webrtc = webrtcvad is not None
+    #     vad = webrtcvad.Vad(1) if use_webrtc else None  # 0-3; 1 is more sensitive
+    #     if not use_webrtc:
+    #         self.log("Using energy-based VAD (no webrtcvad wheel found)")
+    #     bytes_per_sample = 2
+    #     frame_samples = int(sr * frame_ms / 1000)
+    #     silence_limit_frames = int(max_silence_ms / frame_ms)
+    #     min_utterance_frames = int(300 / frame_ms)  # Minimum 300ms of speech before processing
+    #
+    #     self._vad_stop = False
+    #     self.log("VAD loop started. Speak to interact.")
+    #
+    #     def stream_callback(indata, frames, time_info, status):
+    #         pass
+    #
+    #     buffer = []
+    #     silence_count = 0
+    #     speech_count = 0
+    #     consecutive_silence = 0
+    #
+    #     # Sounddevice commented out - not available
+    #     # with sd.RawInputStream(samplerate=sr, blocksize=frame_samples, channels=1, dtype='int16') as stream:
+    #     #     while not getattr(self, "_vad_stop", False):
+    #     #         chunk = stream.read(frame_samples)[0]
+    #     #         if use_webrtc:
+    #     #             is_speech = vad.is_speech(chunk, sr)
+    #     #         else:
+    #     #             # Energy-based VAD: compute RMS and compare to adaptive threshold
+    #     #             arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+    #     #             rms = float(np.sqrt(np.mean(arr * arr)) + 1e-6)
+    #     #             # Initialize adaptive threshold using first 50 frames (~1.5s)
+    #     #             if not hasattr(self, "_rms_noise_floor"):
+    #     #                 self._rms_noise_floor = rms
+    #     #                 self._rms_thresh = max(200.0, self._rms_noise_floor * 2.0)  # Even lower threshold
+    #     #             else:
+    #     #                 # Slowly adapt noise floor when detected as silence
+    #     #                 if rms < getattr(self, "_rms_thresh", 500.0) * 0.6:  # More lenient
+    #     #                     self._rms_noise_floor = 0.995 * self._rms_noise_floor + 0.005 * rms
+    #     #                     self._rms_thresh = max(200.0, self._rms_noise_floor * 2.0)
+    #     #             is_speech = rms >= getattr(self, "_rms_thresh", 500.0)
+    #     #         buffer.append(chunk)
+    #     #         if is_speech:
+    #     #             silence_count = 0
+    #     #             speech_count += 1
+    #     #             consecutive_silence = 0
+    #     #         else:
+    #     #             silence_count += 1
+    #     #             consecutive_silence += 1
+    #     #         # If we've observed speech and then enough silence, finalize utterance
+    #     #         if silence_count >= silence_limit_frames and buffer and speech_count >= min_utterance_frames:
+    #     #             pcm = np.frombuffer(b"".join(buffer), dtype=np.int16)
+    #     #             buffer.clear()
+    #     #             silence_count = 0
+    #     #             speech_count = 0
+    #     #             consecutive_silence = 0
+    #     #             try:
+    #     #                 # Apply simple noise reduction and normalization
+    #     #                 pcm_float = pcm.astype(np.float32) / 32768.0
+    #     #                 # Simple high-pass filter to remove low-frequency noise
+    #     #                 pcm_float = np.diff(pcm_float, prepend=pcm_float[0])
+    #     #                 # Normalize
+    #     #                 if np.max(np.abs(pcm_float)) > 0:
+    #     #                     pcm_float = pcm_float / np.max(np.abs(pcm_float)) * 0.95
+    #     #                 pcm_clean = (pcm_float * 32768.0).astype(np.int16)
+    #     #                 text = self.stt.transcribe_pcm16(pcm_clean)
+    #     #                 if text and len(text.strip()) > 2:  # Only process if meaningful text
+    #     #                     self.log(f"USER: {text}")
+    #     #                     log_user(text)
+    #     #                     reply = self.generate_reply(text, conversation_id="continuous_vad")
+    #     #                     if reply:
+    #     #                         self.log(f"ASSISTANT: {reply}")
+    #     #                         log_ai(reply)
+    #     #                         if self.tts and self.tts.is_ready():
+    #     #                             # For local audio, generate TTS (but don't save to file)
+    #     #                             try:
+    #     #                                 self.tts.speak(reply, return_bytes=True)
+    #     #                             except Exception as e:
+    #     #                                 self.log(f"TTS error: {e}")
+    #     #             except Exception as e:
+    #     #                 self.log(f"Pipeline error: {e}")
+    #     #         elif silence_count >= silence_limit_frames and buffer:
+    #     #             # Reset if we had audio but not enough speech
+    #     #             buffer.clear()
+    #     #             silence_count = 0
+    #     #             speech_count = 0
+    #     #             consecutive_silence = 0
+    #     # self.log("VAD loop stopped.")
 
 

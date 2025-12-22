@@ -10,8 +10,8 @@ from fastapi import WebSocket
 
 from src.voca.config import Config
 from src.voca.orchestrator import VocaOrchestrator
-from src.voca.twilio_config import get_twilio_config
-from src.voca.twilio_voice import TwilioCallManager
+from src.voca.Twilio.twilio_config import get_twilio_config
+from src.voca.Twilio.twilio_voice import TwilioCallManager
 
 
 class AppState:
@@ -57,20 +57,6 @@ class AppState:
 
         return self.twilio_manager
 
-    def get_model_info(self) -> Dict[str, Any]:
-        """
-        Get real-time model information from the orchestrator.
-        
-        Returns:
-            Dictionary with current model information from active services
-        """
-        try:
-            orchestrator = self.get_orchestrator()
-            return orchestrator.get_model_info()
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error getting model info: {e}")
-            return {"error": str(e)}
-    
     def _log_callback(self, message: str):
         """Callback for log messages."""
         log_entry = {"timestamp": datetime.now().isoformat(), "message": message}

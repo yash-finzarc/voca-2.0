@@ -19,12 +19,13 @@ async def get_server_info():
 async def get_models_info():
     """
     Get real-time model information from active services.
-    Fetches actual model data from streaming APIs instead of hardcoded values.
+    Model info functionality has been removed.
     """
-    model_info = app_state.get_model_info()
     return {
         "status": "success",
-        "models": model_info,
+        "models": {
+            "message": "Model info feature has been removed"
+        },
         "timestamp": __import__("datetime").datetime.now().isoformat(),
     }
 
