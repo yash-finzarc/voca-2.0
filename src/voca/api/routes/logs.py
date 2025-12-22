@@ -33,6 +33,17 @@ async def get_logs(limit: int = 100):
     return logs
 
 
+@router.get("/ws/test")
+async def websocket_test_get():
+    """HTTP GET endpoint to test if the /ws/test route is accessible."""
+    return {
+        "status": "ok",
+        "message": "WebSocket endpoint is registered. Use wscat or a WebSocket client to connect.",
+        "websocket_url": "wss://voca2.duckdns.org/ws/test",
+        "note": "If you see 405, Nginx may not be configured for WebSocket upgrades"
+    }
+
+
 @router.websocket("/ws/test")
 async def websocket_test(websocket: WebSocket):
     """Simple test WebSocket endpoint for debugging."""
