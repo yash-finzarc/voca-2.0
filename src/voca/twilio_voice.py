@@ -85,21 +85,22 @@ class TwilioVoiceHandler:
                 return str(cache_file)
             
             # Generate TTS using Deepgram API
-            url = "https://api.deepgram.com/v1/speak"
+            # Model, encoding, and sample_rate should be query parameters, text goes in body
+            url = f"https://api.deepgram.com/v1/speak?model={model}&encoding=linear16&sample_rate=8000"
             headers = {
                 'Authorization': f'Token {Config.deepgram_api_key}',
                 'Content-Type': 'application/json'
             }
             payload = {
-                'text': text,
-                'model': model,
-                'encoding': 'linear16',  # WAV format (PCM)
-                'sample_rate': 8000  # Twilio-compatible sample rate
+                'text': text
             }
             
             self.logger.info(f"[TTS] Calling Deepgram API for model: {model}, text length: {len(text)} chars")
-            self.logger.debug(f"[TTS] Payload: {payload}")
-            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            import json
+            payload_json = json.dumps(payload)
+            self.logger.debug(f"[TTS] URL: {url}")
+            self.logger.debug(f"[TTS] Payload JSON: {payload_json}")
+            response = requests.post(url, headers=headers, data=payload_json, timeout=10)
             
             if response.status_code == 200:
                 # Save audio file
