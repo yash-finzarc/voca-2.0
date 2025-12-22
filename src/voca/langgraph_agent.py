@@ -86,6 +86,19 @@ class LangGraphAgent:
         )
         self.state_parser = self.chat_llm.with_structured_output(LeadUpdate)
         self.graph = self._build_graph()
+    
+    def get_model_info(self) -> Dict[str, Any]:
+        """
+        Get real-time model information.
+        
+        Returns:
+            Dictionary with model information including model name and temperature
+        """
+        return {
+            "model": self.model_name,
+            "temperature": self.temperature,
+            "type": "ChatGoogleGenerativeAI",
+        }
 
     def _build_graph(self):
         graph = StateGraph(GraphState)

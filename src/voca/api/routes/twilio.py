@@ -81,22 +81,11 @@ async def start_twilio_server():
     if not twilio_manager:
         raise HTTPException(status_code=400, detail="Twilio not configured. Please set up environment variables.")
 
-    manager_type = type(twilio_manager).__name__
-    if manager_type == "DeepgramCallManager":
-        logger.info("🚀 Starting server with Deepgram STT/TTS")
-        app_state._log_callback("🚀 Starting server with Deepgram STT/TTS")
-    else:
-        logger.info("🚀 Starting server with Twilio STT/TTS")
-        app_state._log_callback("🚀 Starting server with Twilio STT/TTS")
-
     def _worker():
         try:
             twilio_manager.start(host="0.0.0.0", port=5000)
             app_state.is_twilio_server_running = True
-            if manager_type == "DeepgramCallManager":
-                app_state._log_callback("✅ Twilio server started with Deepgram STT/TTS")
-            else:
-                app_state._log_callback("✅ Twilio server started with Twilio STT/TTS")
+            app_state._log_callback("Twilio server started")
         except Exception as e:
             app_state._log_callback(f"Failed to start Twilio server: {e}")
             app_state.is_twilio_server_running = False

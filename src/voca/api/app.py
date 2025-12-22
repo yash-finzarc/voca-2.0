@@ -38,43 +38,83 @@ for router in routers:
     app.include_router(router)
 
 
+async def model_info_logger():
+    """Background task to periodically log real-time model information."""
+    logger = logging.getLogger(__name__)
+    while True:
+        try:
+            await asyncio.sleep(30)  # Log every 30 seconds
+            model_info = app_state.get_model_info()
+            
+            # Log STT model info (only if connection is active)
+            if model_info.get("stt"):
+                stt_info = model_info["stt"]
+                if stt_info.get("model") and stt_info.get("is_ready"):
+                    logger.info(f"STT Model: {stt_info.get('model')} (Language: {stt_info.get('language', 'N/A')}, Ready: {stt_info.get('is_ready', False)})")
+            
+            # Log TTS model info
+            if model_info.get("tts"):
+                tts_info = model_info["tts"]
+                if tts_info.get("model"):
+                    logger.info(f"TTS Model: {tts_info.get('model')} (Format: {tts_info.get('output_format', 'N/A')}, Ready: {tts_info.get('is_ready', False)})")
+            
+            # Log LLM model info
+            if model_info.get("llm"):
+                llm_info = model_info["llm"]
+                if llm_info.get("model"):
+                    logger.info(f"LLM Model: {llm_info.get('model')}")
+                    
+        except Exception as e:
+            logger.error(f"Error in model info logger: {e}")
+            await asyncio.sleep(60)  # Wait longer on error
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize components on startup."""
     logger = logging.getLogger(__name__)
-    logger.info("=" * 80)
-    logger.info("🚀 VOCA API Server Startup")
-    logger.info("=" * 80)
+    logger.info("VOCA API server starting up")
 
     try:
+        # Get orchestrator - don't load STT at startup (it will be created during calls)
+        # Only load TTS if available since it doesn't need a persistent connection
+        orchestrator = app_state.get_orchestrator()
+        if Config.deepgram_api_key:
+            try:
+                # Only load TTS at startup, STT will be created lazily during calls
+                if not orchestrator.tts:
+                    from src.voca.deepgramtts import DeepgramTTS
+                    orchestrator.tts = DeepgramTTS()
+                    orchestrator.tts.load()
+                    logger.debug("TTS loaded at startup")
+            except Exception as e:
+                logger.debug(f"Could not load TTS at startup: {e}")
+        
         twilio_manager = app_state.get_twilio_manager()
-        if twilio_manager:
-            manager_type = type(twilio_manager).__name__
-            if manager_type == "DeepgramCallManager":
-                logger.info("✅ Service Mode: DEEPGRAM STT/TTS")
-                logger.info("   📊 Service Details:")
-                logger.info("      - Speech-to-Text: Deepgram Nova-3 (Multilingual: English India + Hindi)")
-                logger.info("      - Text-to-Speech: Deepgram Aura")
-                if Config.deepgram_keyterms:
-                    keyterms_list = [k.strip() for k in Config.deepgram_keyterms.split(",") if k.strip()]
-                    logger.info(f"      - Keyterms: {len(keyterms_list)} configured")
-            else:
-                logger.info("✅ Service Mode: TWILIO STT/TTS")
-                logger.info("   📊 Service Details:")
-                logger.info("      - Speech-to-Text: Twilio Speech Recognition (TwiML)")
-                logger.info("      - Text-to-Speech: Twilio Text-to-Speech (TwiML)")
-        else:
-            logger.warning("⚠️  Twilio manager not available (Twilio not configured)")
+        if not twilio_manager:
+            logger.warning("Twilio manager not available (Twilio not configured)")
     except Exception as e:
-        logger.error(f"❌ Error checking service mode: {e}")
-
-    logger.info("=" * 80)
-    logger.info("VOCA API server starting up...")
+        logger.error(f"Error initializing components: {e}")
 
     asyncio.create_task(log_broadcaster())
-
-    logger.info("Server running on Linode: http://172.105.50.83:8000")
-    app_state._log_callback("Server running on Linode: http://172.105.50.83:8000")
+    asyncio.create_task(model_info_logger())
+    
+    # Log initial model info after a short delay to allow models to initialize
+    async def log_initial_models():
+        await asyncio.sleep(1)  # Give models time to initialize
+        try:
+            model_info = app_state.get_model_info()
+            # Only log STT if it's actually connected (will be created during calls)
+            if model_info.get("stt") and model_info["stt"].get("model") and model_info["stt"].get("is_connected"):
+                logger.info(f"Active STT: {model_info['stt']['model']} (Language: {model_info['stt'].get('language', 'N/A')})")
+            if model_info.get("tts") and model_info["tts"].get("model"):
+                logger.info(f"Active TTS: {model_info['tts']['model']} (Format: {model_info['tts'].get('output_format', 'N/A')})")
+            if model_info.get("llm") and model_info["llm"].get("model"):
+                logger.info(f"Active LLM: {model_info['llm']['model']}")
+        except Exception as e:
+            logger.debug(f"Could not get initial model info: {e}")
+    
+    asyncio.create_task(log_initial_models())
 
 
 @app.on_event("shutdown")

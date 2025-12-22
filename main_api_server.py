@@ -26,14 +26,6 @@ logger = logging.getLogger(__name__)
 
 def main():
     """Main entry point for the API server."""
-    logger.info("=" * 80)
-    logger.info("Starting VOCA API Server...")
-    logger.info("=" * 80)
-    logger.info("API will be available at http://localhost:8000")
-    logger.info("API Documentation at http://localhost:8000/docs")
-    logger.info("Access API docs at http://localhost:8000/docs")
-    logger.info("=" * 80)
-    
     # Run the FastAPI app with uvicorn using import string format for reload
     uvicorn.run(
         "src.voca.api:app",  # Use import string format for reload support

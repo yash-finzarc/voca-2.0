@@ -11,7 +11,7 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from src.voca.config import Config
 from src.voca.conversation_store import save_conversation_snapshot
 from src.voca.langgraph_agent import LangGraphAgent, LangGraphAgentResult
-from src.voca.stt import build_stt
+from src.voca.deepgramstt import build_stt
 from src.voca.system_prompt import (
     get_prompt,
     get_welcome_message,
@@ -19,7 +19,7 @@ from src.voca.system_prompt import (
     extract_json_from_prompt,
     DEFAULT_SYSTEM_PROMPT,
 )
-from src.voca.tts import CoquiTTS
+from src.voca.deepgramtts import DeepgramTTS
 from src.voca.conversation_logger import log_user, log_ai
 
 # Sounddevice commented out - not needed for Twilio calls
@@ -53,7 +53,7 @@ class VocaOrchestrator:
     ):
         self.on_log = on_log or (lambda m: None)
         self.stt = None
-        self.tts = CoquiTTS()
+        self.tts = None  # Will be initialized in load_models() if Deepgram API key is available
         self.llm = LangGraphAgent()
         self._lock = threading.Lock()
         self._sessions: Dict[str, ConversationSession] = {}
@@ -66,13 +66,78 @@ class VocaOrchestrator:
         self.log("Loading STT...")
         self.stt = build_stt()
         self.log("Loading TTS...")
-        self.tts.load()
+        # Initialize TTS if Deepgram API key is available
+        if Config.deepgram_api_key:
+            try:
+                self.tts = DeepgramTTS()
+                self.tts.load()
+                self.log("TTS ready (Deepgram).")
+            except Exception as e:
+                self.log(f"Failed to load Deepgram TTS: {e}")
+                self.tts = None
+        else:
+            self.log("No Deepgram API key found, TTS not available")
+            self.tts = None
         self.log("Models ready.")
 
     def models_ready(self) -> bool:
         stt_ready = (self.stt is not None) and getattr(self.stt, "is_ready", lambda: False)()
-        tts_ready = self.tts is not None and self.tts.is_ready()
+        # TTS is optional (not needed for Twilio calls which use TwiML TTS)
+        tts_ready = self.tts is None or (self.tts is not None and self.tts.is_ready())
         return stt_ready and tts_ready
+    
+    def get_model_info(self) -> Dict[str, Any]:
+        """
+        Get real-time model information from active STT and TTS services.
+        
+        Returns:
+            Dictionary with current model information
+        """
+        info = {
+            "stt": None,
+            "tts": None,
+            "llm": None,
+        }
+        
+        # Get STT model info
+        if self.stt:
+            try:
+                if hasattr(self.stt, "get_model_info"):
+                    info["stt"] = self.stt.get_model_info()
+                else:
+                    info["stt"] = {
+                        "type": type(self.stt).__name__,
+                        "is_ready": getattr(self.stt, "is_ready", lambda: False)(),
+                    }
+            except Exception as e:
+                info["stt"] = {"error": str(e)}
+        
+        # Get TTS model info
+        if self.tts:
+            try:
+                if hasattr(self.tts, "get_model_info"):
+                    info["tts"] = self.tts.get_model_info()
+                else:
+                    info["tts"] = {
+                        "type": type(self.tts).__name__,
+                        "is_ready": self.tts.is_ready() if hasattr(self.tts, "is_ready") else False,
+                    }
+            except Exception as e:
+                info["tts"] = {"error": str(e)}
+        
+        # Get LLM model info
+        try:
+            if hasattr(self.llm, "get_model_info"):
+                info["llm"] = self.llm.get_model_info()
+            elif hasattr(self.llm, "model_name"):
+                info["llm"] = {
+                    "model": getattr(self.llm, "model_name", "unknown"),
+                    "type": type(self.llm).__name__,
+                }
+        except Exception as e:
+            info["llm"] = {"error": str(e)}
+        
+        return info
 
     def ensure_models_loaded(self):
         if not self.models_ready():
@@ -91,7 +156,12 @@ class VocaOrchestrator:
                 if reply:
                     self.log(f"ASSISTANT: {reply}")
                     log_ai(reply)
-                    self.tts.speak(reply)
+                    if self.tts and self.tts.is_ready():
+                        # For local audio, generate TTS (but don't save to file)
+                        try:
+                            self.tts.speak(reply, return_bytes=True)
+                        except Exception as e:
+                            self.log(f"TTS error: {e}")
         except Exception as e:
             self.log(f"Error processing audio: {e}")
 
@@ -413,7 +483,9 @@ class VocaOrchestrator:
         self.log(f"ASSISTANT: {reply}")
         log_ai(reply)
         try:
-            self.tts.speak(reply)
+            if self.tts and self.tts.is_ready():
+                # For local audio, generate TTS (but don't save to file)
+                self.tts.speak(reply, return_bytes=True)
         except Exception as e:
             self.log(f"TTS error: {e}")
 
@@ -500,7 +572,12 @@ class VocaOrchestrator:
         #                     if reply:
         #                         self.log(f"ASSISTANT: {reply}")
         #                         log_ai(reply)
-        #                         self.tts.speak(reply)
+        #                         if self.tts and self.tts.is_ready():
+        #                             # For local audio, generate TTS (but don't save to file)
+        #                             try:
+        #                                 self.tts.speak(reply, return_bytes=True)
+        #                             except Exception as e:
+        #                                 self.log(f"TTS error: {e}")
         #             except Exception as e:
         #                 self.log(f"Pipeline error: {e}")
         #         elif silence_count >= silence_limit_frames and buffer:

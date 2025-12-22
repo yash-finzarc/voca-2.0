@@ -112,37 +112,17 @@ class TwilioVoiceHandler:
             
             form_data = await request.form()
             
-            # Log ALL form data received from Twilio for debugging
-            form_dict = dict(form_data)
-            handler.logger.info("=" * 80)
-            handler.logger.info(f"[DEBUG] Call {call_sid} - All Form Data Received:")
-            for key, value in form_dict.items():
-                handler.logger.info(f"[DEBUG] {key}: {value}")
-            handler.logger.info("=" * 80)
-            
             speech_result = form_data.get('SpeechResult', '')
             confidence = form_data.get('Confidence', '0')
             speech_error = form_data.get('SpeechError', '')
             digits = form_data.get('Digits', '')
             
-            # Clear logging for debugging - USER input
             if speech_result:
-                handler.logger.info("=" * 80)
-                handler.logger.info(f"[USER] Call {call_sid} - Speech Recognized by Twilio:")
-                handler.logger.info(f"[USER] Confidence: {confidence}")
-                handler.logger.info(f"[USER] Text: \"{speech_result}\"")
-                if speech_error:
-                    handler.logger.info(f"[USER] Speech Error: {speech_error}")
-                handler.logger.info("=" * 80)
+                handler.logger.debug(f"Call {call_sid}: Speech recognized - {speech_result[:50]} (confidence: {confidence})")
             else:
-                handler.logger.info("=" * 80)
-                handler.logger.info(f"[USER] Call {call_sid} - No speech recognized")
-                handler.logger.info(f"[USER] Confidence: {confidence}")
+                handler.logger.debug(f"Call {call_sid}: No speech recognized (confidence: {confidence})")
                 if speech_error:
-                    handler.logger.info(f"[USER] Speech Error: {speech_error}")
-                if digits:
-                    handler.logger.info(f"[USER] Digits received instead: {digits}")
-                handler.logger.info("=" * 80)
+                    handler.logger.debug(f"Call {call_sid}: Speech error - {speech_error}")
             
             # Get session to check if we're collecting a name
             session = handler.orchestrator._get_session(call_sid, None)
@@ -194,11 +174,7 @@ class TwilioVoiceHandler:
                             conversation_id=call_sid,
                             call_sid=call_sid,
                         )
-                        # Clear logging for debugging - AI response
-                        handler.logger.info("=" * 80)
-                        handler.logger.info(f"[AI] Call {call_sid} - AI Response Generated:")
-                        handler.logger.info(f"[AI] Response: \"{ai_response}\"")
-                        handler.logger.info("=" * 80)
+                        handler.logger.debug(f"Call {call_sid}: AI response generated - {ai_response[:100]}")
                         
                         # Check if AI is asking to repeat and we're in a name collection loop
                         ai_response_lower = ai_response.lower() if ai_response else ''
@@ -283,12 +259,7 @@ class TwilioVoiceHandler:
                     return Response(content=twiml_str, media_type='text/xml')
             else:
                 # No speech or low confidence
-                # Clear logging for debugging
-                handler.logger.info("=" * 80)
-                handler.logger.info(f"[USER] Call {call_sid} - Speech Recognition Failed:")
-                handler.logger.info(f"[USER] SpeechResult: \"{speech_result or '(empty)'}\"")
-                handler.logger.info(f"[USER] Confidence: {confidence} (below 0.5 threshold)")
-                handler.logger.info("=" * 80)
+                handler.logger.debug(f"Call {call_sid}: Low confidence speech - {speech_result or '(empty)'} (confidence: {confidence})")
                 
                 # Track unclear responses
                 if call_sid in handler.active_calls:
@@ -557,28 +528,17 @@ class TwilioCallManager:
     
     def start(self, host='0.0.0.0', port=5000):
         """Start the Twilio call manager with real-time AI processing."""
-        self.logger.info("=" * 80)
-        self.logger.info("🟡 Starting Twilio Call Manager with VOCA AI...")
-        self.logger.info("=" * 80)
-        
         # Ensure models are loaded
         try:
             self.orchestrator.ensure_models_loaded()
-            self.logger.info("✓ VOCA models loaded successfully")
         except Exception as e:
-            self.logger.error(f"❌ Failed to load VOCA models: {e}")
+            self.logger.error(f"Failed to load VOCA models: {e}")
             raise
         
         # Start webhook server
         self.voice_handler.start_webhook_server(host, port)
         
-        self.logger.info("=" * 80)
-        self.logger.info("✅ Twilio Call Manager started successfully")
-        self.logger.info(f"   Webhook URL: http://{host}:{port}/webhook/voice")
-        self.logger.info("   STT: Twilio Speech Recognition (TwiML)")
-        self.logger.info("   TTS: Twilio Text-to-Speech (TwiML)")
-        self.logger.info("   Ready to receive calls with Twilio STT/TTS!")
-        self.logger.info("=" * 80)
+        self.logger.info(f"Twilio Call Manager started - Webhook: http://{host}:{port}/webhook/voice")
     
     def make_call(self, phone_number: str, message: str = None) -> Optional[str]:
         """Make an outbound call with AI assistant."""
