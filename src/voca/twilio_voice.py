@@ -98,17 +98,18 @@ class TwilioVoiceHandler:
                 'container': 'none'
             }
             
-            self.logger.info(f"Generating Deepgram TTS for text: {text[:50]}...")
+            self.logger.info(f"[TTS] Calling Deepgram API for model: {model}, text length: {len(text)} chars")
             response = requests.post(url, headers=headers, json=payload, timeout=10)
             
             if response.status_code == 200:
                 # Save audio file
                 with open(cache_file, 'wb') as f:
                     f.write(response.content)
-                self.logger.info(f"Generated Deepgram TTS audio: {cache_file}")
+                audio_size = len(response.content)
+                self.logger.info(f"[TTS] ✓ Successfully generated Deepgram TTS audio: {cache_file} ({audio_size} bytes)")
                 return str(cache_file)
             else:
-                self.logger.error(f"Deepgram TTS API error: {response.status_code} - {response.text}")
+                self.logger.error(f"[TTS] ✗ Deepgram TTS API error: HTTP {response.status_code} - {response.text[:200]}")
                 return None
                 
         except Exception as e:
@@ -152,13 +153,15 @@ class TwilioVoiceHandler:
         # Helper function to add TTS to TwiML response
         def add_tts_to_response(response: VoiceResponse, text: str, base_url: str, language: str = 'hi-IN'):
             """Add Deepgram TTS audio to TwiML response. Logs error if TTS generation fails (no fallback)."""
+            handler.logger.info(f"[TTS] Generating Deepgram TTS for text: {text[:100]}... (language: {language})")
             tts_url = handler.get_tts_audio_url(text, base_url, language=language)
             if tts_url:
                 response.play(tts_url)
-                handler.logger.debug(f"Using Deepgram TTS: {tts_url}")
+                handler.logger.info(f"[TTS] ✓ Using Deepgram TTS - URL: {tts_url}")
+                handler.logger.info(f"[TTS] TwiML will use <Play> verb (not <Say>)")
             else:
                 # TTS generation failed - log error but don't add anything to response (no fallback to say())
-                handler.logger.error(f"Deepgram TTS generation failed for text: {text[:50]}... - no audio will be played")
+                handler.logger.error(f"[TTS] ✗ Deepgram TTS generation FAILED for text: {text[:100]}... - no audio will be played (no fallback to TwiML say())")
         
         # Store reference to self for route handlers
         handler = self
@@ -258,7 +261,7 @@ class TwilioVoiceHandler:
                 handler.logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
             
             # Use Deepgram TTS for welcome message
-            add_tts_to_response(response, greeting, base_url, language='hi-IN')
+            add_tts_to_response(response, greeting, base_url, language='en')
             
             # No need for Gather - Real-Time Transcriptions will handle speech recognition
             # Transcriptions will be sent to /transcription/{call_sid} callback
@@ -386,10 +389,10 @@ class TwilioVoiceHandler:
                     # Never mention technical errors - use graceful response
                     if 'name' in speech_result.lower() if speech_result else False:
                         error_text = "I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name."
-                        add_tts_to_response(response, error_text, tts_base_url, language='hi-IN')
+                        add_tts_to_response(response, error_text, tts_base_url, language='en')
                     else:
                         error_text = "I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?"
-                        add_tts_to_response(response, error_text, tts_base_url, language='hi-IN')
+                        add_tts_to_response(response, error_text, tts_base_url, language='en')
                     # No need for Gather - Real-Time Transcriptions continue automatically
                     twiml_str = str(response)
                     return Response(content=twiml_str, media_type='text/xml')
@@ -436,14 +439,14 @@ class TwilioVoiceHandler:
                 # If we're in a loop and it's about a name, ask to spell it
                 if unclear_count >= 2 and is_collecting_name:
                     error_text = "I'm having trouble understanding your name. Could you please spell it for me? First, tell me your first name letter by letter, and then your last name."
-                    add_tts_to_response(response, error_text, tts_base_url, language='hi-IN')
+                    add_tts_to_response(response, error_text, tts_base_url, language='en')
                 elif unclear_count >= 2:
                     # After multiple unclear attempts, be more helpful
                     error_text = "I'm having trouble understanding. Could you please speak a bit slower and more clearly?"
-                    add_tts_to_response(response, error_text, tts_base_url, language='hi-IN')
+                    add_tts_to_response(response, error_text, tts_base_url, language='en')
                 else:
                     error_text = "I didn't catch that. Please speak clearly."
-                    add_tts_to_response(response, error_text, tts_base_url, language='hi-IN')
+                    add_tts_to_response(response, error_text, tts_base_url, language='en')
                 
                 # No need for Gather or redirect - Real-Time Transcriptions continue automatically
                 # Transcriptions will be sent to /transcription/{call_sid} callback
@@ -642,11 +645,21 @@ class TwilioVoiceHandler:
                     webhook_url = config.get_webhook_url()
                     tts_base_url = webhook_url.replace('/webhook/voice', '').replace('/transcription/' + call_sid, '')
                     # Use detected language from transcription
-                    detected_language = language if language else 'hi-IN'
+                    detected_language = language if language else 'en'
                     add_tts_to_response(response, ai_response, tts_base_url, language=detected_language)
                     
+                    # Log the generated TwiML to verify it uses <Play> not <Say>
+                    twiml_str = str(response)
+                    if '<Play>' in twiml_str:
+                        handler.logger.info(f"[TTS] ✓ TwiML response contains <Play> verb (Deepgram TTS)")
+                    elif '<Say>' in twiml_str:
+                        handler.logger.warning(f"[TTS] ⚠ TwiML response contains <Say> verb (should not happen!)")
+                    else:
+                        handler.logger.warning(f"[TTS] ⚠ TwiML response has no audio verbs")
+                    handler.logger.debug(f"[TTS] TwiML: {twiml_str[:200]}...")
+                    
                     # Return response - transcriptions will continue automatically
-                    return Response(content=str(response), media_type='text/xml')
+                    return Response(content=twiml_str, media_type='text/xml')
                     
                 except Exception as e:
                     handler.logger.error(f"[TRANSCRIPTION] Error processing transcription: {e}", exc_info=True)
@@ -847,7 +860,7 @@ class TwilioVoiceHandler:
             config = get_twilio_config()
             webhook_url = config.get_webhook_url()
             tts_base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
-            add_tts_to_response(response, greeting, tts_base_url, language='hi-IN')
+            add_tts_to_response(response, greeting, tts_base_url, language='en')
             
             # No need for Gather - Real-Time Transcriptions will handle speech recognition
             # Transcriptions will be sent to /transcription/{call_sid} callback automatically

@@ -5,9 +5,29 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from twilio.twiml.voice_response import VoiceResponse
 
 from src.voca.api.state import app_state
+from src.voca.twilio_config import get_twilio_config
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def add_deepgram_tts_to_response(voice_handler, response: VoiceResponse, text: str, language: str = 'en'):
+    """Add Deepgram TTS audio to TwiML response using voice_handler. Logs error if TTS fails (no fallback)."""
+    try:
+        config = get_twilio_config()
+        webhook_url = config.get_webhook_url()
+        base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '').replace('/process_speech/', '')
+        
+        logger.info(f"[TTS] Generating Deepgram TTS for text: {text[:100]}... (language: {language})")
+        tts_url = voice_handler.get_tts_audio_url(text, base_url, language=language)
+        if tts_url:
+            response.play(tts_url)
+            logger.info(f"[TTS] ✓ Using Deepgram TTS - URL: {tts_url}")
+            logger.info(f"[TTS] TwiML will use <Play> verb (not <Say>)")
+        else:
+            logger.error(f"[TTS] ✗ Deepgram TTS generation FAILED for text: {text[:100]}... - no audio will be played (no fallback to TwiML say())")
+    except Exception as e:
+        logger.error(f"[TTS] Error in add_deepgram_tts_to_response: {e}", exc_info=True)
 
 
 @router.post("/outbound")
@@ -16,7 +36,9 @@ async def handle_outbound_call(request: Request):
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         response = VoiceResponse()
-        response.say("Service temporarily unavailable")
+        # Can't use Deepgram TTS if twilio_manager is not available, but we should still try
+        logger.error("[TTS] Twilio manager not available - cannot generate TTS")
+        # Return empty response instead of using say()
         return Response(content=str(response), media_type="text/xml")
 
     voice_handler = twilio_manager.voice_handler
@@ -45,20 +67,21 @@ async def handle_outbound_call(request: Request):
             try:
                 announcement = app_state.get_orchestrator().generate_announcement(conversation_id=call_sid, organization_id=org_id)
                 logger.info(f"Generated announcement for outbound call {call_sid} (length: {len(announcement)} chars)")
-                response.say(announcement)
+                add_deepgram_tts_to_response(voice_handler, response, announcement, language='en')
                 response.hangup()
                 logger.info(f"Outbound call {call_sid} will play announcement and hangup (announcement mode)")
             except Exception as e:
                 logger.error(f"Error generating announcement: {e}")
-                response.say("कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।")
+                fallback_text = "कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।"
+                add_deepgram_tts_to_response(voice_handler, response, fallback_text, language='hi-IN')
                 response.hangup()
         else:
             greeting = app_state.get_orchestrator().generate_greeting(conversation_id=call_sid, organization_id=org_id)
-            response.say(greeting)
+            add_deepgram_tts_to_response(voice_handler, response, greeting, language='en')
 
             if call_sid:
                 gather = response.gather(input="speech", timeout=10, speech_timeout="auto", action=f"/process_speech/{call_sid}", method="POST")
-                gather.say("I'm listening...")
+                # Removed gather.say() - using Deepgram TTS only, no TwiML say()
                 response.redirect(f"/process_speech/{call_sid}")
     except Exception as e:
         logger.error(f"Error in handle_outbound_call: {e}")
@@ -67,11 +90,11 @@ async def handle_outbound_call(request: Request):
             greeting = app_state.get_orchestrator().generate_greeting(conversation_id=call_sid, organization_id=org_id)
         except Exception:
             greeting = "Hello! This is VOCA calling. How can I help you today?"
-        response.say(greeting)
+        add_deepgram_tts_to_response(voice_handler, response, greeting, language='en')
 
         if call_sid:
             gather = response.gather(input="speech", timeout=10, speech_timeout="auto", action=f"/process_speech/{call_sid}", method="POST")
-            gather.say("I'm listening...")
+            # Removed gather.say() - using Deepgram TTS only, no TwiML say()
             response.redirect(f"/process_speech/{call_sid}")
 
     return Response(content=str(response), media_type="text/xml")
@@ -83,7 +106,9 @@ async def handle_incoming_call_webhook(request: Request):
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         response = VoiceResponse()
-        response.say("Service temporarily unavailable")
+        # Can't use Deepgram TTS if twilio_manager is not available, but we should still try
+        logger.error("[TTS] Twilio manager not available - cannot generate TTS")
+        # Return empty response instead of using say()
         return Response(content=str(response), media_type="text/xml")
 
     voice_handler = twilio_manager.voice_handler
@@ -113,20 +138,21 @@ async def handle_incoming_call_webhook(request: Request):
             try:
                 announcement = app_state.get_orchestrator().generate_announcement(conversation_id=call_sid, organization_id=org_id)
                 logger.info(f"Generated announcement for call {call_sid} (length: {len(announcement)} chars)")
-                response.say(announcement)
+                add_deepgram_tts_to_response(voice_handler, response, announcement, language='en')
                 response.hangup()
                 logger.info(f"Call {call_sid} will play announcement and hangup (announcement mode)")
             except Exception as e:
                 logger.error(f"Error generating announcement: {e}")
-                response.say("कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।")
+                fallback_text = "कृपया अपनी रिपोर्ट की विस्तृत समीक्षा के लिए डॉक्टर से परामर्श अवश्य करें।"
+                add_deepgram_tts_to_response(voice_handler, response, fallback_text, language='hi-IN')
                 response.hangup()
         else:
             greeting = app_state.get_orchestrator().generate_greeting(conversation_id=call_sid, organization_id=org_id)
-            response.say(greeting)
+            add_deepgram_tts_to_response(voice_handler, response, greeting, language='en')
 
             if call_sid:
                 gather = response.gather(input="speech", timeout=10, speech_timeout="auto", action=f"/process_speech/{call_sid}", method="POST")
-                gather.say("I'm listening...")
+                # Removed gather.say() - using Deepgram TTS only, no TwiML say()
                 response.redirect(f"/process_speech/{call_sid}")
     except Exception as e:
         logger.error(f"Error in handle_incoming_call_webhook: {e}")
@@ -135,11 +161,11 @@ async def handle_incoming_call_webhook(request: Request):
             greeting = app_state.get_orchestrator().generate_greeting(conversation_id=call_sid, organization_id=org_id)
         except Exception:
             greeting = "Hello! You've reached VOCA, your AI voice assistant. Please speak after the tone."
-        response.say(greeting)
+        add_deepgram_tts_to_response(voice_handler, response, greeting, language='en')
 
         if call_sid:
             gather = response.gather(input="speech", timeout=10, speech_timeout="auto", action=f"/process_speech/{call_sid}", method="POST")
-            gather.say("I'm listening...")
+            # Removed gather.say() - using Deepgram TTS only, no TwiML say()
             response.redirect(f"/process_speech/{call_sid}")
 
     return Response(content=str(response), media_type="text/xml")
@@ -151,7 +177,9 @@ async def handle_speech_webhook(call_sid: str, request: Request):
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         response = VoiceResponse()
-        response.say("Service temporarily unavailable")
+        # Can't use Deepgram TTS if twilio_manager is not available, but we should still try
+        logger.error("[TTS] Twilio manager not available - cannot generate TTS")
+        # Return empty response instead of using say()
         return Response(content=str(response), media_type="text/xml")
 
     voice_handler = twilio_manager.voice_handler
@@ -189,7 +217,7 @@ async def handle_speech_webhook(call_sid: str, request: Request):
                 ai_response = ai_response[:500] + "..."
 
             response = VoiceResponse()
-            response.say(ai_response)
+            add_deepgram_tts_to_response(voice_handler, response, ai_response, language='en')
 
             speech_lower = speech_result.lower()
             ai_response_lower = ai_response.lower()
@@ -226,7 +254,7 @@ async def handle_speech_webhook(call_sid: str, request: Request):
 
             if call_sid:
                 gather = response.gather(input="speech", timeout=10, speech_timeout="auto", action=f"/process_speech/{call_sid}", method="POST")
-                gather.say("I'm listening...")
+                # Removed gather.say() - using Deepgram TTS only, no TwiML say()
                 response.redirect(f"/process_speech/{call_sid}")
 
             return Response(content=str(response), media_type="text/xml")
@@ -234,7 +262,8 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         except Exception as e:
             app_state._log_callback(f"Error processing speech: {e}")
             response = VoiceResponse()
-            response.say("I'm sorry, I had trouble processing that. Please try again.")
+            error_text = "I'm sorry, I had trouble processing that. Please try again."
+            add_deepgram_tts_to_response(voice_handler, response, error_text, language='en')
             if call_sid:
                 response.redirect(f"/process_speech/{call_sid}")
             return Response(content=str(response), media_type="text/xml")
@@ -256,18 +285,21 @@ async def handle_speech_webhook(call_sid: str, request: Request):
         MAX_UNCLEAR_ATTEMPTS = 3
 
         if unclear_count >= MAX_UNCLEAR_ATTEMPTS:
-            response.say("I'm having trouble understanding you over the phone. Please try speaking more slowly and clearly, or call back if you continue to experience issues. Thank you!")
+            error_text = "I'm having trouble understanding you over the phone. Please try speaking more slowly and clearly, or call back if you continue to experience issues. Thank you!"
+            add_deepgram_tts_to_response(voice_handler, response, error_text, language='en')
             if call_sid:
                 response.hangup()
             return Response(content=str(response), media_type="text/xml")
         elif unclear_count >= 2:
-            response.say("I'm having trouble understanding. Could you please speak a bit slower and more clearly?")
+            error_text = "I'm having trouble understanding. Could you please speak a bit slower and more clearly?"
+            add_deepgram_tts_to_response(voice_handler, response, error_text, language='en')
         else:
-            response.say("I didn't catch that. Please speak clearly.")
+            error_text = "I didn't catch that. Please speak clearly."
+            add_deepgram_tts_to_response(voice_handler, response, error_text, language='en')
 
         if call_sid:
             gather = response.gather(input="speech", timeout=10, speech_timeout="auto", action=f"/process_speech/{call_sid}", method="POST")
-            gather.say("I'm listening...")
+            # Removed gather.say() - using Deepgram TTS only, no TwiML say()
             response.redirect(f"/process_speech/{call_sid}")
         return Response(content=str(response), media_type="text/xml")
 
