@@ -163,11 +163,13 @@ async def outbound_twiml(demo_id: str):
         action=f"{base_url}/api/demo/process-speech/{demo_id}",
         method="POST",
         language="hi-IN",
-        speechTimeout="auto"
+        speechTimeout="auto",
+        enhanced=True
     )
     gather.play(audio_url)
     
-    # Fallback if they don't say anything
+    # Fallback if they don't say anything - Don't play the full greeting again!
+    response.say("Ji, main sun raha hoon. Kripya apna sawal poochiye.")
     response.redirect(f"{base_url}/api/demo/outbound-twiml?demo_id={demo_id}")
     
     return Response(content=str(response), media_type="text/xml")
@@ -187,8 +189,24 @@ async def handle_demo_speech(demo_id: str, request: Request):
     user_text = form_data.get("SpeechResult", "").strip()
     
     context = app_state.demo_contexts.get(demo_id)
-    if not context or not user_text:
-        return await outbound_twiml(demo_id)
+    if not context:
+        raise HTTPException(status_code=404)
+
+    if not user_text:
+        # User didn't say anything, prompt them gently
+        response = VoiceResponse()
+        config = get_twilio_config()
+        base_url = config.get_webhook_url().replace("/webhook/voice", "")
+        
+        gather = response.gather(
+            input="speech",
+            action=f"{base_url}/api/demo/process-speech/{demo_id}",
+            method="POST",
+            language="hi-IN",
+            speechTimeout="auto"
+        )
+        gather.say("Maaf kijiyega, maine suna nahi. Kya aap apna sawal dohra sakte hain?")
+        return Response(content=str(response), media_type="text/xml")
 
     # 1. Generate LLM Reply
     orchestrator = app_state.get_orchestrator()
