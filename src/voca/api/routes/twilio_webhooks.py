@@ -259,9 +259,8 @@ async def handle_outbound_call(request: Request):
     response.append(start)
     logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
 
-    # Generate greeting from system prompt
+    # Generate greeting from system prompt and play via Deepgram TTS
     try:
-        # Get organization_id from call metadata if available
         org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
         greeting = voice_handler.orchestrator.generate_greeting(
             conversation_id=call_sid,
@@ -272,7 +271,24 @@ async def handle_outbound_call(request: Request):
         logger.error(f"Error generating greeting: {e}")
         greeting = "Hello! This is VOCA calling. How can I help you today?"
 
-    response.say(greeting)
+    # Synthesize greeting to MP3 and play; fall back to <Say> on error
+    try:
+        tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
+        tts_dir.mkdir(parents=True, exist_ok=True)
+        tts_filename = "greeting.mp3"
+        tts_path = tts_dir / tts_filename
+        deepgramtts(greeting, filename=str(tts_path))
+
+        # Build absolute URL for the audio file
+        config = get_twilio_config()
+        webhook_url = config.get_webhook_url()
+        base_url_for_audio = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+        audio_url = f"{base_url_for_audio}/audio/tts/{call_sid}/{tts_filename}"
+
+        response.play(audio_url)
+    except Exception as tts_err:
+        logger.error(f"[TTS] Greeting TTS failed, falling back to <Say>: {tts_err}")
+        response.say(greeting)
 
     # No need for Gather - Real-Time Transcriptions will handle speech recognition
     # Transcriptions will be sent to /transcription/{call_sid} callback automatically
@@ -369,8 +385,24 @@ async def handle_incoming_call_webhook(request: Request):
         logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
         logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
 
-    # Say welcome message
-    response.say(greeting)
+    # Play welcome message via Deepgram TTS; fall back to <Say> on error
+    try:
+        tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
+        tts_dir.mkdir(parents=True, exist_ok=True)
+        tts_filename = "greeting.mp3"
+        tts_path = tts_dir / tts_filename
+        deepgramtts(greeting, filename=str(tts_path))
+
+        # Build absolute URL for the audio file
+        config = get_twilio_config()
+        webhook_url = config.get_webhook_url()
+        base_url_for_audio = webhook_url.replace('/webhook/voice', '')
+        audio_url = f"{base_url_for_audio}/audio/tts/{call_sid}/{tts_filename}"
+
+        response.play(audio_url)
+    except Exception as tts_err:
+        logger.error(f"[TTS] Welcome TTS failed, falling back to <Say>: {tts_err}")
+        response.say(greeting)
 
     # No need for Gather - Real-Time Transcriptions will handle speech recognition
     # Transcriptions will be sent to /transcription/{call_sid} callback
