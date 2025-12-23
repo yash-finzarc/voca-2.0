@@ -25,6 +25,7 @@ import numpy as np
 import websocket
 import ssl
 from urllib.parse import urlencode
+import requests
 
 from .twilio_config import get_twilio_config
 from src.voca.orchestrator import VocaOrchestrator
@@ -74,12 +75,23 @@ def deepgramtts(text: str, filename: Optional[str] = None, model: str = "aura-2-
             filename = tmp_file.name
             tmp_file.close()
         
-        # Save audio to file
-        response = deepgram.speak.v("1").save(
-            filename,
-            text_data,
-            options,
-        )
+        # Save audio to file; try SDK first, then REST fallback for compatibility
+        try:
+            deepgram.speak.v("1").save(
+                filename,
+                text_data,
+                options,
+            )
+        except Exception:
+            api_url = f"https://api.deepgram.com/v1/speak?model={model}"
+            headers = {
+                "Authorization": f"Token {Config.deepgram_api_key}",
+                "Content-Type": "application/json",
+            }
+            resp = requests.post(api_url, headers=headers, json=text_data, timeout=30)
+            resp.raise_for_status()
+            with open(filename, "wb") as f:
+                f.write(resp.content)
         
         # Read and return audio bytes
         with open(filename, 'rb') as f:
