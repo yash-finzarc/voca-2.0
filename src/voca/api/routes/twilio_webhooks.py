@@ -1,14 +1,16 @@
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, FileResponse
 from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription
 
 from src.voca.api.state import app_state
 from src.voca.Twilio.twilio_config import get_twilio_config
 from src.voca.config import Config
+from src.voca.Twilio.twilio_voice import deepgramtts
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -451,11 +453,28 @@ async def handle_transcription(call_sid: str, request: Request):
                         unique_languages = list(set(all_languages))
                         logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
             
-            # Generate TwiML response with AI reply
-            # No need for Gather - Real-Time Transcriptions continue automatically
-            # The transcription service will keep sending transcriptions as user speaks
+            # Synthesize TTS via Deepgram and serve as audio instead of <Say>
+            tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
+            tts_dir.mkdir(parents=True, exist_ok=True)
+            tts_filename = f"tts_{int(time.time() * 1000)}.mp3"
+            tts_path = tts_dir / tts_filename
+            try:
+                deepgramtts(ai_response, filename=str(tts_path))
+            except Exception as tts_err:
+                logger.error(f"[TRANSCRIPTION] TTS generation failed, falling back to <Say>: {tts_err}")
+                response = VoiceResponse()
+                response.say(ai_response)
+                return Response(content=str(response), media_type='text/xml')
+
+            # Build absolute URL for the audio file based on webhook base
+            config = get_twilio_config()
+            webhook_url = config.get_webhook_url()
+            base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+            audio_url = f"{base_url}/audio/tts/{call_sid}/{tts_filename}"
+
+            # Generate TwiML response playing the synthesized audio
             response = VoiceResponse()
-            response.say(ai_response)
+            response.play(audio_url)
             
             # Return response - transcriptions will continue automatically
             return Response(content=str(response), media_type='text/xml')
@@ -469,4 +488,13 @@ async def handle_transcription(call_sid: str, request: Request):
         # For in-progress or empty transcriptions, just acknowledge
         logger.debug(f"[TRANSCRIPTION] Ignoring transcription: status={transcription_status}, has_text={bool(transcription_text)}")
         return PlainTextResponse("OK")
+
+
+@router.get("/audio/tts/{call_sid}/{filename}")
+async def get_tts_audio(call_sid: str, filename: str):
+    """Serve synthesized TTS audio for Twilio <Play>."""
+    audio_path = Path(Config.audio_storage_dir) / "tts" / call_sid / filename
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Audio not found")
+    return FileResponse(path=str(audio_path), media_type="audio/mpeg", filename=filename)
 
