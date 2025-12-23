@@ -1,11 +1,14 @@
 import logging
 import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from twilio.twiml.voice_response import VoiceResponse, Connect, ConversationRelay
+from fastapi.responses import PlainTextResponse
+from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription
 
 from src.voca.api.state import app_state
 from src.voca.Twilio.twilio_config import get_twilio_config
+from src.voca.config import Config
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -188,11 +191,11 @@ async def handle_conversation_relay(websocket: WebSocket, call_sid: str):
 
 @router.post("/outbound")
 async def handle_outbound_call(request: Request):
-    """Handle outbound call TwiML using ConversationRelay with Deepgram."""
+    """Handle outbound call TwiML using Real-Time Transcriptions and Media Streams."""
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         response = VoiceResponse()
-        logger.error("[CONVERSATION_RELAY] Twilio manager not available")
+        logger.error("[TRANSCRIPTION] Twilio manager not available")
         return Response(content=str(response), media_type="text/xml")
 
     voice_handler = twilio_manager.voice_handler
@@ -211,62 +214,78 @@ async def handle_outbound_call(request: Request):
             "audio_buffer": [],
             "unclear_count": 0,
             "last_speech_attempt": None,
-            "name_attempt_count": 0,
-            "welcome_sent": False,
-            "turn_count": 0,
-            "organization_id": org_id
+            "name_attempt_count": 0
         }
 
     # Create TwiML response
     response = VoiceResponse()
 
-    # Get WebSocket URL for ConversationRelay
+    # Enable Real-Time Transcriptions with Deepgram Nova-3
     config = get_twilio_config()
     webhook_url = config.get_webhook_url()
-    base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '').replace('/process_speech/', '')
+    base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
 
-    # Convert to WebSocket URL (wss://)
-    if base_url.startswith('http://'):
-        wss_base_url = base_url.replace('http://', 'wss://')
-    elif base_url.startswith('https://'):
-        wss_base_url = base_url.replace('https://', 'wss://')
-    elif not base_url.startswith('wss://'):
-        wss_base_url = f"wss://{base_url.lstrip('/')}"
-    else:
-        wss_base_url = base_url
-
-    websocket_url = f"{wss_base_url}/conversation/{call_sid}"
-
-    # Set up ConversationRelay with Deepgram
-    connect = Connect()
-    conversationrelay = ConversationRelay(url=websocket_url)
-
-    # Configure English (India) with Deepgram TTS and STT
-    conversationrelay.language(
-        code='en-IN',
-        tts_provider='deepgram',
-        voice='aura-2-odysseus-en',  # Deepgram TTS model
-        transcription_provider='deepgram',
-        speech_model='nova-3'  # Deepgram STT model
+    # Set up Real-Time Transcription with Deepgram
+    transcription_callback_url = f'{base_url}/transcription/{call_sid}'
+    start = Start()
+    transcription = Transcription(
+        statusCallbackUrl=transcription_callback_url,
+        transcriptionEngine='deepgram',
+        track='both_tracks',
+        speechModel='nova-3',  # Use nova-3 for best accuracy
+        languageCode='en-IN'   # English (India) language
     )
+    start.append(transcription)
 
-    connect.append(conversationrelay)
-    response.append(connect)
+    # Enable Media Streams for audio storage/debugging (if enabled)
+    if Config.audio_storage_enabled:
+        # Convert to WebSocket URL (wss://)
+        if base_url.startswith('http://'):
+            wss_base_url = base_url.replace('http://', 'wss://')
+        elif base_url.startswith('https://'):
+            wss_base_url = base_url.replace('https://', 'wss://')
+        elif not base_url.startswith('wss://'):
+            wss_base_url = f"wss://{base_url.lstrip('/')}"
+        else:
+            wss_base_url = base_url
+        
+        stream_url = f"{wss_base_url}/media/{call_sid}"
+        stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
+        start.stream(stream)
+        logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for outbound call {call_sid}: {stream_url}")
 
-    logger.info(f"[CONVERSATION_RELAY] Enabled ConversationRelay for outbound call {call_sid}")
-    logger.info(f"[CONVERSATION_RELAY] WebSocket URL: {websocket_url}")
-    logger.info(f"[CONVERSATION_RELAY] Using Deepgram TTS (aura-2-odysseus-en) and STT (nova-3)")
+    response.append(start)
+    logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
+
+    # Generate greeting from system prompt
+    try:
+        # Get organization_id from call metadata if available
+        org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
+        greeting = voice_handler.orchestrator.generate_greeting(
+            conversation_id=call_sid,
+            organization_id=org_id
+        )
+        logger.info(f"Generated greeting for outbound call {call_sid}: {greeting}")
+    except Exception as e:
+        logger.error(f"Error generating greeting: {e}")
+        greeting = "Hello! This is VOCA calling. How can I help you today?"
+
+    response.say(greeting)
+
+    # No need for Gather - Real-Time Transcriptions will handle speech recognition
+    # Transcriptions will be sent to /transcription/{call_sid} callback automatically
+    # The callback will process transcriptions and generate AI responses
 
     return Response(content=str(response), media_type="text/xml")
 
 
 @router.post("/webhook/voice")
 async def handle_incoming_call_webhook(request: Request):
-    """Handle incoming Twilio call webhook using ConversationRelay with Deepgram."""
+    """Handle incoming Twilio call webhook using Real-Time Transcriptions and Media Streams."""
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
         response = VoiceResponse()
-        logger.error("[CONVERSATION_RELAY] Twilio manager not available")
+        logger.error("[TRANSCRIPTION] Twilio manager not available")
         return Response(content=str(response), media_type="text/xml")
 
     voice_handler = twilio_manager.voice_handler
@@ -288,53 +307,166 @@ async def handle_incoming_call_webhook(request: Request):
             "audio_buffer": [],
             "unclear_count": 0,
             "last_speech_attempt": None,
-            "name_attempt_count": 0,
-            "welcome_sent": False,
-            "turn_count": 0,
-            "organization_id": org_id
+            "name_attempt_count": 0
         }
 
     # Create TwiML response
     response = VoiceResponse()
 
-    # Get WebSocket URL for ConversationRelay
+    # Generate welcome message from system prompt
+    try:
+        # Get organization_id from call metadata if available
+        org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
+        greeting = voice_handler.orchestrator.generate_greeting(
+            conversation_id=call_sid,
+            organization_id=org_id
+        )
+        logger.info(f"Generated greeting for call {call_sid}: {greeting}")
+    except Exception as e:
+        logger.error(f"Error generating greeting: {e}")
+        greeting = "Hello! How can I help you today?"
+
+    # Enable Real-Time Transcriptions with Deepgram Nova-3
+    # This provides real-time transcriptions via callbacks (no Deepgram API key needed)
     config = get_twilio_config()
     webhook_url = config.get_webhook_url()
-    base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '').replace('/process_speech/', '')
+    base_url = webhook_url.replace('/webhook/voice', '')
 
-    # Convert to WebSocket URL (wss://)
-    if base_url.startswith('http://'):
-        wss_base_url = base_url.replace('http://', 'wss://')
-    elif base_url.startswith('https://'):
-        wss_base_url = base_url.replace('https://', 'wss://')
-    elif not base_url.startswith('wss://'):
-        wss_base_url = f"wss://{base_url.lstrip('/')}"
-    else:
-        wss_base_url = base_url
-
-    websocket_url = f"{wss_base_url}/conversation/{call_sid}"
-
-    # Set up ConversationRelay with Deepgram
-    connect = Connect()
-    conversationrelay = ConversationRelay(url=websocket_url)
-
-    # Configure English (India) with Deepgram TTS and STT
-    conversationrelay.language(
-        code='en-IN',
-        tts_provider='deepgram',
-        voice='aura-2-odysseus-en',  # Deepgram TTS model
-        transcription_provider='deepgram',
-        speech_model='nova-3'  # Deepgram STT model
+    # Set up Real-Time Transcription with Deepgram Nova-3
+    # This provides real-time transcriptions via callbacks (no Deepgram API key needed)
+    transcription_callback_url = f'{base_url}/transcription/{call_sid}'
+    start = Start()
+    transcription = Transcription(
+        statusCallbackUrl=transcription_callback_url,
+        transcription_engine='deepgram',
+        speech_model='nova-3',  # Use nova-3 for best accuracy
+        languageCode='en-IN'   # English (India) language
     )
+    start.append(transcription)
+    response.append(start)
+    logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for call {call_sid}")
+    logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback_url}")
 
-    connect.append(conversationrelay)
-    response.append(connect)
+    # Enable Media Streams for audio storage/debugging (if enabled)
+    # This streams raw audio to /media/{call_sid} WebSocket endpoint for storage
+    if Config.audio_storage_enabled:
+        # Twilio Media Streams require WebSocket (wss://) not HTTP
+        # Convert http:// to wss:// or https:// to wss://
+        if base_url.startswith('http://'):
+            wss_base_url = base_url.replace('http://', 'wss://')
+        elif base_url.startswith('https://'):
+            wss_base_url = base_url.replace('https://', 'wss://')
+        elif not base_url.startswith('wss://'):
+            wss_base_url = f"wss://{base_url.lstrip('/')}"
+        else:
+            wss_base_url = base_url
+        
+        stream_url = f"{wss_base_url}/media/{call_sid}"
+        stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
+        start.stream(stream)
+        logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
+        logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
 
-    logger.info(f"[CONVERSATION_RELAY] Enabled ConversationRelay for call {call_sid}")
-    logger.info(f"[CONVERSATION_RELAY] WebSocket URL: {websocket_url}")
-    logger.info(f"[CONVERSATION_RELAY] Using Deepgram TTS (aura-2-odysseus-en) and STT (nova-3)")
+    # Say welcome message
+    response.say(greeting)
+
+    # No need for Gather - Real-Time Transcriptions will handle speech recognition
+    # Transcriptions will be sent to /transcription/{call_sid} callback
+    # The callback will process transcriptions and generate AI responses
 
     return Response(content=str(response), media_type="text/xml")
 
-# Note: /process_speech endpoint removed - ConversationRelay handles speech via WebSocket
+
+@router.post("/transcription/{call_sid}")
+async def handle_transcription(call_sid: str, request: Request):
+    """Handle real-time transcription callbacks from Twilio with Deepgram."""
+    twilio_manager = app_state.get_twilio_manager()
+    if not twilio_manager:
+        return PlainTextResponse("OK")
+
+    voice_handler = twilio_manager.voice_handler
+    form_data = await request.form()
+    
+    # Extract transcription data
+    transcription_text = form_data.get('TranscriptionText', '')
+    transcription_status = form_data.get('TranscriptionStatus', '')
+    transcription_sid = form_data.get('TranscriptionSid', '')
+    confidence = form_data.get('Confidence', '0')
+    # Check for language in webhook (may not be present for all transcription services)
+    language = form_data.get('Language', None) or form_data.get('LanguageCode', None)
+    
+    logger.info(f"[TRANSCRIPTION] Call {call_sid}: Status={transcription_status}, Text='{transcription_text}', Confidence={confidence}, Language={language or 'N/A'}")
+    
+    # Only process completed transcriptions with text
+    if transcription_status == 'completed' and transcription_text and transcription_text.strip():
+        try:
+            # If language not in webhook, try to fetch from Twilio API using transcription_sid
+            if not language and transcription_sid:
+                try:
+                    trans_obj = voice_handler.client.transcriptions(transcription_sid).fetch()
+                    language = getattr(trans_obj, 'language', None) or getattr(trans_obj, 'languageCode', None)
+                    if language:
+                        logger.info(f"[TRANSCRIPTION] Fetched language from API: {language}")
+                except Exception as lang_e:
+                    logger.debug(f"[TRANSCRIPTION] Could not fetch language from API: {lang_e}")
+            
+            # Process transcription through VOCA orchestrator
+            org_id = None
+            if call_sid in voice_handler.active_calls:
+                org_id = voice_handler.active_calls[call_sid].get('organization_id')
+            if not org_id:
+                org_id = app_state.get_orchestrator().default_organization_id
+            
+            ai_response = voice_handler.orchestrator.generate_reply(
+                transcription_text,
+                conversation_id=call_sid,
+                call_sid=call_sid,
+                organization_id=org_id,
+            )
+            logger.info(f"[TRANSCRIPTION] AI Response: {ai_response}")
+            
+            # Store transcription in call metadata
+            if call_sid in voice_handler.active_calls:
+                if 'transcriptions' not in voice_handler.active_calls[call_sid]:
+                    voice_handler.active_calls[call_sid]['transcriptions'] = []
+                voice_handler.active_calls[call_sid]['transcriptions'].append({
+                    'text': transcription_text,
+                    'status': transcription_status,
+                    'transcription_sid': transcription_sid,
+                    'confidence': confidence,
+                    'language': language,
+                    'languageCode': language,  # Alias for compatibility
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                })
+                
+                # Log language detection when we have transcriptions with language
+                if language:
+                    # Get all unique languages from all transcriptions for this call
+                    all_languages = []
+                    for trans in voice_handler.active_calls[call_sid]['transcriptions']:
+                        trans_lang = trans.get('language') or trans.get('languageCode')
+                        if trans_lang:
+                            all_languages.append(trans_lang)
+                    if all_languages:
+                        unique_languages = list(set(all_languages))
+                        logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
+            
+            # Generate TwiML response with AI reply
+            # No need for Gather - Real-Time Transcriptions continue automatically
+            # The transcription service will keep sending transcriptions as user speaks
+            response = VoiceResponse()
+            response.say(ai_response)
+            
+            # Return response - transcriptions will continue automatically
+            return Response(content=str(response), media_type='text/xml')
+            
+        except Exception as e:
+            logger.error(f"[TRANSCRIPTION] Error processing transcription: {e}", exc_info=True)
+            # Return empty response to continue call
+            response = VoiceResponse()
+            return Response(content=str(response), media_type='text/xml')
+    else:
+        # For in-progress or empty transcriptions, just acknowledge
+        logger.debug(f"[TRANSCRIPTION] Ignoring transcription: status={transcription_status}, has_text={bool(transcription_text)}")
+        return PlainTextResponse("OK")
 
