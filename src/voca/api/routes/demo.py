@@ -174,6 +174,16 @@ async def outbound_twiml(demo_id: str):
     
     return Response(content=str(response), media_type="text/xml")
 
+@router.get("/media/{demo_id}")
+async def medical_media_stream_diagnostic(demo_id: str, request: Request):
+    """Diagnostic endpoint to check why WebSockets are failing."""
+    return {
+        "error": "This endpoint requires a WebSocket connection.",
+        "suggestion": "Ensure your proxy (e.g., Nginx) is configured to pass 'Upgrade' and 'Connection' headers and uses HTTP/1.1.",
+        "received_headers": dict(request.headers),
+        "protocol": request.scope.get("http_version")
+    }
+
 @router.post("/transcription/{demo_id}")
 async def handle_demo_transcription(demo_id: str, request: Request):
     """Handle transcription and push reply via WebSocket."""
