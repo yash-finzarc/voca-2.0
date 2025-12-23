@@ -29,7 +29,15 @@ from urllib.parse import urlencode
 from .twilio_config import get_twilio_config
 from src.voca.orchestrator import VocaOrchestrator
 from src.voca.config import Config
-from deepgram import DeepgramClient, SpeakOptions
+
+# Deepgram SDK changed the public API across versions; older releases do not
+# expose SpeakOptions at the package root. Fall back gracefully so the server
+# can start even if an older SDK is installed.
+try:
+    from deepgram import DeepgramClient, SpeakOptions  # SDK >=3.0
+except ImportError:  # Older SDKs
+    from deepgram import DeepgramClient  # type: ignore
+    SpeakOptions = None  # type: ignore
 
 
 def deepgramtts(text: str, filename: Optional[str] = None, model: str = "aura-2-odysseus-en") -> bytes:
@@ -49,9 +57,11 @@ def deepgramtts(text: str, filename: Optional[str] = None, model: str = "aura-2-
     try:
         deepgram = DeepgramClient(Config.deepgram_api_key)
         
-        options = SpeakOptions(
-            model=model,
-        )
+        # Construct speak options; tolerate older SDKs that lack SpeakOptions
+        if SpeakOptions:
+            options = SpeakOptions(model=model)
+        else:
+            options = {"model": model}
         
         text_data = {
             "text": text
