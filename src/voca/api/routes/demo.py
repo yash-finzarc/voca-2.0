@@ -163,12 +163,12 @@ async def outbound_twiml(demo_id: str):
         action=f"{base_url}/api/demo/process-speech/{demo_id}",
         method="POST",
         language="hi-IN",
-        speechTimeout="auto",
+        speechTimeout="1.0", # Faster trigger after user stops talking
         enhanced=True
     )
     gather.play(audio_url)
     
-    # Fallback if they don't say anything - Don't play the full greeting again!
+    # Fallback if they don't say anything
     response.say("Ji, main sun raha hoon. Kripya apna sawal poochiye.")
     response.redirect(f"{base_url}/api/demo/outbound-twiml?demo_id={demo_id}")
     
@@ -185,15 +185,19 @@ async def serve_demo_audio(audio_id: str):
 @router.post("/process-speech/{demo_id}")
 async def handle_demo_speech(demo_id: str, request: Request):
     """Handle speech input using TwiML (Sequential Flow)."""
+    start_time = time.time()
     form_data = await request.form()
     user_text = form_data.get("SpeechResult", "").strip()
+    
+    logger.info(f"--- DEMO TURN START [{demo_id[:8]}] ---")
+    logger.info(f"USER SPEECH: '{user_text}'")
     
     context = app_state.demo_contexts.get(demo_id)
     if not context:
         raise HTTPException(status_code=404)
 
     if not user_text:
-        # User didn't say anything, prompt them gently
+        logger.info("USER SILENCE DETECTED")
         response = VoiceResponse()
         config = get_twilio_config()
         base_url = config.get_webhook_url().replace("/webhook/voice", "")
@@ -203,12 +207,13 @@ async def handle_demo_speech(demo_id: str, request: Request):
             action=f"{base_url}/api/demo/process-speech/{demo_id}",
             method="POST",
             language="hi-IN",
-            speechTimeout="auto"
+            speechTimeout="1.2"
         )
         gather.say("Maaf kijiyega, maine suna nahi. Kya aap apna sawal dohra sakte hain?")
         return Response(content=str(response), media_type="text/xml")
 
     # 1. Generate LLM Reply
+    llm_start = time.time()
     orchestrator = app_state.get_orchestrator()
     system_prompt = MEDICAL_ASSISTANT_SYSTEM_PROMPT.format(
         patient_name=context['patient_name'],
@@ -231,8 +236,11 @@ async def handle_demo_speech(demo_id: str, request: Request):
     )
     reply_text = result.reply
     context['messages'].append(AIMessage(content=reply_text))
+    llm_time = time.time() - llm_start
+    logger.info(f"LLM REPLY ({llm_time:.2f}s): {reply_text}")
 
     # 2. Synthesize Reply
+    tts_start = time.time()
     from sarvamai import SarvamAI
     client = SarvamAI(api_subscription_key=Config.sarvam_api_key)
     tts_res = client.text_to_speech.convert(
@@ -246,14 +254,15 @@ async def handle_demo_speech(demo_id: str, request: Request):
     if isinstance(audio_data, str):
         audio_data = base64.b64decode(audio_data)
     
-    # Convert to mu-law for Twilio
     resampled = audioop.ratecv(audio_data, 2, 1, 22050, 8000, None)[0]
     mulaw_reply = audioop.lin2ulaw(resampled, 2)
     
     reply_audio_id = str(uuid.uuid4())
     app_state.audio_cache[reply_audio_id] = mulaw_reply
-    
-    # 3. Return TwiML to Play and Listen again
+    tts_time = time.time() - tts_start
+    logger.info(f"TTS GEN ({tts_time:.2f}s) -> Cached as {reply_audio_id[:8]}")
+
+    # 3. Return TwiML
     response = VoiceResponse()
     config = get_twilio_config()
     base_url = config.get_webhook_url().replace("/webhook/voice", "")
@@ -263,11 +272,13 @@ async def handle_demo_speech(demo_id: str, request: Request):
         action=f"{base_url}/api/demo/process-speech/{demo_id}",
         method="POST",
         language="hi-IN",
-        speechTimeout="auto"
+        speechTimeout="1.0"
     )
     gather.play(f"{base_url}/api/demo/audio/{reply_audio_id}")
     response.redirect(f"{base_url}/api/demo/outbound-twiml?demo_id={demo_id}")
 
+    total_backend_time = time.time() - start_time
+    logger.info(f"TURN COMPLETE. Total Backend Time: {total_backend_time:.2f}s")
     return Response(content=str(response), media_type="text/xml")
 
 @router.websocket("/media/{demo_id}")
