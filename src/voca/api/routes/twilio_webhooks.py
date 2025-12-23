@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, FileResponse
-from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription
+from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription, Gather
 
 from src.voca.api.state import app_state
 from src.voca.Twilio.twilio_config import get_twilio_config
@@ -14,6 +14,21 @@ from src.voca.Twilio.twilio_voice import deepgramtts
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _append_vad_gather(response: VoiceResponse, base_url: str, call_sid: str, language: str = "en-IN"):
+    """Attach a speech-only Gather to keep the call alive using VAD (no barge-in)."""
+    action_url = f"{base_url}/gather/continue/{call_sid}"
+    gather = Gather(
+        input="speech",
+        speech_timeout="auto",  # Let VAD decide end-of-speech
+        action=action_url,
+        method="POST",
+        language=language,
+        bargeIn=False,  # Ensure greeting finishes before listening
+    )
+    response.append(gather)
+    return response
 
 
 @router.get("/conversation/{call_sid}/test")
@@ -290,9 +305,8 @@ async def handle_outbound_call(request: Request):
         logger.error(f"[TTS] Greeting TTS failed, sending silent pause: {tts_err}")
         response.pause(length=1)
 
-    # No need for Gather - Real-Time Transcriptions will handle speech recognition
-    # Transcriptions will be sent to /transcription/{call_sid} callback automatically
-    # The callback will process transcriptions and generate AI responses
+    # Keep the call alive after greeting by enabling speech-only Gather with VAD.
+    _append_vad_gather(response, base_url, call_sid, language="en-IN")
 
     return Response(content=str(response), media_type="text/xml")
 
@@ -404,10 +418,21 @@ async def handle_incoming_call_webhook(request: Request):
         logger.error(f"[TTS] Welcome TTS failed, sending silent pause: {tts_err}")
         response.pause(length=1)
 
-    # No need for Gather - Real-Time Transcriptions will handle speech recognition
-    # Transcriptions will be sent to /transcription/{call_sid} callback
-    # The callback will process transcriptions and generate AI responses
+    # Keep the call alive after greeting by enabling speech-only Gather with VAD.
+    _append_vad_gather(response, base_url, call_sid, language="en-IN")
 
+    return Response(content=str(response), media_type="text/xml")
+
+
+@router.post("/gather/continue/{call_sid}")
+async def handle_gather_continue(call_sid: str):
+    """
+    Twilio will hit this after a Gather completes; respond with another Gather to keep VAD listening.
+    """
+    config = get_twilio_config()
+    base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+    response = VoiceResponse()
+    _append_vad_gather(response, base_url, call_sid, language="en-IN")
     return Response(content=str(response), media_type="text/xml")
 
 
