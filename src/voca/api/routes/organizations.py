@@ -112,3 +112,4 @@ async def get_organization(organization_id: str):
         logger.error(f"Error getting organization: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get organization: {str(e)}")
 
+

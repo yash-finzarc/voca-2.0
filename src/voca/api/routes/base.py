@@ -32,3 +32,4 @@ async def options_handler(full_path: str, request: Request):
     )
     return response
 
+
