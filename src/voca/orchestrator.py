@@ -16,6 +16,22 @@ from src.voca.system_prompt import get_prompt, get_welcome_message
 from src.voca.tts import CoquiTTS
 from src.voca.conversation_logger import log_user, log_ai
 
+
+def contains_hindi(text: str) -> bool:
+    """
+    Detect if text contains Hindi (Devanagari script) characters.
+    
+    Devanagari script range: U+0900 to U+097F
+    This includes Hindi, Marathi, Sanskrit, and other languages using Devanagari.
+    """
+    if not text:
+        return False
+    for char in text:
+        # Check if character is in Devanagari Unicode range
+        if '\u0900' <= char <= '\u097F':
+            return True
+    return False
+
 # Sounddevice commented out - not needed for Twilio calls
 # try:
 #     import sounddevice as sd
@@ -117,17 +133,37 @@ class VocaOrchestrator:
         org_id = session.organization_id or self.default_organization_id
         system_prompt = get_prompt(organization_id=org_id)
         
+        # Detect if user is speaking Hindi and add language response instructions
+        user_speaking_hindi = contains_hindi(user_text)
+        if user_speaking_hindi:
+            # Add instruction to respond in Hindi
+            system_prompt = (
+                system_prompt + 
+                "\n\nIMPORTANT: The user is speaking in Hindi (हिंदी). "
+                "You MUST respond in Hindi (हिंदी) using Devanagari script. "
+                "Match the user's language - if they speak Hindi, respond in Hindi. "
+                "Keep your responses natural, conversational, and culturally appropriate."
+            )
+        
         # If greeting has already been sent, modify the system prompt to prevent re-greeting
         if session.greeting_sent:
             # Add instruction to not greet again
-            system_prompt = (
-                system_prompt + 
+            greeting_instruction = (
                 "\n\nIMPORTANT: A greeting has already been given at the start of this call. "
-                "Do NOT greet the user again. If they say 'hi', 'hello', or similar greetings, "
-                "simply acknowledge them naturally and continue the conversation. "
-                "For example, respond with 'Hi! How can I help you?' or 'Hello! What can I do for you?' "
-                "instead of repeating the full greeting."
+                "Do NOT greet the user again. If they say 'hi', 'hello', 'नमस्ते', or similar greetings, "
+                "simply acknowledge them naturally and continue the conversation."
             )
+            if user_speaking_hindi:
+                greeting_instruction += (
+                    " For example, respond with 'नमस्ते! मैं आपकी कैसे मदद कर सकता हूं?' "
+                    "or 'हैलो! मैं आपके लिए क्या कर सकता हूं?' instead of repeating the full greeting."
+                )
+            else:
+                greeting_instruction += (
+                    " For example, respond with 'Hi! How can I help you?' or 'Hello! What can I do for you?' "
+                    "instead of repeating the full greeting."
+                )
+            system_prompt = system_prompt + greeting_instruction
 
         try:
             result: LangGraphAgentResult = self.llm.generate_reply(
@@ -159,10 +195,17 @@ class VocaOrchestrator:
             reply = result.reply.strip() if result.reply else ""
             if not reply:
                 # If no reply, provide a graceful response
+                user_speaking_hindi = contains_hindi(user_text)
                 if 'name' in user_text.lower() or session.collected_data.get('name'):
-                    reply = "I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name."
+                    if user_speaking_hindi:
+                        reply = "माफ़ करें, मैं आपका नाम स्पष्ट रूप से नहीं सुन सका। कृपया अपना नाम बताएं। पहले अपना पहला नाम बताएं, फिर अपना अंतिम नाम।"
+                    else:
+                        reply = "I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name."
                 else:
-                    reply = "I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?"
+                    if user_speaking_hindi:
+                        reply = "माफ़ करें, मैं आपकी बात स्पष्ट रूप से नहीं समझ सका। कृपया दोबारा बोलें।"
+                    else:
+                        reply = "I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?"
             
             # Log AI response
             if reply:
@@ -174,10 +217,17 @@ class VocaOrchestrator:
             self.log(f"Error generating reply: {e}")
             # Return a graceful error message instead of raising
             # Check if we're collecting a name
+            user_speaking_hindi = contains_hindi(user_text)
             if 'name' in user_text.lower() or session.collected_data.get('name'):
-                reply = "I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name."
+                if user_speaking_hindi:
+                    reply = "माफ़ करें, मैं आपका नाम स्पष्ट रूप से नहीं सुन सका। कृपया अपना नाम बताएं। पहले अपना पहला नाम बताएं, फिर अपना अंतिम नाम।"
+                else:
+                    reply = "I'm sorry, I couldn't quite catch that. Could you please spell your name for me? First, tell me your first name, and then your last name."
             else:
-                reply = "I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?"
+                if user_speaking_hindi:
+                    reply = "माफ़ करें, मैं आपकी बात स्पष्ट रूप से नहीं समझ सका। कृपया दोबारा बोलें।"
+                else:
+                    reply = "I'm sorry, I couldn't quite understand what you're saying. Could you please repeat that?"
             
             # Log AI response even on error
             if reply:

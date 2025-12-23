@@ -2,7 +2,33 @@
 Pydantic models for API request/response validation.
 """
 from typing import Optional, Dict, Any, List
+from enum import Enum
 from pydantic import BaseModel, Field
+
+
+class TestStatus(str, Enum):
+    """Status for medical test results."""
+    RED = "RED"
+    YELLOW = "YELLOW"
+    GREEN = "GREEN"
+
+
+class MedicalTestResult(BaseModel):
+    """Structured medical test result."""
+    name: str
+    status: TestStatus
+    value: Optional[str] = None
+    unit: Optional[str] = None
+
+
+class MedicalDemoRequest(BaseModel):
+    """Request to initiate a medical demo call."""
+    phone_number: str
+    patient_name: str
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    test_results: List[MedicalTestResult] = Field(default_factory=list)
+    medical_advice: Optional[str] = None
 
 
 class MakeCallRequest(BaseModel):

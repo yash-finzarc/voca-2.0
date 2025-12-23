@@ -51,8 +51,12 @@ async def sarvamtts(text: str, call_sid: str, base_url: str) -> str:
     Returns:
         URL to the generated audio file
     """
-    if not SARVAM_AVAILABLE or not Config.sarvam_api_key:
-        logger.warning("Sarvam TTS not available, returning empty URL (will fallback)")
+    if not SARVAM_AVAILABLE:
+        logger.warning("Sarvam TTS not available: sarvamai package not installed. Install with: pip install sarvamai")
+        return ""
+    
+    if not Config.sarvam_api_key:
+        logger.warning("Sarvam TTS not available: SARVAM_API_KEY environment variable not set")
         return ""
     
     try:

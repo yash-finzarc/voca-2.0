@@ -5,7 +5,7 @@ import logging
 import threading
 from datetime import datetime
 from queue import Queue
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from src.voca.orchestrator import VocaOrchestrator
 from src.voca.twilio_voice import TwilioCallManager
@@ -24,6 +24,10 @@ class AppState:
         self.is_twilio_server_running: bool = False
         self.is_continuous_call_running: bool = False
         self.continuous_call_thread: Optional[threading.Thread] = None
+        # Store demo contexts for medical demo calls (demo_id -> context_dict)
+        self.demo_contexts: Dict[str, Dict[str, Any]] = {}
+        # In-memory audio cache for pre-generated audio (audio_id -> bytes)
+        self.audio_cache: Dict[str, bytes] = {}
         
     def get_orchestrator(self) -> VocaOrchestrator:
         """Get or create orchestrator instance."""

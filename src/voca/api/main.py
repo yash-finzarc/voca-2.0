@@ -16,6 +16,7 @@ from src.voca.api.routes import (
     webhooks,
     system_prompt,
     organizations,
+    demo,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ app.include_router(logs.router)
 app.include_router(webhooks.router)
 app.include_router(system_prompt.router)
 app.include_router(organizations.router)
+app.include_router(demo.router)
 
 
 @app.on_event("startup")
@@ -59,6 +61,9 @@ async def startup_event():
     
     # Start log broadcaster task
     asyncio.create_task(logs.log_broadcaster())
+    
+    # Pre-generate filler audio for demo
+    asyncio.create_task(demo.pregenerate_fillers())
     
     logger.info("VOCA API server started successfully")
 
