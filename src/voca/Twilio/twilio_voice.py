@@ -55,7 +55,8 @@ def deepgramtts(text: str, filename: Optional[str] = None, model: str = "aura-2-
     import tempfile
     
     try:
-        deepgram = DeepgramClient(Config.deepgram_api_key)
+        # Deepgram SDK v3+ requires keyword arg; older versions also accept it
+        deepgram = DeepgramClient(api_key=Config.deepgram_api_key)
         
         # Construct speak options; tolerate older SDKs that lack SpeakOptions
         if SpeakOptions:

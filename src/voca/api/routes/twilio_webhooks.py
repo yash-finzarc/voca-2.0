@@ -287,8 +287,8 @@ async def handle_outbound_call(request: Request):
 
         response.play(audio_url)
     except Exception as tts_err:
-        logger.error(f"[TTS] Greeting TTS failed, falling back to <Say>: {tts_err}")
-        response.say(greeting)
+        logger.error(f"[TTS] Greeting TTS failed, sending silent pause: {tts_err}")
+        response.pause(length=1)
 
     # No need for Gather - Real-Time Transcriptions will handle speech recognition
     # Transcriptions will be sent to /transcription/{call_sid} callback automatically
@@ -401,8 +401,8 @@ async def handle_incoming_call_webhook(request: Request):
 
         response.play(audio_url)
     except Exception as tts_err:
-        logger.error(f"[TTS] Welcome TTS failed, falling back to <Say>: {tts_err}")
-        response.say(greeting)
+        logger.error(f"[TTS] Welcome TTS failed, sending silent pause: {tts_err}")
+        response.pause(length=1)
 
     # No need for Gather - Real-Time Transcriptions will handle speech recognition
     # Transcriptions will be sent to /transcription/{call_sid} callback
@@ -493,9 +493,9 @@ async def handle_transcription(call_sid: str, request: Request):
             try:
                 deepgramtts(ai_response, filename=str(tts_path))
             except Exception as tts_err:
-                logger.error(f"[TRANSCRIPTION] TTS generation failed, falling back to <Say>: {tts_err}")
+                logger.error(f"[TRANSCRIPTION] TTS generation failed, sending silent pause: {tts_err}")
                 response = VoiceResponse()
-                response.say(ai_response)
+                response.pause(length=1)
                 return Response(content=str(response), media_type='text/xml')
 
             # Build absolute URL for the audio file based on webhook base
@@ -513,8 +513,9 @@ async def handle_transcription(call_sid: str, request: Request):
             
         except Exception as e:
             logger.error(f"[TRANSCRIPTION] Error processing transcription: {e}", exc_info=True)
-            # Return empty response to continue call
+            # Return empty response with short pause to continue call
             response = VoiceResponse()
+            response.pause(length=1)
             return Response(content=str(response), media_type='text/xml')
     else:
         # For in-progress or empty transcriptions, just acknowledge
