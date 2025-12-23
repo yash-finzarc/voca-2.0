@@ -142,141 +142,115 @@ async def trigger_medical_call(request: MedicalDemoRequest, req: Request):
 
 @router.post("/outbound-twiml")
 async def outbound_twiml(demo_id: str):
-    """TwiML for connecting the call to the Media Stream and enabling Transcription."""
+    """TwiML for connecting the call using standard Play/Gather (Robust Fallback)."""
+    context = app_state.demo_contexts.get(demo_id)
+    if not context:
+        raise HTTPException(status_code=404, detail="Demo context not found")
+
     response = VoiceResponse()
-    
-    # Enable Real-Time Transcription
     config = get_twilio_config()
-    base_url = config.get_webhook_url().replace("/webhook/voice", "")
-    transcription_url = f"{base_url}/api/demo/transcription/{demo_id}"
-    
-    start = Start()
-    transcription = Transcription(
-        statusCallbackUrl=transcription_url,
-        transcriptionEngine="google",
-        speechModel="short",
-        languageCode="hi-IN"
+    webhook_url = config.get_webhook_url()
+    base_url = webhook_url.replace("/webhook/voice", "")
+
+    # 1. Host the pre-generated greeting audio
+    audio_id = f"greeting_{demo_id}"
+    app_state.audio_cache[audio_id] = context['greeting_audio']
+    audio_url = f"{base_url}/api/demo/audio/{audio_id}"
+
+    # 2. Play the greeting and Gather response
+    gather = response.gather(
+        input="speech",
+        action=f"{base_url}/api/demo/process-speech/{demo_id}",
+        method="POST",
+        language="hi-IN",
+        speechTimeout="auto"
     )
-    start.append(transcription)
+    gather.play(audio_url)
     
-    ws_base_url = base_url.replace("http://", "ws://").replace("https://", "wss://")
-    stream_url = f"{ws_base_url}/api/demo/media/{demo_id}"
-    
-    logger.info(f"[TWIML] Sending Stream URL to Twilio: {stream_url}")
-    
-    connect = Connect()
-    connect.stream(url=stream_url)
-    
-    response.append(start)
-    response.append(connect)
-    
-    # Add a dummy Gather to keep the call alive while streaming
-    response.gather(input="speech", timeout=60)
+    # Fallback if they don't say anything
+    response.redirect(f"{base_url}/api/demo/outbound-twiml?demo_id={demo_id}")
     
     return Response(content=str(response), media_type="text/xml")
 
-@router.get("/media/{demo_id}")
-async def medical_media_stream_diagnostic(demo_id: str, request: Request):
-    """Diagnostic endpoint to check why WebSockets are failing."""
-    return {
-        "error": "This endpoint requires a WebSocket connection.",
-        "suggestion": "Ensure your proxy (e.g., Nginx) is configured to pass 'Upgrade' and 'Connection' headers and uses HTTP/1.1.",
-        "received_headers": dict(request.headers),
-        "protocol": request.scope.get("http_version")
-    }
+@router.get("/audio/{audio_id}")
+async def serve_demo_audio(audio_id: str):
+    """Serve pre-generated mu-law audio for Twilio."""
+    audio_data = app_state.audio_cache.get(audio_id)
+    if not audio_data:
+        raise HTTPException(status_code=404)
+    return Response(content=audio_data, media_type="audio/x-mulaw")
 
-@router.post("/transcription/{demo_id}")
-async def handle_demo_transcription(demo_id: str, request: Request):
-    """Handle transcription and push reply via WebSocket."""
+@router.post("/process-speech/{demo_id}")
+async def handle_demo_speech(demo_id: str, request: Request):
+    """Handle speech input using TwiML (Sequential Flow)."""
     form_data = await request.form()
-    text = form_data.get("TranscriptionText", "").strip()
-    status = form_data.get("TranscriptionStatus", "")
+    user_text = form_data.get("SpeechResult", "").strip()
     
-    if status == "completed" and text:
-        logger.info(f"Demo {demo_id} Transcription: {text}")
-        
-        context = app_state.demo_contexts.get(demo_id)
-        if not context:
-            return Response(content="", media_type="text/plain")
+    context = app_state.demo_contexts.get(demo_id)
+    if not context or not user_text:
+        return await outbound_twiml(demo_id)
 
-        # 1. Generate LLM Reply
-        orchestrator = app_state.get_orchestrator()
-        
-        # Prepare specialized system prompt
-        system_prompt = MEDICAL_ASSISTANT_SYSTEM_PROMPT.format(
-            patient_name=context['patient_name'],
-            age=context['age'],
-            gender=context['gender'],
-            medical_report=context['medical_report'],
-            medical_advice=context['medical_advice']
-        )
-        
-        # Use orchestrator to generate reply
-        # Note: We manually handle the prompt here to stay "lean"
-        from langchain_core.messages import HumanMessage, AIMessage
-        context['messages'].append(HumanMessage(content=text))
-        
-        # Send filler if it's been a while
-        ws = active_websockets.get(demo_id)
-        if ws and FILLER_BUFFERS:
-            import random
-            filler = random.choice(FILLER_BUFFERS)
-            try:
-                # We need the streamSid. For simplicity, we'll store it in context.
-                stream_sid = context.get('stream_sid')
-                if stream_sid:
-                    await ws.send_json({
-                        "event": "media",
-                        "streamSid": stream_sid,
-                        "media": {"payload": base64.b64encode(filler).decode('utf-8')}
-                    })
-            except: pass
+    # 1. Generate LLM Reply
+    orchestrator = app_state.get_orchestrator()
+    system_prompt = MEDICAL_ASSISTANT_SYSTEM_PROMPT.format(
+        patient_name=context['patient_name'],
+        age=context['age'],
+        gender=context['gender'],
+        medical_report=context['medical_report'],
+        medical_advice=context['medical_advice']
+    )
+    
+    from langchain_core.messages import HumanMessage, AIMessage
+    context['messages'].append(HumanMessage(content=user_text))
+    
+    result = orchestrator.llm.generate_reply(
+        organization_id=None,
+        system_prompt=system_prompt,
+        messages=context['messages'],
+        collected_data={},
+        lead_status=None,
+        transcript=[],
+    )
+    reply_text = result.reply
+    context['messages'].append(AIMessage(content=reply_text))
 
-        try:
-            result = orchestrator.llm.generate_reply(
-                organization_id=None,
-                system_prompt=system_prompt,
-                messages=context['messages'],
-                collected_data={},
-                lead_status=None,
-                transcript=[],
-            )
-            reply_text = result.reply
-            context['messages'].append(AIMessage(content=reply_text))
-            logger.info(f"Demo {demo_id} AI Reply: {reply_text}")
+    # 2. Synthesize Reply
+    from sarvamai import SarvamAI
+    client = SarvamAI(api_subscription_key=Config.sarvam_api_key)
+    tts_res = client.text_to_speech.convert(
+        text=reply_text,
+        target_language_code="hi-IN",
+        speaker="anushka",
+        model="bulbul:v2"
+    )
+    
+    audio_data = tts_res.audios[0]
+    if isinstance(audio_data, str):
+        audio_data = base64.b64decode(audio_data)
+    
+    # Convert to mu-law for Twilio
+    resampled = audioop.ratecv(audio_data, 2, 1, 22050, 8000, None)[0]
+    mulaw_reply = audioop.lin2ulaw(resampled, 2)
+    
+    reply_audio_id = str(uuid.uuid4())
+    app_state.audio_cache[reply_audio_id] = mulaw_reply
+    
+    # 3. Return TwiML to Play and Listen again
+    response = VoiceResponse()
+    config = get_twilio_config()
+    base_url = config.get_webhook_url().replace("/webhook/voice", "")
+    
+    gather = response.gather(
+        input="speech",
+        action=f"{base_url}/api/demo/process-speech/{demo_id}",
+        method="POST",
+        language="hi-IN",
+        speechTimeout="auto"
+    )
+    gather.play(f"{base_url}/api/demo/audio/{reply_audio_id}")
+    response.redirect(f"{base_url}/api/demo/outbound-twiml?demo_id={demo_id}")
 
-            # 2. Synthesize to mu-law
-            from sarvamai import SarvamAI
-            client = SarvamAI(api_subscription_key=Config.sarvam_api_key)
-            response = client.text_to_speech.convert(
-                text=reply_text,
-                target_language_code="hi-IN",
-                speaker="anushka",
-                model="bulbul:v2"
-            )
-            
-            audio_data = None
-            if hasattr(response, 'audios') and response.audios:
-                audio_data = response.audios[0]
-                if isinstance(audio_data, str):
-                    audio_data = base64.b64decode(audio_data)
-            
-            if audio_data and ws and context.get('stream_sid'):
-                resampled = audioop.ratecv(audio_data, 2, 1, 22050, 8000, None)[0]
-                mulaw = audioop.lin2ulaw(resampled, 2)
-                
-                # Push to WebSocket
-                await ws.send_json({
-                    "event": "media",
-                    "streamSid": context['stream_sid'],
-                    "media": {"payload": base64.b64encode(mulaw).decode('utf-8')}
-                })
-                logger.info(f"Pushed AI reply to demo {demo_id}")
-
-        except Exception as e:
-            logger.error(f"Error processing demo reply: {e}")
-
-    return Response(content="", media_type="text/plain")
+    return Response(content=str(response), media_type="text/xml")
 
 @router.websocket("/media/{demo_id}")
 async def medical_media_stream(websocket: WebSocket, demo_id: str):
