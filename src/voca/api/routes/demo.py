@@ -159,17 +159,11 @@ async def outbound_twiml(demo_id: str):
     )
     start.append(transcription)
     
-    # Connect to Media Stream (WebSocket)
-    # Ensure we use wss:// or ws:// correctly
-    if "https://" in base_url:
-        ws_base_url = base_url.replace("https://", "wss://")
-    elif "http://" in base_url:
-        ws_base_url = base_url.replace("http://", "ws://")
-    else:
-        # Fallback if no schema is present (assuming wss for security)
-        ws_base_url = f"wss://{base_url.lstrip('/')}"
-    
+    ws_base_url = base_url.replace("http://", "ws://").replace("https://", "wss://")
     stream_url = f"{ws_base_url}/api/demo/media/{demo_id}"
+    
+    logger.info(f"[TWIML] Sending Stream URL to Twilio: {stream_url}")
+    
     connect = Connect()
     connect.stream(url=stream_url)
     
