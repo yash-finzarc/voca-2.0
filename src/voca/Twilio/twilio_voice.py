@@ -13,11 +13,11 @@ import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List
-from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import PlainTextResponse, FileResponse, JSONResponse
 import uvicorn
 from twilio.rest import Client
-from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Play, Connect, ConversationRelay, Language
+from twilio.twiml.voice_response import VoiceResponse
 from twilio.twiml.messaging_response import MessagingResponse
 import threading
 import queue
@@ -87,7 +87,7 @@ class TwilioVoiceHandler:
         
         @app.post('/webhook/voice')
         async def handle_incoming_call(request: Request):
-            """Handle incoming Twilio voice calls using ConversationRelay with Deepgram."""
+            """Handle incoming Twilio voice calls using transcription."""
             form_data = await request.form()
             call_sid = form_data.get('CallSid')
             from_number = form_data.get('From')
@@ -108,110 +108,79 @@ class TwilioVoiceHandler:
             # Create TwiML response
             response = VoiceResponse()
             
-            # Get WebSocket URL for ConversationRelay
+            # Get webhook URL for speech processing
             config = get_twilio_config()
             webhook_url = config.get_webhook_url()
             base_url = webhook_url.replace('/webhook/voice', '')
+            speech_url = f"{base_url}/process_speech/{call_sid}"
             
-            # Convert to WebSocket URL (wss://)
-            if base_url.startswith('http://'):
-                wss_base_url = base_url.replace('http://', 'wss://')
-            elif base_url.startswith('https://'):
-                wss_base_url = base_url.replace('https://', 'wss://')
-            elif not base_url.startswith('wss://'):
-                wss_base_url = f"wss://{base_url.lstrip('/')}"
-            else:
-                wss_base_url = base_url
-            
-            websocket_url = f"{wss_base_url}/conversation/{call_sid}"
-            
-            # Set up ConversationRelay with Deepgram
-            connect = Connect()
-            conversationrelay = ConversationRelay(url=websocket_url)
-            
-            # Configure English (India) with Deepgram TTS and STT
-            conversationrelay.language(
-                code='en-IN',
-                tts_provider='deepgram',
-                voice='aura-2-odysseus-en',  # Deepgram TTS model
-                transcription_provider='deepgram',
-                speech_model='nova-3'  # Deepgram STT model
+            # Gather speech input
+            gather = response.gather(
+                input='speech',
+                timeout=10,
+                speech_timeout='auto',
+                action=speech_url,
+                method='POST'
             )
+            gather.say("Hello! How can I help you today?")
             
-            # Optionally add other languages if needed
-            # conversationrelay.language(
-            #     code='en-US',
-            #     tts_provider='deepgram',
-            #     voice='aura-2-ash-en',
-            #     transcription_provider='deepgram',
-            #     speech_model='nova-3'
-            # )
+            # Fallback if no input
+            response.redirect(speech_url)
             
-            connect.append(conversationrelay)
-            response.append(connect)
-            
-            handler.logger.info(f"[CONVERSATION_RELAY] Enabled ConversationRelay for call {call_sid}")
-            handler.logger.info(f"[CONVERSATION_RELAY] WebSocket URL: {websocket_url}")
-            handler.logger.info(f"[CONVERSATION_RELAY] Using Deepgram TTS (aura-2-odysseus-en) and STT (nova-3)")
-            
+            handler.logger.info(f"Enabled transcription for call {call_sid}")
             return Response(content=str(response), media_type='text/xml')
         
-        @app.websocket('/conversation/{call_sid}')
-        async def handle_conversation_relay(websocket: WebSocket, call_sid: str):
-            """Handle ConversationRelay WebSocket connection from Twilio."""
-            await websocket.accept()
-            handler.logger.info(f"[CONVERSATION_RELAY] WebSocket connected for call {call_sid}")
+        @app.post('/process_speech/{call_sid}')
+        async def handle_speech(call_sid: str, request: Request):
+            """Handle speech transcription from Twilio."""
+            form_data = await request.form()
+            speech_result = form_data.get('SpeechResult', '')
+            confidence = form_data.get('Confidence', '0')
             
-            try:
-                while True:
-                    # Receive messages from Twilio ConversationRelay
-                    data = await websocket.receive_json()
-                    event_type = data.get('event', {}).get('type')
+            handler.logger.info(f"Transcription for {call_sid}: {speech_result} (confidence: {confidence})")
+            
+            response = VoiceResponse()
+            
+            if speech_result and float(confidence) > 0.3:
+                try:
+                    # Process through VOCA orchestrator
+                    ai_response = handler.orchestrator.generate_reply(
+                        speech_result,
+                        conversation_id=call_sid,
+                        call_sid=call_sid,
+                    )
+                    handler.logger.info(f"AI Response: {ai_response}")
                     
-                    handler.logger.debug(f"[CONVERSATION_RELAY] Received event: {event_type} for call {call_sid}")
+                    # Continue conversation
+                    config = get_twilio_config()
+                    webhook_url = config.get_webhook_url()
+                    base_url = webhook_url.replace('/webhook/voice', '')
+                    speech_url = f"{base_url}/process_speech/{call_sid}"
                     
-                    if event_type == 'start':
-                        handler.logger.info(f"[CONVERSATION_RELAY] Conversation started for call {call_sid}")
-                    elif event_type == 'media':
-                        # Audio data from the call
-                        handler.logger.debug(f"[CONVERSATION_RELAY] Received audio data for call {call_sid}")
-                    elif event_type == 'text':
-                        # Text transcription from Deepgram STT
-                        transcription_text = data.get('event', {}).get('text', '')
-                        if transcription_text:
-                            handler.logger.info(f"[CONVERSATION_RELAY] Transcription: {transcription_text}")
-                            
-                            # Process through VOCA orchestrator
-                            try:
-                                ai_response = handler.orchestrator.generate_reply(
-                                    transcription_text,
-                                    conversation_id=call_sid,
-                                    call_sid=call_sid,
-                                )
-                                handler.logger.info(f"[CONVERSATION_RELAY] AI Response: {ai_response}")
-                                
-                                # Send text response back to ConversationRelay (will be converted to speech by Deepgram TTS)
-                                response_message = {
-                                    'event': {
-                                        'type': 'text',
-                                        'text': ai_response
-                                    }
-                                }
-                                await websocket.send_json(response_message)
-                                handler.logger.info(f"[CONVERSATION_RELAY] Sent AI response to ConversationRelay")
-                            except Exception as e:
-                                handler.logger.error(f"[CONVERSATION_RELAY] Error processing transcription: {e}", exc_info=True)
-                    elif event_type == 'stop':
-                        handler.logger.info(f"[CONVERSATION_RELAY] Conversation stopped for call {call_sid}")
-                        break
-                    else:
-                        handler.logger.debug(f"[CONVERSATION_RELAY] Unhandled event type: {event_type}")
-                        
-            except WebSocketDisconnect:
-                handler.logger.info(f"[CONVERSATION_RELAY] WebSocket disconnected for call {call_sid}")
-            except Exception as e:
-                handler.logger.error(f"[CONVERSATION_RELAY] Error in WebSocket: {e}", exc_info=True)
-        
+                    gather = response.gather(
+                        input='speech',
+                        timeout=10,
+                        speech_timeout='auto',
+                        action=speech_url,
+                        method='POST'
+                    )
+                    gather.say(ai_response)
+                    response.redirect(speech_url)
+                except Exception as e:
+                    handler.logger.error(f"Error processing speech: {e}", exc_info=True)
+                    config = get_twilio_config()
+                    webhook_url = config.get_webhook_url()
+                    base_url = webhook_url.replace('/webhook/voice', '')
+                    response.say("I'm sorry, I encountered an error. Please try again.")
+                    response.redirect(f"{base_url}/process_speech/{call_sid}")
+            else:
+                config = get_twilio_config()
+                webhook_url = config.get_webhook_url()
+                base_url = webhook_url.replace('/webhook/voice', '')
+                response.say("I didn't catch that. Please try again.")
+                response.redirect(f"{base_url}/process_speech/{call_sid}")
+            
+            return Response(content=str(response), media_type='text/xml')
         
         @app.post('/call/status')
         async def handle_call_status(request: Request):
@@ -232,7 +201,7 @@ class TwilioVoiceHandler:
         
         @app.post('/outbound')
         async def handle_outbound_call(request: Request):
-            """Handle outbound call TwiML using ConversationRelay with Deepgram."""
+            """Handle outbound call TwiML using transcription."""
             form_data = await request.form()
             call_sid = form_data.get('CallSid')
             
@@ -249,43 +218,26 @@ class TwilioVoiceHandler:
             
             response = VoiceResponse()
             
-            # Get WebSocket URL for ConversationRelay
+            # Get webhook URL for speech processing
             config = get_twilio_config()
             webhook_url = config.get_webhook_url()
             base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+            speech_url = f"{base_url}/process_speech/{call_sid}"
             
-            # Convert to WebSocket URL (wss://)
-            if base_url.startswith('http://'):
-                wss_base_url = base_url.replace('http://', 'wss://')
-            elif base_url.startswith('https://'):
-                wss_base_url = base_url.replace('https://', 'wss://')
-            elif not base_url.startswith('wss://'):
-                wss_base_url = f"wss://{base_url.lstrip('/')}"
-            else:
-                wss_base_url = base_url
-            
-            websocket_url = f"{wss_base_url}/conversation/{call_sid}"
-            
-            # Set up ConversationRelay with Deepgram
-            connect = Connect()
-            conversationrelay = ConversationRelay(url=websocket_url)
-            
-            # Configure English (India) with Deepgram TTS and STT
-            conversationrelay.language(
-                code='en-IN',
-                tts_provider='deepgram',
-                voice='aura-2-odysseus-en',  # Deepgram TTS model
-                transcription_provider='deepgram',
-                speech_model='nova-3'  # Deepgram STT model
+            # Gather speech input
+            gather = response.gather(
+                input='speech',
+                timeout=10,
+                speech_timeout='auto',
+                action=speech_url,
+                method='POST'
             )
+            gather.say("Hello! How can I help you today?")
             
-            connect.append(conversationrelay)
-            response.append(connect)
+            # Fallback if no input
+            response.redirect(speech_url)
             
-            handler.logger.info(f"[CONVERSATION_RELAY] Enabled ConversationRelay for outbound call {call_sid}")
-            handler.logger.info(f"[CONVERSATION_RELAY] WebSocket URL: {websocket_url}")
-            handler.logger.info(f"[CONVERSATION_RELAY] Using Deepgram TTS (aura-2-odysseus-en) and STT (nova-3)")
-            
+            handler.logger.info(f"Enabled transcription for outbound call {call_sid}")
             return Response(content=str(response), media_type='text/xml')
         
         # Start server in a separate thread using uvicorn
