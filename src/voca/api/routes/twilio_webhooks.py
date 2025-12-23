@@ -425,14 +425,69 @@ async def handle_incoming_call_webhook(request: Request):
 
 
 @router.post("/gather/continue/{call_sid}")
-async def handle_gather_continue(call_sid: str):
+async def handle_gather_continue(call_sid: str, request: Request):
     """
-    Twilio will hit this after a Gather completes; respond with another Gather to keep VAD listening.
+    Twilio posts here after a speech Gather completes. We optionally TTS an AI reply, then
+    re-attach another VAD Gather so the call stays alive and continues listening.
     """
+    twilio_manager = app_state.get_twilio_manager()
+    if not twilio_manager:
+        response = VoiceResponse()
+        logger.error("[GATHER] Twilio manager not available")
+        return Response(content=str(response), media_type="text/xml")
+
+    voice_handler = twilio_manager.voice_handler
+    form_data = await request.form()
+    speech_result = (form_data.get("SpeechResult") or "").strip()
+    confidence = form_data.get("Confidence", "")
+    language = form_data.get("Language", "") or "en-IN"
+
+    logger.info(f"[GATHER] Call {call_sid}: SpeechResult='{speech_result}', Confidence={confidence}, Language={language}")
+
+    response = VoiceResponse()
+
+    # If we got speech text, generate an AI reply and play it before continuing to listen.
+    if speech_result:
+        try:
+            org_id = None
+            if call_sid in voice_handler.active_calls:
+                org_id = voice_handler.active_calls[call_sid].get('organization_id')
+            if not org_id:
+                org_id = app_state.get_orchestrator().default_organization_id
+
+            ai_response = voice_handler.orchestrator.generate_reply(
+                speech_result,
+                conversation_id=call_sid,
+                call_sid=call_sid,
+                organization_id=org_id,
+            )
+            logger.info(f"[GATHER] AI Response: {ai_response}")
+
+            # TTS the AI response and play it
+            tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
+            tts_dir.mkdir(parents=True, exist_ok=True)
+            tts_filename = f"tts_{int(time.time() * 1000)}.mp3"
+            tts_path = tts_dir / tts_filename
+            try:
+                deepgramtts(ai_response, filename=str(tts_path))
+            except Exception as tts_err:
+                logger.error(f"[GATHER] TTS generation failed, sending silent pause: {tts_err}")
+                response.pause(length=1)
+            else:
+                config = get_twilio_config()
+                webhook_url = config.get_webhook_url()
+                base_url_for_audio = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+                audio_url = f"{base_url_for_audio}/audio/tts/{call_sid}/{tts_filename}"
+                response.play(audio_url)
+        except Exception as e:
+            logger.error(f"[GATHER] Error processing speech result: {e}", exc_info=True)
+            response.pause(length=1)
+
+    # Re-attach Gather to keep VAD listening
     config = get_twilio_config()
     base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
-    response = VoiceResponse()
-    _append_vad_gather(response, base_url, call_sid, language="en-IN")
+    _append_vad_gather(response, base_url, call_sid, language=language or "en-IN")
+
     return Response(content=str(response), media_type="text/xml")
 
 
