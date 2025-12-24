@@ -164,10 +164,11 @@ async def stream_tts_to_twilio(
                     encode_time = (time.time() - encode_start) * 1000  # ms
                     
                     # Send to Twilio Media Streams
+                    # CRITICAL: Must include "track": "outbound" when using track="both_tracks"
                     message = {
                         "event": "media",
-                        "streamSid": stream_sid,
                         "media": {
+                            "track": "outbound",
                             "payload": audio_base64
                         }
                     }
@@ -179,9 +180,10 @@ async def stream_tts_to_twilio(
                         
                         # Log first 10 chunks, then every 25th chunk
                         if chunk_count <= 10 or chunk_count % 25 == 0:
-                            handler.logger.info(f"[TTS_STREAM] ✓ Chunk {chunk_count} sent at {elapsed:.3f}s: {chunk_bytes} bytes (μ-law) = {base64_size} bytes (base64), encode={encode_time:.2f}ms, send={send_time:.2f}ms")
+                            handler.logger.info(f"[TTS_STREAM] ✓ OUTBOUND Chunk {chunk_count} sent at {elapsed:.3f}s: {chunk_bytes} bytes (μ-law) = {base64_size} bytes (base64), encode={encode_time:.2f}ms, send={send_time:.2f}ms")
+                            handler.logger.info(f"[TTS_STREAM] Message format: event='media', track='outbound', payload_length={base64_size}")
                         else:
-                            handler.logger.debug(f"[TTS_STREAM] Chunk {chunk_count} sent: {chunk_bytes} bytes (μ-law), encode={encode_time:.2f}ms, send={send_time:.2f}ms")
+                            handler.logger.debug(f"[TTS_STREAM] OUTBOUND Chunk {chunk_count} sent: {chunk_bytes} bytes (μ-law), encode={encode_time:.2f}ms, send={send_time:.2f}ms")
                     except Exception as send_error:
                         handler.logger.error(f"[TTS_STREAM] ✗ Error sending audio chunk {chunk_count} to Twilio at {elapsed:.3f}s: {send_error}", exc_info=True)
                         raise

@@ -717,8 +717,18 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
     try:
         while True:
             # Receive JSON messages from Twilio (treating as WebRTC-like)
-            data = await websocket.receive_json()
+            try:
+                data = await websocket.receive_json()
+            except Exception as recv_error:
+                logger.error(f"[WebRTC] ✗ ERROR receiving JSON from WebSocket for call {call_sid}: {recv_error}", exc_info=True)
+                break
+            
+            # Log EVERY message received
+            logger.info(f"[WebRTC] ===== RECEIVED MESSAGE for call {call_sid} =====")
+            logger.info(f"[WebRTC] Raw message: {json.dumps(data, indent=2)}")
+            
             event = data.get('event')
+            logger.info(f"[WebRTC] Event type: {event}")
             
             if event == 'connected':
                 logger.info(f"[WebRTC] ===== 'connected' event received for call {call_sid} =====")
@@ -784,7 +794,17 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                     logger.error(f"[WebRTC] No streamSid in start event for call {call_sid} - cannot send audio!")
             elif event == 'media':
                 # Incoming audio from caller (Step 5 - Live User Speech Capture)
-                media_payload = data.get('media', {}).get('payload')
+                media_data = data.get('media', {})
+                media_payload = media_data.get('payload')
+                track = media_data.get('track', 'inbound')  # Default to 'inbound' if not specified
+                
+                # Log every media event with track information
+                logger.info(f"[WebRTC] ===== MEDIA EVENT received for call {call_sid} =====")
+                logger.info(f"[WebRTC] Event: {event}")
+                logger.info(f"[WebRTC] Track: {track}")
+                logger.info(f"[WebRTC] Payload length: {len(media_payload) if media_payload else 0} bytes (base64)")
+                logger.info(f"[WebRTC] Full message keys: {list(data.keys())}")
+                
                 if media_payload:
                     try:
                         # Log inbound media frame with timestamps
@@ -866,7 +886,11 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                             
                     except Exception as e:
                         logger.error(f"[WebRTC] Error processing media: {e}", exc_info=True)
+                else:
+                    logger.warning(f"[WebRTC] Media event with no payload for call {call_sid}")
             elif event == 'stop':
+                logger.info(f"[WebRTC] ===== 'stop' event received for call {call_sid} =====")
+                logger.info(f"[WebRTC] Stop event data: {json.dumps(data, indent=2)}")
                 logger.info(f"[WebRTC] WebRTC stream stopped for call {call_sid}")
                 # Cleanup (Step 10 - Call Termination & Cleanup)
                 if call_sid in voice_handler.twilio_media_websockets:
@@ -882,6 +906,11 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                         logger.error(f"[WebRTC] Error closing Deepgram STT: {e}")
                     del voice_handler.deepgram_stt_connections[call_sid]
                 break
+            else:
+                # Log unhandled events
+                logger.warning(f"[WebRTC] ===== UNHANDLED EVENT for call {call_sid} =====")
+                logger.warning(f"[WebRTC] Event type: {event}")
+                logger.warning(f"[WebRTC] Full message: {json.dumps(data, indent=2)}")
                 
     except WebSocketDisconnect:
         logger.info(f"[WebRTC] WebRTC WebSocket disconnected for call {call_sid}")
