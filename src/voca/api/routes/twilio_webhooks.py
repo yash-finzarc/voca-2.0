@@ -267,18 +267,14 @@ async def handle_outbound_call(request: Request):
             wss_base_url = base_url
         
         stream_url = f"{wss_base_url}/media/{call_sid}"
-        # Add status callback to monitor Media Streams connection status
-        status_callback_url = f"{base_url}/media/status/{call_sid}"
+        # Stream does not support statusCallback - use minimal configuration
         stream = Stream(
             url=stream_url, 
             track='both_tracks', 
-            parameters={'call_sid': call_sid},
-            statusCallback=status_callback_url,
-            statusCallbackMethod='POST'
+            parameters={'call_sid': call_sid}
         )
         start.append(stream)
         logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for outbound call {call_sid}: {stream_url}")
-        logger.info(f"[AUDIO_DEBUG] Media Stream status callback: {status_callback_url}")
 
     response.append(start)
     logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
@@ -397,19 +393,14 @@ async def handle_incoming_call_webhook(request: Request):
             wss_base_url = base_url
         
         stream_url = f"{wss_base_url}/media/{call_sid}"
-        # Add status callback to monitor Media Streams connection status
-        status_callback_url = f"{base_url}/media/status/{call_sid}"
+        # Stream does not support statusCallback - use minimal configuration
         stream = Stream(
             url=stream_url, 
             track='both_tracks', 
-            parameters={'call_sid': call_sid},
-            statusCallback=status_callback_url,
-            statusCallbackMethod='POST'
+            parameters={'call_sid': call_sid}
         )
         start.append(stream)
         logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}: {stream_url}")
-        logger.info(f"[AUDIO_DEBUG] Media Stream status callback: {status_callback_url}")
-        logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
 
     # Store greeting to send when Media Streams WebSocket connects
     # Media Streams WebSocket connects asynchronously after TwiML response
