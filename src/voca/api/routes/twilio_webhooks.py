@@ -617,7 +617,11 @@ async def handle_media_stream_websocket(websocket: WebSocket, call_sid: str):
     """Handle Twilio Media Streams via WebSocket in main API app."""
     from fastapi import WebSocketDisconnect
     
-    logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket connection attempt for call {call_sid}")
+    # Log immediately when handler is called (before accept)
+    logger.info(f"[AUDIO_DEBUG] ===== Media Stream WebSocket handler CALLED for call {call_sid} =====")
+    logger.info(f"[AUDIO_DEBUG] WebSocket path: {websocket.url.path if hasattr(websocket, 'url') else 'N/A'}")
+    logger.info(f"[AUDIO_DEBUG] WebSocket client: {websocket.client if hasattr(websocket, 'client') else 'N/A'}")
+    logger.info(f"[AUDIO_DEBUG] WebSocket headers: {dict(websocket.headers) if hasattr(websocket, 'headers') else 'N/A'}")
     logger.info(f"[AUDIO_DEBUG] WebSocket client: {websocket.client if hasattr(websocket, 'client') else 'N/A'}")
     logger.info(f"[AUDIO_DEBUG] WebSocket URL: {websocket.url if hasattr(websocket, 'url') else 'N/A'}")
     
