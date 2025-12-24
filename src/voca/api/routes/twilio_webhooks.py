@@ -826,6 +826,26 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                 else:
                     logger.error(f"[WebRTC] No streamSid in start event for call {call_sid} - cannot send audio!")
             elif event == 'media':
+                # Send greeting on first inbound media event if not yet sent (fallback for missed 'start' event)
+                if call_sid in voice_handler.pending_greetings and not call_state.get('welcome_sent', False):
+                    greeting = voice_handler.pending_greetings[call_sid]
+                    logger.info(f"[WebRTC] ===== SENDING GREETING (fallback - first media event) =====")
+                    logger.info(f"[WebRTC] Call SID: {call_sid}")
+                    logger.info(f"[WebRTC] Greeting: \"{greeting}\"")
+                    try:
+                        if call_sid in voice_handler.twilio_media_websockets:
+                            success = await stream_tts_to_twilio(voice_handler, call_sid, greeting)
+                            if success:
+                                call_state['welcome_sent'] = True
+                                del voice_handler.pending_greetings[call_sid]
+                                logger.info(f"[WebRTC] ✓ Greeting sent successfully (fallback)")
+                            else:
+                                logger.error(f"[WebRTC] ✗ Failed to send greeting (fallback)")
+                        else:
+                            logger.warning(f"[WebRTC] ⚠️ Cannot send greeting - WebSocket not ready yet")
+                    except Exception as e:
+                        logger.error(f"[WebRTC] ✗ Error sending greeting (fallback): {e}", exc_info=True)
+                
                 # Incoming audio from caller (Step 5 - Live User Speech Capture)
                 media_data = data.get('media', {})
                 media_payload = media_data.get('payload')
