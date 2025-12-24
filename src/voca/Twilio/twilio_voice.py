@@ -132,72 +132,43 @@ async def stream_tts_to_twilio(
             
             text_data = {"text": text}
             
-            # Get audio bytes from Deepgram (μ-law @ 8kHz)
-            resp = requests.post(api_url, headers=headers, json=text_data, timeout=30, stream=True)
+            # Get audio from Deepgram TTS (μ-law @ 8kHz)
+            handler.logger.info(f"[TTS_STREAM] ===== Starting TTS for call {call_sid} =====")
+            handler.logger.info(f"[TTS_STREAM] Text: '{text}'")
+            handler.logger.info(f"[TTS_STREAM] Converting text to speech via Deepgram...")
+            
+            resp = requests.post(api_url, headers=headers, json=text_data, timeout=30)
             resp.raise_for_status()
             
-            # Stream audio chunks to Twilio Media Streams
-            # Twilio expects ~20ms chunks = 160 bytes at 8kHz μ-law (1 byte per sample)
-            chunk_size = 160  # ~20ms of audio at 8kHz (μ-law is 1 byte per sample)
-            total_bytes_sent = 0
-            chunk_count = 0
-            stream_start_time = time.time()
+            # Get the audio bytes
+            audio_data = resp.content
+            audio_length = len(audio_data)
+            audio_duration_sec = audio_length / 8000.0  # μ-law is 1 byte per sample at 8kHz
             
-            handler.logger.info(f"[TTS_STREAM] ===== Starting TTS stream for call {call_sid} =====")
-            handler.logger.info(f"[TTS_STREAM] Text: '{text[:100]}{'...' if len(text) > 100 else ''}'")
-            handler.logger.info(f"[TTS_STREAM] Chunk size: {chunk_size} bytes (μ-law)")
-            handler.logger.info(f"[TTS_STREAM] StreamSid: {stream_sid}")
-            handler.logger.info(f"[TTS_STREAM] WebSocket ready: {twilio_websocket is not None}")
+            handler.logger.info(f"[TTS_STREAM] ✓ Audio received: {audio_length} bytes ({audio_duration_sec:.2f}s)")
             
-            for chunk in resp.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    chunk_bytes = len(chunk)
-                    total_bytes_sent += chunk_bytes
-                    chunk_count += 1
-                    chunk_timestamp = time.time()
-                    elapsed = chunk_timestamp - stream_start_time
-                    
-                    # Encode to base64 for Twilio
-                    encode_start = time.time()
-                    audio_base64 = base64.b64encode(chunk).decode('utf-8')
-                    base64_size = len(audio_base64)
-                    encode_time = (time.time() - encode_start) * 1000  # ms
-                    
-                    # Send to Twilio Media Streams
-                    # CRITICAL: Must include "track": "outbound" when using track="both_tracks"
-                    # CRITICAL: Must include "streamSid" at top level
-                    message = {
-                        "event": "media",
-                        "streamSid": stream_sid,
-                        "media": {
-                            "track": "outbound",
-                            "payload": audio_base64
-                        }
-                    }
-                    
-                    try:
-                        send_start = time.time()
-                        await twilio_websocket.send_json(message)
-                        send_time = (time.time() - send_start) * 1000  # ms
-                        
-                        # Log first 10 chunks, then every 25th chunk
-                        if chunk_count <= 10 or chunk_count % 25 == 0:
-                            handler.logger.info(f"[TTS_STREAM] ✓ OUTBOUND Chunk {chunk_count} sent at {elapsed:.3f}s: {chunk_bytes} bytes (μ-law) = {base64_size} bytes (base64), encode={encode_time:.2f}ms, send={send_time:.2f}ms")
-                            handler.logger.info(f"[TTS_STREAM] Message format: event='media', track='outbound', payload_length={base64_size}")
-                        else:
-                            handler.logger.debug(f"[TTS_STREAM] OUTBOUND Chunk {chunk_count} sent: {chunk_bytes} bytes (μ-law), encode={encode_time:.2f}ms, send={send_time:.2f}ms")
-                    except Exception as send_error:
-                        handler.logger.error(f"[TTS_STREAM] ✗ Error sending audio chunk {chunk_count} to Twilio at {elapsed:.3f}s: {send_error}", exc_info=True)
-                        raise
+            # Encode to base64 for Twilio
+            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
             
-            total_time = time.time() - stream_start_time
-            handler.logger.info(f"[TTS_STREAM] ===== TTS stream completed for call {call_sid} =====")
-            handler.logger.info(f"[TTS_STREAM] Total chunks: {chunk_count}")
-            handler.logger.info(f"[TTS_STREAM] Total bytes: {total_bytes_sent} bytes (μ-law)")
-            handler.logger.info(f"[TTS_STREAM] Total time: {total_time:.3f}s")
-            handler.logger.info(f"[TTS_STREAM] Average chunk rate: {chunk_count / total_time:.2f} chunks/sec")
-            handler.logger.info(f"[TTS_STREAM] Text: '{text[:50]}...'")
-            return True
+            # Send entire audio to Twilio Media Streams
+            # For greeting messages, we can send it all at once
+            message = {
+                "event": "media",
+                "streamSid": stream_sid,
+                "media": {
+                    "track": "outbound",
+                    "payload": audio_base64
+                }
+            }
+            
+            try:
+                await twilio_websocket.send_json(message)
+                handler.logger.info(f"[TTS_STREAM] ✓ Audio sent to Twilio successfully ({audio_length} bytes)")
+                handler.logger.info(f"[TTS_STREAM] ===== TTS completed for call {call_sid} =====")
+                return True
+            except Exception as send_error:
+                handler.logger.error(f"[TTS_STREAM] ✗ Error sending audio to Twilio: {send_error}", exc_info=True)
+                return False
             
         except Exception as e:
             handler.logger.error(f"[TTS_STREAM] Error streaming TTS to Twilio: {e}", exc_info=True)
