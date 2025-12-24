@@ -267,12 +267,16 @@ async def handle_outbound_call(request: Request):
             wss_base_url = base_url
         
         stream_url = f"{wss_base_url}/media/{call_sid}"
-        stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
+        stream = Stream(url=stream_url, track='both_tracks', parameters={'call_sid': call_sid})
         start.stream(stream)
         logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for outbound call {call_sid}: {stream_url}")
 
     response.append(start)
     logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
+    
+    # Log the full TwiML response for debugging
+    twiml_str = str(response)
+    logger.info(f"[TWiML_DEBUG] TwiML response for call {call_sid}:\n{twiml_str}")
 
     # Generate greeting from system prompt and play via Deepgram TTS
     try:
@@ -380,7 +384,7 @@ async def handle_incoming_call_webhook(request: Request):
             wss_base_url = base_url
         
         stream_url = f"{wss_base_url}/media/{call_sid}"
-        stream = Stream(url=stream_url, parameters={'call_sid': call_sid})
+        stream = Stream(url=stream_url, track='both_tracks', parameters={'call_sid': call_sid})
         start.stream(stream)
         logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
         logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
