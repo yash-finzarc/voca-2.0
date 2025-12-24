@@ -10,7 +10,8 @@ from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcript
 from src.voca.api.state import app_state
 from src.voca.Twilio.twilio_config import get_twilio_config
 from src.voca.config import Config
-from src.voca.Twilio.twilio_voice import deepgramtts
+# COMMENTED OUT: Using Twilio's Say instead of Deepgram TTS
+# from src.voca.Twilio.twilio_voice import deepgramtts
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -286,24 +287,28 @@ async def handle_outbound_call(request: Request):
         logger.error(f"Error generating greeting: {e}")
         greeting = "Hello! This is VOCA calling. How can I help you today?"
 
+    # COMMENTED OUT: Using Twilio's Say instead of Deepgram TTS
     # Synthesize greeting to MP3 and play; fall back to <Say> on error
-    try:
-        tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
-        tts_dir.mkdir(parents=True, exist_ok=True)
-        tts_filename = "greeting.mp3"
-        tts_path = tts_dir / tts_filename
-        deepgramtts(greeting, filename=str(tts_path))
-
-        # Build absolute URL for the audio file
-        config = get_twilio_config()
-        webhook_url = config.get_webhook_url()
-        base_url_for_audio = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
-        audio_url = f"{base_url_for_audio}/audio/tts/{call_sid}/{tts_filename}"
-
-        response.play(audio_url)
-    except Exception as tts_err:
-        logger.error(f"[TTS] Greeting TTS failed, sending silent pause: {tts_err}")
-        response.pause(length=1)
+    # try:
+    #     tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
+    #     tts_dir.mkdir(parents=True, exist_ok=True)
+    #     tts_filename = "greeting.mp3"
+    #     tts_path = tts_dir / tts_filename
+    #     deepgramtts(greeting, filename=str(tts_path))
+    #
+    #     # Build absolute URL for the audio file
+    #     config = get_twilio_config()
+    #     webhook_url = config.get_webhook_url()
+    #     base_url_for_audio = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+    #     audio_url = f"{base_url_for_audio}/audio/tts/{call_sid}/{tts_filename}"
+    #
+    #     response.play(audio_url)
+    # except Exception as tts_err:
+    #     logger.error(f"[TTS] Greeting TTS failed, sending silent pause: {tts_err}")
+    #     response.pause(length=1)
+    
+    # Use Twilio's Say instead
+    response.say(greeting, voice='alice', language='en-IN')
 
     # Keep the call alive after greeting by enabling speech-only Gather with VAD.
     _append_vad_gather(response, base_url, call_sid, language="en-IN")
@@ -399,24 +404,28 @@ async def handle_incoming_call_webhook(request: Request):
         logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
         logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
 
+    # COMMENTED OUT: Using Twilio's Say instead of Deepgram TTS
     # Play welcome message via Deepgram TTS; fall back to <Say> on error
-    try:
-        tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
-        tts_dir.mkdir(parents=True, exist_ok=True)
-        tts_filename = "greeting.mp3"
-        tts_path = tts_dir / tts_filename
-        deepgramtts(greeting, filename=str(tts_path))
-
-        # Build absolute URL for the audio file
-        config = get_twilio_config()
-        webhook_url = config.get_webhook_url()
-        base_url_for_audio = webhook_url.replace('/webhook/voice', '')
-        audio_url = f"{base_url_for_audio}/audio/tts/{call_sid}/{tts_filename}"
-
-        response.play(audio_url)
-    except Exception as tts_err:
-        logger.error(f"[TTS] Welcome TTS failed, sending silent pause: {tts_err}")
-        response.pause(length=1)
+    # try:
+    #     tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
+    #     tts_dir.mkdir(parents=True, exist_ok=True)
+    #     tts_filename = "greeting.mp3"
+    #     tts_path = tts_dir / tts_filename
+    #     deepgramtts(greeting, filename=str(tts_path))
+    #
+    #     # Build absolute URL for the audio file
+    #     config = get_twilio_config()
+    #     webhook_url = config.get_webhook_url()
+    #     base_url_for_audio = webhook_url.replace('/webhook/voice', '')
+    #     audio_url = f"{base_url_for_audio}/audio/tts/{call_sid}/{tts_filename}"
+    #
+    #     response.play(audio_url)
+    # except Exception as tts_err:
+    #     logger.error(f"[TTS] Welcome TTS failed, sending silent pause: {tts_err}")
+    #     response.pause(length=1)
+    
+    # Use Twilio's Say instead
+    response.say(greeting, voice='alice', language='en-IN')
 
     # Keep the call alive after greeting by enabling speech-only Gather with VAD.
     _append_vad_gather(response, base_url, call_sid, language="en-IN")
@@ -463,22 +472,26 @@ async def handle_gather_continue(call_sid: str, request: Request):
             )
             logger.info(f"[GATHER] AI Response: {ai_response}")
 
+            # COMMENTED OUT: Using Twilio's Say instead of Deepgram TTS
             # TTS the AI response and play it
-            tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
-            tts_dir.mkdir(parents=True, exist_ok=True)
-            tts_filename = f"tts_{int(time.time() * 1000)}.mp3"
-            tts_path = tts_dir / tts_filename
-            try:
-                deepgramtts(ai_response, filename=str(tts_path))
-            except Exception as tts_err:
-                logger.error(f"[GATHER] TTS generation failed, sending silent pause: {tts_err}")
-                response.pause(length=1)
-            else:
-                config = get_twilio_config()
-                webhook_url = config.get_webhook_url()
-                base_url_for_audio = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
-                audio_url = f"{base_url_for_audio}/audio/tts/{call_sid}/{tts_filename}"
-                response.play(audio_url)
+            # tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
+            # tts_dir.mkdir(parents=True, exist_ok=True)
+            # tts_filename = f"tts_{int(time.time() * 1000)}.mp3"
+            # tts_path = tts_dir / tts_filename
+            # try:
+            #     deepgramtts(ai_response, filename=str(tts_path))
+            # except Exception as tts_err:
+            #     logger.error(f"[GATHER] TTS generation failed, sending silent pause: {tts_err}")
+            #     response.pause(length=1)
+            # else:
+            #     config = get_twilio_config()
+            #     webhook_url = config.get_webhook_url()
+            #     base_url_for_audio = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+            #     audio_url = f"{base_url_for_audio}/audio/tts/{call_sid}/{tts_filename}"
+            #     response.play(audio_url)
+            
+            # Use Twilio's Say instead
+            response.say(ai_response, voice='alice', language='en-IN')
         except Exception as e:
             logger.error(f"[GATHER] Error processing speech result: {e}", exc_info=True)
             response.pause(length=1)
@@ -565,28 +578,33 @@ async def handle_transcription(call_sid: str, request: Request):
                         unique_languages = list(set(all_languages))
                         logger.info(f"[CALL_INFO] Call {call_sid} - Detected Languages: {', '.join(unique_languages)}")
             
+            # COMMENTED OUT: Using Twilio's Say instead of Deepgram TTS
             # Synthesize TTS via Deepgram and serve as audio instead of <Say>
-            tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
-            tts_dir.mkdir(parents=True, exist_ok=True)
-            tts_filename = f"tts_{int(time.time() * 1000)}.mp3"
-            tts_path = tts_dir / tts_filename
-            try:
-                deepgramtts(ai_response, filename=str(tts_path))
-            except Exception as tts_err:
-                logger.error(f"[TRANSCRIPTION] TTS generation failed, sending silent pause: {tts_err}")
-                response = VoiceResponse()
-                response.pause(length=1)
-                return Response(content=str(response), media_type='text/xml')
-
-            # Build absolute URL for the audio file based on webhook base
-            config = get_twilio_config()
-            webhook_url = config.get_webhook_url()
-            base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
-            audio_url = f"{base_url}/audio/tts/{call_sid}/{tts_filename}"
-
-            # Generate TwiML response playing the synthesized audio
+            # tts_dir = Path(Config.audio_storage_dir) / "tts" / call_sid
+            # tts_dir.mkdir(parents=True, exist_ok=True)
+            # tts_filename = f"tts_{int(time.time() * 1000)}.mp3"
+            # tts_path = tts_dir / tts_filename
+            # try:
+            #     deepgramtts(ai_response, filename=str(tts_path))
+            # except Exception as tts_err:
+            #     logger.error(f"[TRANSCRIPTION] TTS generation failed, sending silent pause: {tts_err}")
+            #     response = VoiceResponse()
+            #     response.pause(length=1)
+            #     return Response(content=str(response), media_type='text/xml')
+            #
+            # # Build absolute URL for the audio file based on webhook base
+            # config = get_twilio_config()
+            # webhook_url = config.get_webhook_url()
+            # base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+            # audio_url = f"{base_url}/audio/tts/{call_sid}/{tts_filename}"
+            #
+            # # Generate TwiML response playing the synthesized audio
+            # response = VoiceResponse()
+            # response.play(audio_url)
+            
+            # Use Twilio's Say instead
             response = VoiceResponse()
-            response.play(audio_url)
+            response.say(ai_response, voice='alice', language='en-IN')
             
             # Return response - transcriptions will continue automatically
             return Response(content=str(response), media_type='text/xml')

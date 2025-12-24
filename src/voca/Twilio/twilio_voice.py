@@ -34,82 +34,84 @@ from src.voca.config import Config
 # Deepgram SDK changed the public API across versions; older releases do not
 # expose SpeakOptions at the package root. Fall back gracefully so the server
 # can start even if an older SDK is installed.
-try:
-    from deepgram import DeepgramClient, SpeakOptions  # SDK >=3.0
-except ImportError:  # Older SDKs
-    from deepgram import DeepgramClient  # type: ignore
-    SpeakOptions = None  # type: ignore
+# COMMENTED OUT: Using Twilio's Say instead of Deepgram TTS
+# try:
+#     from deepgram import DeepgramClient, SpeakOptions  # SDK >=3.0
+# except ImportError:  # Older SDKs
+#     from deepgram import DeepgramClient  # type: ignore
+#     SpeakOptions = None  # type: ignore
 
 
-def deepgramtts(text: str, filename: Optional[str] = None, model: str = "aura-2-odysseus-en") -> bytes:
-    """
-    Convert text to speech using Deepgram TTS.
-    
-    Args:
-        text: Text to convert to speech
-        filename: Optional filename to save audio file. If None, uses temporary file.
-        model: Deepgram TTS model (default: "aura-2-odysseus-en")
-    
-    Returns:
-        bytes: Audio data as bytes (MP3 format)
-    """
-    import tempfile
-    
-    try:
-        # Deepgram SDK v3+ requires keyword arg; older versions also accept it
-        deepgram = DeepgramClient(api_key=Config.deepgram_api_key)
-        
-        # Construct speak options; tolerate older SDKs that lack SpeakOptions
-        if SpeakOptions:
-            options = SpeakOptions(model=model)
-        else:
-            options = {"model": model}
-        
-        text_data = {
-            "text": text
-        }
-        
-        # Use temporary file if filename not provided
-        if not filename:
-            tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
-            filename = tmp_file.name
-            tmp_file.close()
-        
-        # Save audio to file; try SDK first, then REST fallback for compatibility
-        try:
-            deepgram.speak.v("1").save(
-                filename,
-                text_data,
-                options,
-            )
-        except Exception:
-            api_url = f"https://api.deepgram.com/v1/speak?model={model}"
-            headers = {
-                "Authorization": f"Token {Config.deepgram_api_key}",
-                "Content-Type": "application/json",
-            }
-            resp = requests.post(api_url, headers=headers, json=text_data, timeout=30)
-            resp.raise_for_status()
-            with open(filename, "wb") as f:
-                f.write(resp.content)
-        
-        # Read and return audio bytes
-        with open(filename, 'rb') as f:
-            audio_bytes = f.read()
-        
-        # Clean up temporary file if we created it
-        if filename.startswith(tempfile.gettempdir()):
-            try:
-                os.unlink(filename)
-            except:
-                pass
-        
-        return audio_bytes
-            
-    except Exception as e:
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error in deepgramtts: {e}", exc_info=True)
-        raise
+# COMMENTED OUT: Using Twilio's Say instead of Deepgram TTS
+# def deepgramtts(text: str, filename: Optional[str] = None, model: str = "aura-2-odysseus-en") -> bytes:
+#     """
+#     Convert text to speech using Deepgram TTS.
+#     
+#     Args:
+#         text: Text to convert to speech
+#         filename: Optional filename to save audio file. If None, uses temporary file.
+#         model: Deepgram TTS model (default: "aura-2-odysseus-en")
+#     
+#     Returns:
+#         bytes: Audio data as bytes (MP3 format)
+#     """
+#     import tempfile
+#     
+#     try:
+#         # Deepgram SDK v3+ requires keyword arg; older versions also accept it
+#         deepgram = DeepgramClient(api_key=Config.deepgram_api_key)
+#         
+#         # Construct speak options; tolerate older SDKs that lack SpeakOptions
+#         if SpeakOptions:
+#             options = SpeakOptions(model=model)
+#         else:
+#             options = {"model": model}
+#         
+#         text_data = {
+#             "text": text
+#         }
+#         
+#         # Use temporary file if filename not provided
+#         if not filename:
+#             tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+#             filename = tmp_file.name
+#             tmp_file.close()
+#         
+#         # Save audio to file; try SDK first, then REST fallback for compatibility
+#         try:
+#             deepgram.speak.v("1").save(
+#                 filename,
+#                 text_data,
+#                 options,
+#             )
+#         except Exception:
+#             api_url = f"https://api.deepgram.com/v1/speak?model={model}"
+#             headers = {
+#                 "Authorization": f"Token {Config.deepgram_api_key}",
+#                 "Content-Type": "application/json",
+#             }
+#             resp = requests.post(api_url, headers=headers, json=text_data, timeout=30)
+#             resp.raise_for_status()
+#             with open(filename, "wb") as f:
+#                 f.write(resp.content)
+#         
+#         # Read and return audio bytes
+#         with open(filename, 'rb') as f:
+#             audio_bytes = f.read()
+#         
+#         # Clean up temporary file if we created it
+#         if filename.startswith(tempfile.gettempdir()):
+#             try:
+#                 os.unlink(filename)
+#             except:
+#                 pass
+#         
+#         return audio_bytes
+#             
+#     except Exception as e:
+#         logger = logging.getLogger(__name__)
+#         logger.error(f"Error in deepgramtts: {e}", exc_info=True)
+#         raise
 
 
 class TwilioVoiceHandler:
