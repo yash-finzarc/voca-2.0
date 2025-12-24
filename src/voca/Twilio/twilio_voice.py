@@ -165,8 +165,10 @@ async def stream_tts_to_twilio(
                     
                     # Send to Twilio Media Streams
                     # CRITICAL: Must include "track": "outbound" when using track="both_tracks"
+                    # CRITICAL: Must include "streamSid" at top level
                     message = {
                         "event": "media",
+                        "streamSid": stream_sid,
                         "media": {
                             "track": "outbound",
                             "payload": audio_base64

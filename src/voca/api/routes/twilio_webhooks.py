@@ -882,8 +882,11 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                         frame_num = handle_webrtc_websocket._media_frame_count[call_sid]
                         elapsed = timestamp - handle_webrtc_websocket._first_frame_time[call_sid]
                         
-                        if frame_num <= 5 or frame_num % 50 == 0:  # Log first 5, then every 50th
-                            logger.info(f"[WebRTC] ✓ Inbound media frame #{frame_num} received at {timestamp:.3f}s (elapsed: {elapsed:.3f}s): {payload_size} bytes (base64)")
+                        # Only log first 3 frames at INFO, rest at DEBUG (reduced verbosity)
+                        if frame_num <= 3:
+                            logger.info(f"[WebRTC] ✓ Inbound media frame #{frame_num} received: {payload_size} bytes (base64)")
+                        else:
+                            logger.debug(f"[WebRTC] Inbound media frame #{frame_num}: {payload_size} bytes (base64)")
                         
                         # Decode base64 audio (μ-law, 8kHz from Twilio)
                         decode_start = time.time()
