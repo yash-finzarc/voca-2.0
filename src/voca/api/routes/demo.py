@@ -86,7 +86,7 @@ async def trigger_medical_call(request: MedicalDemoRequest, req: Request):
     demo_id = str(uuid.uuid4())
     
     # 1. Compose the greeting
-    greeting_text = "Hello! this is a call regarding your recent health checkup."
+    greeting_text = "Hello!"
 
     # 2. Pre-generate the greeting audio (PCM16)
     try:
