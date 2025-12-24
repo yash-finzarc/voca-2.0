@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, JSONResponse
-from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription, Gather, Pause
+from twilio.twiml.voice_response import VoiceResponse, Start, Transcription, Gather, Pause
 import numpy as np
 
 from src.voca.api.state import app_state
@@ -282,15 +282,11 @@ async def handle_outbound_call(request: Request):
     # NOTE: For testing, you can change track to 'inbound_track' to only receive audio
     # For production, use 'both_tracks' to send and receive audio
     track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')  # Default: both_tracks, can be 'inbound_track' for testing
-    stream = Stream(
-        url=stream_url, 
-        track=track_mode
-    )
     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
     logger.info(f"[WebRTC] Track mode: {track_mode} (set TWILIO_STREAM_TRACK env var to change)")
     logger.info(f"[TWiML_DEBUG] Stream track parameter: {track_mode}")
     start = response.start()
-    start.stream(stream)
+    start.stream(url=stream_url, track=track_mode)
     
     # Add a Pause to keep the call active while Media Streams connects
     # Without this, Twilio might end the call immediately after Connect
@@ -426,13 +422,9 @@ async def handle_incoming_call_webhook(request: Request):
     # NOTE: For testing, you can change track to 'inbound_track' to only receive audio
     # For production, use 'both_tracks' to send and receive audio
     track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')  # Default: both_tracks, can be 'inbound_track' for testing
-    stream = Stream(
-        url=stream_url, 
-        track=track_mode
-    )
     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
     start = response.start()
-    start.stream(stream)
+    start.stream(url=stream_url, track=track_mode)
     
     # Add a Pause to keep the call active while Media Streams connects
     response.append(Pause(length=30))  # 30 second pause to keep call active
