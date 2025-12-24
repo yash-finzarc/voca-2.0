@@ -314,6 +314,40 @@ async def handle_outbound_call(request: Request):
     return Response(content=twiml_xml, media_type="text/xml")
 
 
+@router.post("/call/status")
+async def handle_call_status_callback(request: Request):
+    """Handle call status callbacks from Twilio to track call state."""
+    form_data = await request.form()
+    call_sid = form_data.get("CallSid")
+    call_status = form_data.get("CallStatus")
+    call_duration = form_data.get("CallDuration", "0")
+    
+    logger.info(f"[CALL_STATUS] ===== Call Status Callback =====")
+    logger.info(f"[CALL_STATUS] Call SID: {call_sid}")
+    logger.info(f"[CALL_STATUS] Status: {call_status}")
+    logger.info(f"[CALL_STATUS] Duration: {call_duration}s")
+    logger.info(f"[CALL_STATUS] All form data: {dict(form_data)}")
+    
+    # Update call state if we have it
+    twilio_manager = app_state.get_twilio_manager()
+    if twilio_manager and call_sid:
+        voice_handler = twilio_manager.voice_handler
+        if call_sid in voice_handler.active_calls:
+            voice_handler.active_calls[call_sid]["status"] = call_status
+            voice_handler.active_calls[call_sid]["duration"] = call_duration
+            logger.info(f"[CALL_STATUS] Updated call state for {call_sid}: {call_status}")
+    
+    # Log important status changes
+    if call_status == "answered":
+        logger.info(f"[CALL_STATUS] ⚠️  Call {call_sid} was ANSWERED - Media Streams should connect now!")
+    elif call_status == "completed":
+        logger.info(f"[CALL_STATUS] ⚠️  Call {call_sid} COMPLETED after {call_duration}s")
+    elif call_status in ["busy", "no-answer", "failed", "canceled"]:
+        logger.warning(f"[CALL_STATUS] ⚠️  Call {call_sid} ended with status: {call_status} - Media Streams will NOT connect")
+    
+    return Response(content="OK", media_type="text/plain")
+
+
 @router.post("/webhook/voice")
 async def handle_incoming_call_webhook(request: Request):
     """Handle incoming Twilio call webhook using WebRTC-first architecture."""

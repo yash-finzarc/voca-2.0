@@ -973,11 +973,18 @@ class TwilioVoiceHandler:
         """Make an outbound call using Twilio."""
         try:
             config = get_twilio_config()
+            # Get base URL for callbacks
+            base_url = config.get_webhook_url().replace('/webhook/voice', '').replace('/outbound', '')
+            status_callback_url = f"{base_url}/call/status"
+            
             call = self.client.calls.create(
                 to=to_number,
                 from_=config.phone_number,
-                url=f"{config.get_webhook_url().replace('/webhook/voice', '')}/outbound",
-                method='POST'
+                url=f"{base_url}/outbound",
+                method='POST',
+                status_callback=status_callback_url,
+                status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+                status_callback_method='POST'
             )
             
             call_sid = call.sid
