@@ -34,8 +34,19 @@ app.add_middleware(
     max_age=3600,
 )
 
+# Add middleware to log WebSocket connection attempts
+@app.middleware("http")
+async def log_websocket_attempts(request, call_next):
+    """Log WebSocket upgrade attempts for debugging."""
+    if request.url.path.startswith("/media/"):
+        logger.info(f"[WEBSOCKET_DEBUG] WebSocket upgrade attempt: {request.method} {request.url.path}")
+        logger.info(f"[WEBSOCKET_DEBUG] Headers: {dict(request.headers)}")
+    response = await call_next(request)
+    return response
+
 for router in routers:
     app.include_router(router)
+
 
 
 # Model info logger removed - get_model_info() function has been deleted
@@ -75,6 +86,13 @@ async def startup_event():
     """Initialize components on startup."""
     logger = logging.getLogger(__name__)
     logger.info("VOCA API server starting up")
+    
+    # Log Media Streams WebSocket routes for debugging
+    logger.info("[ROUTE_DEBUG] Checking for Media Streams WebSocket routes:")
+    for route in app.routes:
+        if hasattr(route, 'path') and '/media/' in route.path:
+            route_type = "WebSocket" if hasattr(route, 'endpoint') and 'websocket' in str(type(route)).lower() else "HTTP"
+            logger.info(f"[ROUTE_DEBUG] Found Media Streams route: {route.path} ({route_type})")
     
     # Disable Twilio HTTP client logging to reduce log noise
     logging.getLogger("twilio.http_client").setLevel(logging.WARNING)

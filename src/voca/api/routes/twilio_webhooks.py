@@ -565,20 +565,44 @@ async def handle_transcription(call_sid: str, request: Request):
 # Removed /audio/tts endpoint - TTS now uses streaming via Media Streams WebSocket (no file storage)
 
 
+@router.get("/media/{call_sid}/test")
+async def test_media_stream_endpoint(call_sid: str):
+    """Test endpoint to verify Media Streams route is accessible."""
+    return {
+        "status": "ok",
+        "call_sid": call_sid,
+        "message": "Media Streams endpoint is accessible",
+        "websocket_url": f"wss://voca2.duckdns.org/media/{call_sid}",
+        "note": "WebSocket endpoint should be at /media/{call_sid}"
+    }
+
+
 @router.websocket("/media/{call_sid}")
 async def handle_media_stream_websocket(websocket: WebSocket, call_sid: str):
     """Handle Twilio Media Streams via WebSocket in main API app."""
     from fastapi import WebSocketDisconnect
     
+    logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket connection attempt for call {call_sid}")
+    logger.info(f"[AUDIO_DEBUG] WebSocket client: {websocket.client if hasattr(websocket, 'client') else 'N/A'}")
+    logger.info(f"[AUDIO_DEBUG] WebSocket URL: {websocket.url if hasattr(websocket, 'url') else 'N/A'}")
+    
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
-        await websocket.close()
         logger.error(f"[AUDIO_DEBUG] Twilio manager not available for Media Stream WebSocket")
+        try:
+            await websocket.close()
+        except:
+            pass
         return
     
     voice_handler = twilio_manager.voice_handler
-    await websocket.accept()
-    logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket connected for call {call_sid}")
+    
+    try:
+        await websocket.accept()
+        logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket connected for call {call_sid}")
+    except Exception as e:
+        logger.error(f"[AUDIO_DEBUG] Error accepting WebSocket for call {call_sid}: {e}", exc_info=True)
+        return
     
     try:
         while True:
