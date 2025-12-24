@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
-from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription, Gather, Pause
+from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription, Gather, Pause, Connect
 
 from src.voca.api.state import app_state
 from src.voca.Twilio.twilio_config import get_twilio_config
@@ -252,31 +252,31 @@ async def handle_outbound_call(request: Request):
         languageCode='en-IN'   # English (India) language
     )
     start.append(transcription)
-
-    # Enable Media Streams for streaming TTS (always enabled for streaming)
-    # Media Streams are required for bidirectional audio streaming
-    if True:  # Always enable Media Streams for TTS streaming
-        # Convert to WebSocket URL (wss://)
-        if base_url.startswith('http://'):
-            wss_base_url = base_url.replace('http://', 'wss://')
-        elif base_url.startswith('https://'):
-            wss_base_url = base_url.replace('https://', 'wss://')
-        elif not base_url.startswith('wss://'):
-            wss_base_url = f"wss://{base_url.lstrip('/')}"
-        else:
-            wss_base_url = base_url
-        
-        stream_url = f"{wss_base_url}/media/{call_sid}"
-        # Stream does not support statusCallback - use minimal configuration
-        stream = Stream(
-            url=stream_url, 
-            track='both_tracks', 
-            parameters={'call_sid': call_sid}
-        )
-        start.append(stream)
-        logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for outbound call {call_sid}: {stream_url}")
-
     response.append(start)
+
+    # Enable Media Streams using <Connect><Stream> for streaming TTS
+    # <Connect><Stream> is the correct method for WebSocket-based Media Streams
+    # Convert to WebSocket URL (wss://)
+    if base_url.startswith('http://'):
+        wss_base_url = base_url.replace('http://', 'wss://')
+    elif base_url.startswith('https://'):
+        wss_base_url = base_url.replace('https://', 'wss://')
+    elif not base_url.startswith('wss://'):
+        wss_base_url = f"wss://{base_url.lstrip('/')}"
+    else:
+        wss_base_url = base_url
+    
+    stream_url = f"{wss_base_url}/media/{call_sid}"
+    # Use <Connect><Stream> for Media Streams WebSocket connection
+    connect = Connect()
+    stream = Stream(
+        url=stream_url, 
+        track='both_tracks', 
+        parameters={'call_sid': call_sid}
+    )
+    connect.append(stream)
+    response.append(connect)
+    logger.info(f"[AUDIO_DEBUG] Enabled Media Stream using <Connect><Stream> for outbound call {call_sid}: {stream_url}")
     logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
     
     # Add a very short pause to trigger audio activity and Media Streams connection
@@ -303,6 +303,11 @@ async def handle_outbound_call(request: Request):
     # Media Streams WebSocket connects asynchronously after TwiML response
     voice_handler.pending_greetings[call_sid] = greeting
     logger.info(f"[TTS] Stored greeting for call {call_sid}, will send when Media Streams connect")
+    
+    # IMPORTANT: Media Streams may only connect when call is answered (in-progress status)
+    # If Media Streams don't connect, the greeting will remain in pending_greetings
+    # and will be sent once the WebSocket connects (which happens after call is answered)
+    logger.info(f"[TTS] Note: Media Streams WebSocket will connect when call is answered")
 
     # Keep the call alive after greeting by enabling speech-only Gather with VAD.
     _append_vad_gather(response, base_url, call_sid, language="en-IN")
@@ -378,29 +383,30 @@ async def handle_incoming_call_webhook(request: Request):
     logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for call {call_sid}")
     logger.info(f"[TRANSCRIPTION] Callback URL: {transcription_callback_url}")
 
-    # Enable Media Streams for streaming TTS (always enabled for streaming)
-    # Media Streams are required for bidirectional audio streaming
-    if True:  # Always enable Media Streams for TTS streaming
-        # Twilio Media Streams require WebSocket (wss://) not HTTP
-        # Convert http:// to wss:// or https:// to wss://
-        if base_url.startswith('http://'):
-            wss_base_url = base_url.replace('http://', 'wss://')
-        elif base_url.startswith('https://'):
-            wss_base_url = base_url.replace('https://', 'wss://')
-        elif not base_url.startswith('wss://'):
-            wss_base_url = f"wss://{base_url.lstrip('/')}"
-        else:
-            wss_base_url = base_url
-        
-        stream_url = f"{wss_base_url}/media/{call_sid}"
-        # Stream does not support statusCallback - use minimal configuration
-        stream = Stream(
-            url=stream_url, 
-            track='both_tracks', 
-            parameters={'call_sid': call_sid}
-        )
-        start.append(stream)
-        logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}: {stream_url}")
+    # Enable Media Streams using <Connect><Stream> for streaming TTS
+    # <Connect><Stream> is the correct method for WebSocket-based Media Streams
+    # Twilio Media Streams require WebSocket (wss://) not HTTP
+    # Convert http:// to wss:// or https:// to wss://
+    if base_url.startswith('http://'):
+        wss_base_url = base_url.replace('http://', 'wss://')
+    elif base_url.startswith('https://'):
+        wss_base_url = base_url.replace('https://', 'wss://')
+    elif not base_url.startswith('wss://'):
+        wss_base_url = f"wss://{base_url.lstrip('/')}"
+    else:
+        wss_base_url = base_url
+    
+    stream_url = f"{wss_base_url}/media/{call_sid}"
+    # Use <Connect><Stream> for Media Streams WebSocket connection
+    connect = Connect()
+    stream = Stream(
+        url=stream_url, 
+        track='both_tracks', 
+        parameters={'call_sid': call_sid}
+    )
+    connect.append(stream)
+    response.append(connect)
+    logger.info(f"[AUDIO_DEBUG] Enabled Media Stream using <Connect><Stream> for call {call_sid}: {stream_url}")
 
     # Store greeting to send when Media Streams WebSocket connects
     # Media Streams WebSocket connects asynchronously after TwiML response
