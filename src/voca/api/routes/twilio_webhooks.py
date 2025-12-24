@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
-from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription, Gather
+from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription, Gather, Pause
 
 from src.voca.api.state import app_state
 from src.voca.Twilio.twilio_config import get_twilio_config
@@ -282,6 +282,10 @@ async def handle_outbound_call(request: Request):
 
     response.append(start)
     logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
+    
+    # Add a very short pause to trigger audio activity and Media Streams connection
+    # Media Streams may only connect when there's audio activity
+    response.append(Pause(length=0.1))
     
     # Log the full TwiML response for debugging
     twiml_str = str(response)
@@ -590,12 +594,14 @@ async def handle_transcription(call_sid: str, request: Request):
 @router.get("/media/{call_sid}/test")
 async def test_media_stream_endpoint(call_sid: str):
     """Test endpoint to verify Media Streams route is accessible."""
+    logger.info(f"[MEDIA_STREAM_TEST] Test endpoint accessed for call {call_sid}")
     return {
         "status": "ok",
         "call_sid": call_sid,
         "message": "Media Streams endpoint is accessible",
         "websocket_url": f"wss://voca2.duckdns.org/media/{call_sid}",
-        "note": "WebSocket endpoint should be at /media/{call_sid}"
+        "note": "WebSocket endpoint should be at /media/{call_sid}",
+        "test_time": datetime.now(timezone.utc).isoformat()
     }
 
 
