@@ -268,7 +268,7 @@ async def handle_outbound_call(request: Request):
         
         stream_url = f"{wss_base_url}/media/{call_sid}"
         stream = Stream(url=stream_url, track='both_tracks', parameters={'call_sid': call_sid})
-        start.stream(stream)
+        start.append(stream)
         logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for outbound call {call_sid}: {stream_url}")
 
     response.append(start)
@@ -385,7 +385,7 @@ async def handle_incoming_call_webhook(request: Request):
         
         stream_url = f"{wss_base_url}/media/{call_sid}"
         stream = Stream(url=stream_url, track='both_tracks', parameters={'call_sid': call_sid})
-        start.stream(stream)
+        start.append(stream)
         logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
         logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
 
