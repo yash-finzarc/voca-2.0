@@ -190,11 +190,17 @@ class TwilioVoiceHandler:
         # Deepgram TTS WebSocket connections for streaming TTS
         self.deepgram_tts_connections: Dict[str, Any] = {}  # call_sid -> Deepgram TTS connection
         
+        # Deepgram STT WebSocket connections for real-time transcription
+        self.deepgram_stt_connections: Dict[str, Any] = {}  # call_sid -> Deepgram STT connection
+        
         # Twilio Media Streams WebSocket connections for sending audio back
         self.twilio_media_websockets: Dict[str, Dict[str, Any]] = {}  # call_sid -> {websocket, streamSid}
         
         # Pending greetings to send when Media Streams connect
         self.pending_greetings: Dict[str, str] = {}  # call_sid -> greeting_text
+        
+        # WebRTC sessions (for WebRTC-first architecture)
+        self.webrtc_sessions: Dict[str, Any] = {}  # call_sid -> WebRTCSession
         
     def start_webhook_server(self, host='0.0.0.0', port=5000):
         """Start FastAPI server to handle Twilio webhooks with real-time audio streaming."""
