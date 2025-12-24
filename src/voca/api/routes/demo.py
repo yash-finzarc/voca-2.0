@@ -87,9 +87,9 @@ async def trigger_medical_call(request: MedicalDemoRequest, req: Request):
     
     # 1. Compose the personalized greeting
     red_results = [r.name for r in request.test_results if r.status == TestStatus.RED]
-    greeting_text = f"Namaste {request.patient_name}, main aapka medical assistant hoon. "
+    greeting_text = f"Namaste, main aapka medical assistant hoon. "
     if red_results:
-        greeting_text += f"Maine aapki reports dekhi hain, aur aapka {', '.join(red_results)} thoda badha hua hai. "
+        greeting_text += f"Maine aapki reports dekhi hain, jinke liye yeh call ki ja rahi hai "
     else:
         greeting_text += "Maine aapki reports dekhi hain, sab theek lag raha hai. "
     greeting_text += "Kya aap is baare mein kuch poochna chahte hain?"
