@@ -85,8 +85,14 @@ async def trigger_medical_call(request: MedicalDemoRequest, req: Request):
     """Initiate a medical demo call with pre-generated greeting."""
     demo_id = str(uuid.uuid4())
     
-    # 1. Compose the greeting
-    greeting_text = "Hello!"
+    # 1. Compose the personalized greeting
+    red_results = [r.name for r in request.test_results if r.status == TestStatus.RED]
+    greeting_text = f"Namaste {request.patient_name}, main aapka medical assistant hoon. "
+    if red_results:
+        greeting_text += f"Maine aapki reports dekhi hain, aur aapka {', '.join(red_results)} thoda badha hua hai. "
+    else:
+        greeting_text += "Maine aapki reports dekhi hain, sab theek lag raha hai. "
+    greeting_text += "Kya aap is baare mein kuch poochna chahte hain?"
 
     # 2. Pre-generate the greeting audio (PCM16)
     try:
