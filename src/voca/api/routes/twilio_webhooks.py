@@ -564,3 +564,99 @@ async def handle_transcription(call_sid: str, request: Request):
 
 # Removed /audio/tts endpoint - TTS now uses streaming via Media Streams WebSocket (no file storage)
 
+
+@router.websocket("/media/{call_sid}")
+async def handle_media_stream_websocket(websocket: WebSocket, call_sid: str):
+    """Handle Twilio Media Streams via WebSocket in main API app."""
+    from fastapi import WebSocketDisconnect
+    
+    twilio_manager = app_state.get_twilio_manager()
+    if not twilio_manager:
+        await websocket.close()
+        logger.error(f"[AUDIO_DEBUG] Twilio manager not available for Media Stream WebSocket")
+        return
+    
+    voice_handler = twilio_manager.voice_handler
+    await websocket.accept()
+    logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket connected for call {call_sid}")
+    
+    try:
+        while True:
+            # Receive JSON messages from Twilio Media Streams
+            data = await websocket.receive_json()
+            event = data.get('event')
+            
+            if event == 'connected':
+                logger.info(f"[AUDIO_DEBUG] Media stream connected for call {call_sid}")
+            elif event == 'start':
+                logger.info(f"[AUDIO_DEBUG] Media stream started for call {call_sid}")
+                # Store Twilio Media Streams WebSocket and streamSid for sending audio back
+                stream_sid = data.get('start', {}).get('streamSid')
+                if stream_sid:
+                    voice_handler.twilio_media_websockets[call_sid] = {
+                        'websocket': websocket,
+                        'streamSid': stream_sid
+                    }
+                    logger.info(f"[TTS_STREAM] Stored Twilio Media Stream for call {call_sid}, streamSid: {stream_sid}")
+                    
+                    # Send pending greeting if available
+                    if call_sid in voice_handler.pending_greetings:
+                        greeting = voice_handler.pending_greetings[call_sid]
+                        logger.info(f"[TTS_STREAM] Sending pending greeting for call {call_sid}")
+                        try:
+                            await stream_tts_to_twilio(voice_handler, call_sid, greeting)
+                            del voice_handler.pending_greetings[call_sid]
+                        except Exception as e:
+                            logger.error(f"[TTS_STREAM] Error sending pending greeting: {e}", exc_info=True)
+                else:
+                    logger.warning(f"[TTS_STREAM] No streamSid in start event for call {call_sid}")
+            elif event == 'media':
+                # Extract base64 audio payload (incoming audio from caller)
+                media_payload = data.get('media', {}).get('payload')
+                if media_payload:
+                    # Process incoming audio if needed (currently handled by transcription callbacks)
+                    pass
+            elif event == 'stop':
+                logger.info(f"[AUDIO_DEBUG] Media stream stopped for call {call_sid}")
+                # Clean up Deepgram TTS connection
+                if call_sid in voice_handler.deepgram_tts_connections:
+                    try:
+                        voice_handler.deepgram_tts_connections[call_sid].finish()
+                        logger.info(f"[TTS_STREAM] Closed Deepgram TTS connection for call {call_sid}")
+                    except Exception as e:
+                        logger.error(f"[TTS_STREAM] Error closing Deepgram TTS connection: {e}")
+                    del voice_handler.deepgram_tts_connections[call_sid]
+                # Clean up Twilio Media Streams connection
+                if call_sid in voice_handler.twilio_media_websockets:
+                    del voice_handler.twilio_media_websockets[call_sid]
+                    logger.info(f"[TTS_STREAM] Cleaned up Twilio Media Stream for call {call_sid}")
+                # Clean up pending greeting
+                if call_sid in voice_handler.pending_greetings:
+                    del voice_handler.pending_greetings[call_sid]
+                break
+                
+    except WebSocketDisconnect:
+        logger.info(f"[AUDIO_DEBUG] Media Stream WebSocket disconnected for call {call_sid}")
+        # Clean up Deepgram TTS connection
+        if call_sid in voice_handler.deepgram_tts_connections:
+            try:
+                voice_handler.deepgram_tts_connections[call_sid].finish()
+                logger.info(f"[TTS_STREAM] Closed Deepgram TTS connection for call {call_sid}")
+            except Exception as e:
+                logger.error(f"[TTS_STREAM] Error closing Deepgram TTS connection: {e}")
+            del voice_handler.deepgram_tts_connections[call_sid]
+        # Clean up Twilio Media Streams connection
+        if call_sid in voice_handler.twilio_media_websockets:
+            del voice_handler.twilio_media_websockets[call_sid]
+            logger.info(f"[TTS_STREAM] Cleaned up Twilio Media Stream for call {call_sid}")
+        # Clean up pending greeting
+        if call_sid in voice_handler.pending_greetings:
+            del voice_handler.pending_greetings[call_sid]
+    except Exception as e:
+        logger.error(f"[AUDIO_DEBUG] Error in Media Stream WebSocket: {e}", exc_info=True)
+        # Clean up on error
+        if call_sid in voice_handler.twilio_media_websockets:
+            del voice_handler.twilio_media_websockets[call_sid]
+        if call_sid in voice_handler.pending_greetings:
+            del voice_handler.pending_greetings[call_sid]
+
