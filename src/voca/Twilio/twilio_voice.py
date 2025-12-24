@@ -93,28 +93,28 @@ async def stream_tts_to_twilio(
     model: str = "aura-2-odysseus-en"
 ) -> bool:
     """
-    Stream TTS text to Twilio via Deepgram TTS WebSocket and Twilio Media Streams.
+    Stream TTS text to Twilio via Deepgram TTS and Twilio Media Streams.
     
     Flow:
-    1. Get or create Deepgram TTS WebSocket connection
-    2. Send text to Deepgram
-    3. Receive audio chunks from Deepgram
-    4. Convert format if needed (linear16 → μ-law)
-    5. Send to Twilio Media Streams WebSocket
+    1. Get Twilio Media Streams WebSocket connection (must have received 'start' event)
+    2. Get audio from Deepgram TTS (μ-law @ 8kHz)
+    3. Chunk audio into EXACTLY 160-byte frames (20ms at 8kHz)
+    4. Base64 encode each frame
+    5. Send frames with ~20ms pacing between each
     
     Args:
         handler: TwilioVoiceHandler instance
         call_sid: Call SID for the call
         text: Text to synthesize and stream
-        model: Deepgram TTS model (default: "aura-2-thalia-en")
+        model: Deepgram TTS model (default: "aura-2-odysseus-en")
     
     Returns:
         bool: True if successful, False otherwise
     """
     try:
-        # Check if Twilio Media Streams WebSocket is available
+        # Check if Twilio Media Streams WebSocket is available (must have received 'start' event)
         if call_sid not in handler.twilio_media_websockets:
-            handler.logger.warning(f"[TTS_STREAM] No Twilio Media Stream available for call {call_sid}")
+            handler.logger.warning(f"[TTS_STREAM] No Twilio Media Stream available for call {call_sid} (waiting for 'start' event)")
             return False
         
         twilio_stream = handler.twilio_media_websockets[call_sid]
@@ -122,7 +122,6 @@ async def stream_tts_to_twilio(
         stream_sid = twilio_stream['streamSid']
         
         # Use Deepgram REST API with streaming parameters (μ-law, 8kHz)
-        # This is more reliable than WebSocket for now
         try:
             api_url = f"https://api.deepgram.com/v1/speak?model={model}&encoding=mulaw&sample_rate=8000&container=none"
             headers = {
@@ -140,27 +139,46 @@ async def stream_tts_to_twilio(
             resp = requests.post(api_url, headers=headers, json=text_data, timeout=30)
             resp.raise_for_status()
             
-            # Get the audio bytes
+            # Get the audio bytes (μ-law encoded, 8kHz)
             audio_data = resp.content
             audio_length = len(audio_data)
             audio_duration_sec = audio_length / 8000.0  # μ-law is 1 byte per sample at 8kHz
             
-            handler.logger.info(f"[TTS_STREAM] ✓ Audio received: {audio_length} bytes ({audio_duration_sec:.2f}s)")
+            handler.logger.info(f"[TTS_STREAM] ✓ Audio received: {audio_length} bytes ({audio_duration_sec:.2f}s @ 8kHz μ-law)")
             
-            # Chunk audio into 160-byte pieces (20ms at 8kHz) and send quickly
-            # Simple chunking without delays - just send all chunks
-            chunk_size = 160  # 20ms of audio
+            # CRITICAL: Chunk audio into EXACTLY 160-byte frames (20ms at 8kHz)
+            # Twilio Media Streams requires exactly 160 bytes per frame
+            FRAME_SIZE = 160  # 20ms of audio at 8kHz (8000 * 0.02 = 160 samples = 160 bytes for μ-law)
+            FRAME_INTERVAL_MS = 20.0  # 20ms between frames
+            FRAME_INTERVAL_SEC = FRAME_INTERVAL_MS / 1000.0
+            
+            # Calculate number of complete frames
+            num_complete_frames = audio_length // FRAME_SIZE
+            remainder = audio_length % FRAME_SIZE
+            
+            handler.logger.info(f"[TTS_STREAM] Audio will be sent as {num_complete_frames} complete frames" + 
+                              (f" + 1 padded frame" if remainder > 0 else ""))
+            
             chunk_count = 0
+            total_frames_to_send = num_complete_frames + (1 if remainder > 0 else 0)
+            last_frame_time = None
+            stream_start_time = time.time()
             
-            for i in range(0, audio_length, chunk_size):
-                chunk = audio_data[i:i + chunk_size]
-                if not chunk:
-                    break
+            # Send complete 160-byte frames
+            for i in range(num_complete_frames):
+                start_idx = i * FRAME_SIZE
+                end_idx = start_idx + FRAME_SIZE
+                chunk = audio_data[start_idx:end_idx]
+                
+                # Verify frame is exactly 160 bytes
+                if len(chunk) != FRAME_SIZE:
+                    handler.logger.error(f"[TTS_STREAM] ✗ Frame {chunk_count} is {len(chunk)} bytes, expected {FRAME_SIZE} bytes")
+                    return False
                 
                 # Encode chunk to base64
                 audio_base64 = base64.b64encode(chunk).decode('utf-8')
                 
-                # Send chunk to Twilio Media Streams
+                # Send chunk to Twilio Media Streams with correct format
                 message = {
                     "event": "media",
                     "streamSid": stream_sid,
@@ -171,13 +189,88 @@ async def stream_tts_to_twilio(
                 }
                 
                 try:
+                    # Track timing for pacing
+                    frame_start_time = time.time()
+                    
                     await twilio_websocket.send_json(message)
                     chunk_count += 1
+                    
+                    # Calculate time since last frame and sleep if needed (except for first frame)
+                    if last_frame_time is not None:
+                        elapsed_ms = (frame_start_time - last_frame_time) * 1000
+                        if elapsed_ms < FRAME_INTERVAL_MS:
+                            sleep_time = FRAME_INTERVAL_SEC - (elapsed_ms / 1000.0)
+                            await asyncio.sleep(sleep_time)
+                        # Log timing every 10 frames
+                        if chunk_count % 10 == 0:
+                            handler.logger.debug(f"[TTS_STREAM] Frame {chunk_count}: {elapsed_ms:.2f}ms since previous frame")
+                    
+                    # Log frame details (first frame, every 10th frame, and last frame)
+                    if chunk_count == 1 or chunk_count % 10 == 0 or chunk_count == total_frames_to_send:
+                        handler.logger.info(f"[TTS_STREAM] ✓ Sent frame {chunk_count}/{total_frames_to_send}: {len(chunk)} bytes (raw) = {len(audio_base64)} bytes (base64)")
+                    
+                    last_frame_time = frame_start_time
+                    
                 except Exception as send_error:
-                    handler.logger.error(f"[TTS_STREAM] ✗ Error sending chunk {chunk_count} to Twilio: {send_error}", exc_info=True)
+                    handler.logger.error(f"[TTS_STREAM] ✗ Error sending frame {chunk_count} to Twilio: {send_error}", exc_info=True)
                     return False
             
-            handler.logger.info(f"[TTS_STREAM] ✓ Audio sent to Twilio successfully ({chunk_count} chunks, {audio_length} bytes)")
+            # Handle remainder: pad last chunk to exactly 160 bytes with μ-law silence (0xFF)
+            if remainder > 0:
+                start_idx = num_complete_frames * FRAME_SIZE
+                chunk = audio_data[start_idx:]
+                
+                # Pad to exactly 160 bytes with μ-law silence (0xFF = silence in μ-law)
+                padding_needed = FRAME_SIZE - len(chunk)
+                padded_chunk = chunk + bytes([0xFF] * padding_needed)
+                
+                # Verify padded frame is exactly 160 bytes
+                if len(padded_chunk) != FRAME_SIZE:
+                    handler.logger.error(f"[TTS_STREAM] ✗ Padded frame is {len(padded_chunk)} bytes, expected {FRAME_SIZE} bytes")
+                    return False
+                
+                handler.logger.info(f"[TTS_STREAM] Padded last frame from {len(chunk)} to {FRAME_SIZE} bytes with μ-law silence")
+                
+                # Encode padded chunk to base64
+                audio_base64 = base64.b64encode(padded_chunk).decode('utf-8')
+                
+                # Send padded chunk to Twilio Media Streams
+                message = {
+                    "event": "media",
+                    "streamSid": stream_sid,
+                    "media": {
+                        "track": "outbound",
+                        "payload": audio_base64
+                    }
+                }
+                
+                try:
+                    frame_start_time = time.time()
+                    
+                    await twilio_websocket.send_json(message)
+                    chunk_count += 1
+                    
+                    handler.logger.info(f"[TTS_STREAM] ✓ Sent frame {chunk_count}/{total_frames_to_send}: {len(padded_chunk)} bytes (raw, padded) = {len(audio_base64)} bytes (base64)")
+                    
+                    # Calculate time since last frame and sleep if needed
+                    if last_frame_time is not None:
+                        elapsed_ms = (frame_start_time - last_frame_time) * 1000
+                        if elapsed_ms < FRAME_INTERVAL_MS:
+                            sleep_time = FRAME_INTERVAL_SEC - (elapsed_ms / 1000.0)
+                            await asyncio.sleep(sleep_time)
+                    
+                except Exception as send_error:
+                    handler.logger.error(f"[TTS_STREAM] ✗ Error sending padded frame {chunk_count} to Twilio: {send_error}", exc_info=True)
+                    return False
+            
+            # Final summary
+            stream_duration = time.time() - stream_start_time
+            handler.logger.info(f"[TTS_STREAM] ✓ Audio sent to Twilio successfully")
+            handler.logger.info(f"[TTS_STREAM]   - Total frames sent: {chunk_count}")
+            handler.logger.info(f"[TTS_STREAM]   - Frame size: {FRAME_SIZE} bytes per frame (EXACTLY)")
+            handler.logger.info(f"[TTS_STREAM]   - Total audio: {audio_length} bytes ({audio_duration_sec:.2f}s @ 8kHz μ-law)")
+            handler.logger.info(f"[TTS_STREAM]   - Pacing: ~{FRAME_INTERVAL_MS}ms between frames")
+            handler.logger.info(f"[TTS_STREAM]   - Streaming duration: {stream_duration:.2f}s")
             handler.logger.info(f"[TTS_STREAM] ===== TTS completed for call {call_sid} =====")
             return True
             

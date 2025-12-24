@@ -1110,35 +1110,113 @@ async def send_test_tone(call_sid: str):
             return sign | ((exponent + 1) << 4) | mantissa
         
         mu_law_audio = np.array([encode_mulaw(s) for s in audio_int16], dtype=np.uint8)
+        audio_length = len(mu_law_audio)
         
-        # Send in 20ms chunks (160 bytes at 8kHz)
-        chunk_size = 160
-        total_chunks = 0
-        total_bytes = 0
+        # CRITICAL: Send in EXACTLY 160-byte chunks (20ms at 8kHz) with proper pacing
+        FRAME_SIZE = 160  # 20ms of audio at 8kHz
+        FRAME_INTERVAL_MS = 20.0
+        FRAME_INTERVAL_SEC = FRAME_INTERVAL_MS / 1000.0
+        
+        # Calculate number of complete frames
+        num_complete_frames = audio_length // FRAME_SIZE
+        remainder = audio_length % FRAME_SIZE
         
         logger.info(f"[TEST_TONE] Sending 1-second test tone (440Hz) for call {call_sid}")
-        logger.info(f"[TEST_TONE] Total audio: {len(mu_law_audio)} bytes, will send in {len(mu_law_audio) // chunk_size} chunks")
+        logger.info(f"[TEST_TONE] Total audio: {audio_length} bytes, will send as {num_complete_frames} complete frames" + 
+                   (f" + 1 padded frame" if remainder > 0 else ""))
         
-        for i in range(0, len(mu_law_audio), chunk_size):
-            chunk = mu_law_audio[i:i + chunk_size]
-            audio_base64 = base64.b64encode(chunk.tobytes()).decode('utf-8')
+        total_chunks = 0
+        total_bytes = 0
+        last_frame_time = None
+        stream_start_time = time.time()
+        
+        # Send complete 160-byte frames
+        for i in range(num_complete_frames):
+            start_idx = i * FRAME_SIZE
+            end_idx = start_idx + FRAME_SIZE
+            chunk_bytes = mu_law_audio[start_idx:end_idx].tobytes()
+            
+            # Verify frame is exactly 160 bytes
+            if len(chunk_bytes) != FRAME_SIZE:
+                logger.error(f"[TEST_TONE] ✗ Frame {total_chunks} is {len(chunk_bytes)} bytes, expected {FRAME_SIZE} bytes")
+                return JSONResponse({"error": f"Frame size mismatch: {len(chunk_bytes)} != {FRAME_SIZE}"}, status_code=500)
+            
+            audio_base64 = base64.b64encode(chunk_bytes).decode('utf-8')
             
             message = {
                 "event": "media",
                 "streamSid": stream_sid,
                 "media": {
+                    "track": "outbound",
                     "payload": audio_base64
                 }
             }
             
+            # Track timing for pacing
+            frame_start_time = time.time()
+            
             await twilio_websocket.send_json(message)
             total_chunks += 1
-            total_bytes += len(chunk)
+            total_bytes += len(chunk_bytes)
             
-            if total_chunks % 10 == 0:  # Log every 200ms
-                logger.info(f"[TEST_TONE] Sent {total_chunks} chunks ({total_bytes} bytes)")
+            # Calculate time since last frame and sleep if needed
+            if last_frame_time is not None:
+                elapsed_ms = (frame_start_time - last_frame_time) * 1000
+                if elapsed_ms < FRAME_INTERVAL_MS:
+                    sleep_time = FRAME_INTERVAL_SEC - (elapsed_ms / 1000.0)
+                    await asyncio.sleep(sleep_time)
+            
+            last_frame_time = frame_start_time
+            
+            if total_chunks == 1 or total_chunks % 10 == 0:  # Log first frame and every 10th
+                logger.info(f"[TEST_TONE] ✓ Sent frame {total_chunks}: {len(chunk_bytes)} bytes (EXACTLY)")
         
-        logger.info(f"[TEST_TONE] ✓ Test tone sent: {total_chunks} chunks, {total_bytes} bytes total")
+        # Handle remainder: pad last chunk to exactly 160 bytes with μ-law silence (0xFF)
+        if remainder > 0:
+            start_idx = num_complete_frames * FRAME_SIZE
+            chunk_bytes = mu_law_audio[start_idx:].tobytes()
+            
+            # Pad to exactly 160 bytes with μ-law silence (0xFF)
+            padding_needed = FRAME_SIZE - len(chunk_bytes)
+            padded_chunk = chunk_bytes + bytes([0xFF] * padding_needed)
+            
+            if len(padded_chunk) != FRAME_SIZE:
+                logger.error(f"[TEST_TONE] ✗ Padded frame is {len(padded_chunk)} bytes, expected {FRAME_SIZE} bytes")
+                return JSONResponse({"error": f"Padded frame size mismatch: {len(padded_chunk)} != {FRAME_SIZE}"}, status_code=500)
+            
+            logger.info(f"[TEST_TONE] Padded last frame from {len(chunk_bytes)} to {FRAME_SIZE} bytes with μ-law silence")
+            
+            audio_base64 = base64.b64encode(padded_chunk).decode('utf-8')
+            
+            message = {
+                "event": "media",
+                "streamSid": stream_sid,
+                "media": {
+                    "track": "outbound",
+                    "payload": audio_base64
+                }
+            }
+            
+            frame_start_time = time.time()
+            
+            await twilio_websocket.send_json(message)
+            total_chunks += 1
+            total_bytes += len(padded_chunk)
+            
+            # Calculate time since last frame and sleep if needed
+            if last_frame_time is not None:
+                elapsed_ms = (frame_start_time - last_frame_time) * 1000
+                if elapsed_ms < FRAME_INTERVAL_MS:
+                    sleep_time = FRAME_INTERVAL_SEC - (elapsed_ms / 1000.0)
+                    await asyncio.sleep(sleep_time)
+            
+            logger.info(f"[TEST_TONE] ✓ Sent frame {total_chunks}: {len(padded_chunk)} bytes (padded)")
+        
+        stream_duration = time.time() - stream_start_time
+        logger.info(f"[TEST_TONE] ✓ Test tone sent: {total_chunks} frames, {total_bytes} bytes total")
+        logger.info(f"[TEST_TONE]   - Frame size: {FRAME_SIZE} bytes per frame (EXACTLY)")
+        logger.info(f"[TEST_TONE]   - Pacing: ~{FRAME_INTERVAL_MS}ms between frames")
+        logger.info(f"[TEST_TONE]   - Streaming duration: {stream_duration:.2f}s")
         
         return JSONResponse({
             "status": "success",
