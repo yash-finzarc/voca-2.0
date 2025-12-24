@@ -261,7 +261,9 @@ async def handle_outbound_call(request: Request):
     # Connect call to WebRTC (Step 1)
     config = get_twilio_config()
     webhook_url = config.get_webhook_url()
+    logger.info(f"[WebRTC] Original webhook_url: {webhook_url}")
     base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+    logger.info(f"[WebRTC] Extracted base_url: {base_url}")
     
     # Convert to WebSocket URL for WebRTC connection
     if base_url.startswith('http://'):
@@ -366,7 +368,9 @@ async def handle_incoming_call_webhook(request: Request):
     # Connect call to WebRTC (Step 1) - Use <Connect> with WebRTC gateway URL
     config = get_twilio_config()
     webhook_url = config.get_webhook_url()
+    logger.info(f"[WebRTC] Original webhook_url: {webhook_url}")
     base_url = webhook_url.replace('/webhook/voice', '')
+    logger.info(f"[WebRTC] Extracted base_url: {base_url}")
     
     # Connect to WebRTC endpoint (Step 1)
     # Convert to WebSocket URL for WebRTC connection
@@ -618,12 +622,15 @@ async def handle_media_stream_status(call_sid: str, request: Request):
 async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
     """Handle WebRTC WebSocket connection for real-time AI voice calls (WebRTC-first architecture)."""
     logger.info(f"[WebRTC] ===== WebRTC WebSocket handler CALLED for call {call_sid} =====")
+    logger.info(f"[WebRTC] WebSocket path: {websocket.url.path}")
+    logger.info(f"[WebRTC] WebSocket client: {websocket.client}")
+    logger.info(f"[WebRTC] WebSocket headers: {dict(websocket.headers)}")
     
     twilio_manager = app_state.get_twilio_manager()
     if not twilio_manager:
-        logger.error(f"[WebRTC] Twilio manager not available for WebRTC WebSocket")
+        logger.error(f"[WebRTC] ✗ CRITICAL: Twilio manager not available for WebRTC WebSocket")
         try:
-            await websocket.close()
+            await websocket.close(code=1008, reason="Twilio manager not available")
         except:
             pass
         return
@@ -631,13 +638,22 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
     voice_handler = twilio_manager.voice_handler
     
     try:
+        # Log before accepting to catch any connection issues
+        logger.info(f"[WebRTC] Attempting to accept WebSocket connection for call {call_sid}...")
         await websocket.accept()
         logger.info(f"[WebRTC] ===== WebRTC WebSocket ACCEPTED for call {call_sid} =====")
         logger.info(f"[WebRTC] WebSocket client: {websocket.client}")
         logger.info(f"[WebRTC] WebSocket URL: {websocket.url}")
+        logger.info(f"[WebRTC] WebSocket state: {websocket.client_state if hasattr(websocket, 'client_state') else 'unknown'}")
         logger.info(f"[WebRTC] Waiting for Twilio stream events...")
     except Exception as e:
-        logger.error(f"[WebRTC] Error accepting WebSocket for call {call_sid}: {e}", exc_info=True)
+        logger.error(f"[WebRTC] ✗ CRITICAL ERROR accepting WebSocket for call {call_sid}: {e}", exc_info=True)
+        logger.error(f"[WebRTC] Exception type: {type(e).__name__}")
+        logger.error(f"[WebRTC] Exception args: {e.args}")
+        try:
+            await websocket.close(code=1011, reason=f"Error accepting connection: {str(e)}")
+        except:
+            pass
         return
     
     # Initialize call state if not exists
