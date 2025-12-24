@@ -792,6 +792,11 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                     logger.info(f"[WebRTC] Call state: {call_state.get('status', 'unknown')}")
                     logger.info(f"[WebRTC] ===== AUDIO PIPELINE IS NOW ACTIVE =====")
                     
+                    # CRITICAL: Wait a brief moment after 'start' event before sending audio
+                    # This ensures Twilio is fully ready to receive outbound audio
+                    await asyncio.sleep(0.1)  # 100ms delay
+                    logger.info(f"[WebRTC] Waited 100ms after 'start' event - ready to send audio")
+                    
                     # Deliver welcome message (Step 4) - ONLY after stream start
                     if call_sid in voice_handler.pending_greetings and not call_state.get('welcome_sent', False):
                         greeting = voice_handler.pending_greetings[call_sid]
@@ -1143,11 +1148,12 @@ async def send_test_tone(call_sid: str):
             
             audio_base64 = base64.b64encode(chunk_bytes).decode('utf-8')
             
+            # Reference: https://developers.deepgram.com/docs/twilio-and-deepgram-tts
+            # Deepgram example shows "track" field should NOT be in media object
             message = {
                 "event": "media",
                 "streamSid": stream_sid,
                 "media": {
-                    "track": "outbound",
                     "payload": audio_base64
                 }
             }
@@ -1188,11 +1194,12 @@ async def send_test_tone(call_sid: str):
             
             audio_base64 = base64.b64encode(padded_chunk).decode('utf-8')
             
+            # Reference: https://developers.deepgram.com/docs/twilio-and-deepgram-tts
+            # Deepgram example shows "track" field should NOT be in media object
             message = {
                 "event": "media",
                 "streamSid": stream_sid,
                 "media": {
-                    "track": "outbound",
                     "payload": audio_base64
                 }
             }

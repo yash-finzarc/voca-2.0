@@ -122,7 +122,9 @@ async def stream_tts_to_twilio(
         stream_sid = twilio_stream['streamSid']
         
         # Use Deepgram REST API with streaming parameters (μ-law, 8kHz)
+        # Reference: https://developers.deepgram.com/docs/twilio-and-deepgram-tts
         try:
+            # Deepgram supports container=none for raw μ-law bytes
             api_url = f"https://api.deepgram.com/v1/speak?model={model}&encoding=mulaw&sample_rate=8000&container=none"
             headers = {
                 "Authorization": f"Token {Config.deepgram_api_key}",
@@ -139,12 +141,25 @@ async def stream_tts_to_twilio(
             resp = requests.post(api_url, headers=headers, json=text_data, timeout=30)
             resp.raise_for_status()
             
-            # Get the audio bytes (μ-law encoded, 8kHz)
+            # Get the audio bytes
             audio_data = resp.content
             audio_length = len(audio_data)
-            audio_duration_sec = audio_length / 8000.0  # μ-law is 1 byte per sample at 8kHz
+            content_type = resp.headers.get('Content-Type', 'unknown')
             
-            handler.logger.info(f"[TTS_STREAM] ✓ Audio received: {audio_length} bytes ({audio_duration_sec:.2f}s @ 8kHz μ-law)")
+            handler.logger.info(f"[TTS_STREAM] ✓ Audio received: {audio_length} bytes")
+            handler.logger.info(f"[TTS_STREAM] Content-Type: {content_type}")
+            
+            # Verify we got raw μ-law bytes (container=none should return raw bytes)
+            # According to Deepgram docs: https://developers.deepgram.com/docs/twilio-and-deepgram-tts
+            # container=none returns raw mulaw bytes with no wrapper
+            if audio_length > 0:
+                # Log first few bytes to verify it's raw audio data (not a container format)
+                first_bytes = audio_data[:min(10, audio_length)]
+                handler.logger.debug(f"[TTS_STREAM] First 10 bytes (hex): {first_bytes.hex()}")
+            
+            # Calculate duration assuming μ-law @ 8kHz (1 byte per sample)
+            audio_duration_sec = audio_length / 8000.0
+            handler.logger.info(f"[TTS_STREAM] Audio duration: {audio_duration_sec:.2f}s @ 8kHz μ-law (raw mulaw bytes)")
             
             # CRITICAL: Chunk audio into EXACTLY 160-byte frames (20ms at 8kHz)
             # Twilio Media Streams requires exactly 160 bytes per frame
@@ -179,11 +194,14 @@ async def stream_tts_to_twilio(
                 audio_base64 = base64.b64encode(chunk).decode('utf-8')
                 
                 # Send chunk to Twilio Media Streams with correct format
+                # Reference: https://developers.deepgram.com/docs/twilio-and-deepgram-tts
+                # Note: According to Deepgram docs, "track" field is NOT in the media object
+                # However, Twilio Media Streams docs say "track" should be included for outbound
+                # Let's try WITHOUT track first (matching Deepgram example exactly)
                 message = {
                     "event": "media",
                     "streamSid": stream_sid,
                     "media": {
-                        "track": "outbound",
                         "payload": audio_base64
                     }
                 }
@@ -191,6 +209,21 @@ async def stream_tts_to_twilio(
                 try:
                     # Track timing for pacing
                     frame_start_time = time.time()
+                    
+                    # Log first frame message format for debugging
+                    if chunk_count == 0:
+                        debug_message = {
+                            "event": message["event"],
+                            "streamSid": message["streamSid"],
+                            "media": {
+                                "track": message["media"]["track"],
+                                "payload": message["media"]["payload"][:50] + "..." if len(message["media"]["payload"]) > 50 else message["media"]["payload"]
+                            }
+                        }
+                        handler.logger.info(f"[TTS_STREAM] First frame message format: {json.dumps(debug_message, indent=2)}")
+                        handler.logger.info(f"[TTS_STREAM] WebSocket type: {type(twilio_websocket).__name__}")
+                        handler.logger.info(f"[TTS_STREAM] Payload length (base64): {len(audio_base64)} chars")
+                        handler.logger.info(f"[TTS_STREAM] Decoded payload size: {len(chunk)} bytes (should be {FRAME_SIZE})")
                     
                     await twilio_websocket.send_json(message)
                     chunk_count += 1
@@ -235,11 +268,11 @@ async def stream_tts_to_twilio(
                 audio_base64 = base64.b64encode(padded_chunk).decode('utf-8')
                 
                 # Send padded chunk to Twilio Media Streams
+                # Reference: https://developers.deepgram.com/docs/twilio-and-deepgram-tts
                 message = {
                     "event": "media",
                     "streamSid": stream_sid,
                     "media": {
-                        "track": "outbound",
                         "payload": audio_base64
                     }
                 }
