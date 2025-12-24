@@ -5,6 +5,7 @@ import json
 import base64
 import audioop
 import asyncio
+import re
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect, HTTPException
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Start, Transcription
@@ -66,6 +67,18 @@ def format_test_results(results):
         status_emoji = "🔴" if r.status == TestStatus.RED else "🟡" if r.status == TestStatus.YELLOW else "🟢"
         lines.append(f"- {r.name}: {r.value} {r.unit} ({status_emoji} {r.status})")
     return "\n".join(lines)
+
+def clean_text_for_tts(text: str) -> str:
+    """Remove markdown and special characters that confuse TTS."""
+    # Remove markdown bold/italic/headings
+    text = re.sub(r'[\*\#_]', '', text)
+    # Remove numbering like 1. 2. or bullet points
+    text = re.sub(r'^\d+\.\s*', '', text, flags=re.MULTILINE)
+    # Replace newlines with spaces for smoother reading
+    text = text.replace('\n', ' ').replace('\r', ' ')
+    # Normalize spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 @router.post("/medical-call")
 async def trigger_medical_call(request: MedicalDemoRequest, req: Request):
@@ -141,7 +154,7 @@ async def trigger_medical_call(request: MedicalDemoRequest, req: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/outbound-twiml")
-async def outbound_twiml(demo_id: str):
+async def outbound_twiml(demo_id: str, is_retry: bool = False):
     """TwiML for connecting the call using standard Play/Gather (Robust Fallback)."""
     context = app_state.demo_contexts.get(demo_id)
     if not context:
@@ -152,25 +165,37 @@ async def outbound_twiml(demo_id: str):
     webhook_url = config.get_webhook_url()
     base_url = webhook_url.replace("/webhook/voice", "")
 
-    # 1. Host the pre-generated greeting audio
-    audio_id = f"greeting_{demo_id}"
-    app_state.audio_cache[audio_id] = context['greeting_audio']
-    audio_url = f"{base_url}/api/demo/audio/{audio_id}"
+    if is_retry:
+        # If this is a retry/follow-up, don't play the full greeting again
+        gather = response.gather(
+            input="speech",
+            action=f"{base_url}/api/demo/process-speech/{demo_id}",
+            method="POST",
+            language="hi-IN",
+            speechTimeout="1.2",
+            bargeIn=True 
+        )
+        gather.say("Ji, main sun raha hoon. Kya aapka koi aur sawal hai?")
+    else:
+        # 1. Host the pre-generated greeting audio
+        audio_id = f"greeting_{demo_id}"
+        app_state.audio_cache[audio_id] = context['greeting_audio']
+        audio_url = f"{base_url}/api/demo/audio/{audio_id}"
 
-    # 2. Play the greeting and Gather response
-    gather = response.gather(
-        input="speech",
-        action=f"{base_url}/api/demo/process-speech/{demo_id}",
-        method="POST",
-        language="hi-IN",
-        speechTimeout="1.0", # Faster trigger after user stops talking
-        enhanced=True
-    )
-    gather.play(audio_url)
+        # 2. Play the greeting and Gather response
+        gather = response.gather(
+            input="speech",
+            action=f"{base_url}/api/demo/process-speech/{demo_id}",
+            method="POST",
+            language="hi-IN",
+            speechTimeout="1.0", # Faster trigger after user stops talking
+            enhanced=True,
+            bargeIn=False # Don't allow cutting off the long medical intro
+        )
+        gather.play(audio_url)
     
-    # Fallback if they don't say anything
-    response.say("Ji, main sun raha hoon. Kripya apna sawal poochiye.")
-    response.redirect(f"{base_url}/api/demo/outbound-twiml?demo_id={demo_id}")
+    # Fallback redirect to keep the call open
+    response.redirect(f"{base_url}/api/demo/outbound-twiml?demo_id={demo_id}&is_retry=true")
     
     return Response(content=str(response), media_type="text/xml")
 
@@ -235,6 +260,9 @@ async def handle_demo_speech(demo_id: str, request: Request):
         transcript=[],
     )
     reply_text = result.reply
+    # Clean markdown and formatting for TTS
+    reply_text = clean_text_for_tts(reply_text)
+    
     context['messages'].append(AIMessage(content=reply_text))
     llm_time = time.time() - llm_start
     logger.info(f"LLM REPLY ({llm_time:.2f}s): {reply_text}")
@@ -250,9 +278,19 @@ async def handle_demo_speech(demo_id: str, request: Request):
         model="bulbul:v2"
     )
     
-    audio_data = tts_res.audios[0]
-    if isinstance(audio_data, str):
-        audio_data = base64.b64decode(audio_data)
+    # Refactor: Join all audio chunks if multiple are returned
+    all_audio_data = []
+    if hasattr(tts_res, 'audios') and tts_res.audios:
+        for audio_chunk in tts_res.audios:
+            if isinstance(audio_chunk, str):
+                all_audio_data.append(base64.b64decode(audio_chunk))
+            else:
+                all_audio_data.append(audio_chunk)
+    
+    if not all_audio_data:
+        raise ValueError("Failed to get any audio data from Sarvam")
+        
+    audio_data = b"".join(all_audio_data)
     
     resampled = audioop.ratecv(audio_data, 2, 1, 22050, 8000, None)[0]
     mulaw_reply = audioop.lin2ulaw(resampled, 2)
@@ -272,10 +310,11 @@ async def handle_demo_speech(demo_id: str, request: Request):
         action=f"{base_url}/api/demo/process-speech/{demo_id}",
         method="POST",
         language="hi-IN",
-        speechTimeout="1.0"
+        speechTimeout="1.0",
+        bargeIn=True # Allow barge-in on standard replies
     )
     gather.play(f"{base_url}/api/demo/audio/{reply_audio_id}")
-    response.redirect(f"{base_url}/api/demo/outbound-twiml?demo_id={demo_id}")
+    response.redirect(f"{base_url}/api/demo/outbound-twiml?demo_id={demo_id}&is_retry=true")
 
     total_backend_time = time.time() - start_time
     logger.info(f"TURN COMPLETE. Total Backend Time: {total_backend_time:.2f}s")
