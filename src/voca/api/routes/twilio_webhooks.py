@@ -272,8 +272,8 @@ async def handle_outbound_call(request: Request):
         wss_base_url = base_url
     
     # Connect to WebRTC endpoint (Step 1)
-    # CRITICAL: Use {CallSid} variable so Twilio substitutes it at runtime
-    stream_url = f"{wss_base_url}/webrtc/{{CallSid}}"
+    # CRITICAL: Use ACTUAL call_sid in URL - Twilio does NOT substitute {CallSid} in Stream URLs
+    stream_url = f"{wss_base_url}/webrtc/{call_sid}"
     # Use <Connect><Stream> for WebRTC connection
     connect = Connect()
     stream = Stream(
@@ -281,18 +281,25 @@ async def handle_outbound_call(request: Request):
         track='both_tracks', 
         parameters={'call_sid': call_sid}
     )
-    logger.info(f"[WebRTC] Stream URL with CallSid variable: {stream_url}")
+    logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
     connect.append(stream)
     response.append(connect)
     
     # Log the actual TwiML being sent to Twilio
     twiml_xml = str(response)
-    logger.info(f"[WebRTC] Enabled WebRTC connection for outbound call {call_sid}: {stream_url}")
+    logger.info(f"[WebRTC] Enabled WebRTC connection for outbound call {call_sid}")
+    logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
     logger.info(f"[TWiML_DEBUG] TwiML XML for call {call_sid}:\n{twiml_xml}")
     
-    # Verify TwiML contains <Connect><Stream>
+    # Verify TwiML contains <Connect><Stream> and actual CallSid in URL
     if "<Connect>" in twiml_xml and "<Stream" in twiml_xml:
         logger.info(f"[TWiML_DEBUG] ✓ TwiML contains <Connect><Stream> - Twilio should connect")
+        if call_sid in twiml_xml:
+            logger.info(f"[TWiML_DEBUG] ✓ Stream URL contains actual CallSid: {call_sid}")
+        else:
+            logger.error(f"[TWiML_DEBUG] ✗ Stream URL does NOT contain actual CallSid - check URL format!")
+        if "{CallSid}" in twiml_xml or "{{CallSid}}" in twiml_xml:
+            logger.error(f"[TWiML_DEBUG] ✗ Stream URL contains {CallSid} variable - Twilio will NOT substitute it!")
     else:
         logger.error(f"[TWiML_DEBUG] ✗ TwiML MISSING <Connect><Stream> - Twilio will NOT connect!")
     
@@ -365,8 +372,8 @@ async def handle_incoming_call_webhook(request: Request):
     else:
         wss_base_url = base_url
     
-    # CRITICAL: Use {CallSid} variable so Twilio substitutes it at runtime
-    stream_url = f"{wss_base_url}/webrtc/{{CallSid}}"
+    # CRITICAL: Use ACTUAL call_sid in URL - Twilio does NOT substitute {CallSid} in Stream URLs
+    stream_url = f"{wss_base_url}/webrtc/{call_sid}"
     # Use <Connect><Stream> for WebRTC connection
     connect = Connect()
     stream = Stream(
@@ -374,18 +381,24 @@ async def handle_incoming_call_webhook(request: Request):
         track='both_tracks', 
         parameters={'call_sid': call_sid}
     )
-    logger.info(f"[WebRTC] Stream URL with CallSid variable: {stream_url}")
+    logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
     connect.append(stream)
     response.append(connect)
     
     # Log the actual TwiML being sent to Twilio
     twiml_xml = str(response)
-    logger.info(f"[WebRTC] Enabled WebRTC connection for call {call_sid}: {stream_url}")
+    logger.info(f"[WebRTC] Enabled WebRTC connection for call {call_sid}")
     logger.info(f"[TWiML_DEBUG] TwiML XML for call {call_sid}:\n{twiml_xml}")
     
-    # Verify TwiML contains <Connect><Stream>
+    # Verify TwiML contains <Connect><Stream> and actual CallSid in URL
     if "<Connect>" in twiml_xml and "<Stream" in twiml_xml:
         logger.info(f"[TWiML_DEBUG] ✓ TwiML contains <Connect><Stream> - Twilio should connect")
+        if call_sid in twiml_xml:
+            logger.info(f"[TWiML_DEBUG] ✓ Stream URL contains actual CallSid: {call_sid}")
+        else:
+            logger.error(f"[TWiML_DEBUG] ✗ Stream URL does NOT contain actual CallSid - check URL format!")
+        if "{CallSid}" in twiml_xml or "{{CallSid}}" in twiml_xml:
+            logger.error(f"[TWiML_DEBUG] ✗ Stream URL contains {CallSid} variable - Twilio will NOT substitute it!")
     else:
         logger.error(f"[TWiML_DEBUG] ✗ TwiML MISSING <Connect><Stream> - Twilio will NOT connect!")
     
