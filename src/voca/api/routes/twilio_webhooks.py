@@ -293,6 +293,11 @@ async def handle_outbound_call(request: Request):
     connect.append(stream)
     response.append(connect)
     
+    # Add a Pause to keep the call active while Media Streams connects
+    # Without this, Twilio might end the call immediately after Connect
+    response.append(Pause(length=30))  # 30 second pause to keep call active
+    logger.info(f"[WebRTC] Added Pause(30s) to keep call active while Media Streams connects")
+    
     # Log the actual TwiML being sent to Twilio
     twiml_xml = str(response)
     logger.info(f"[WebRTC] Enabled WebRTC connection for outbound call {call_sid}")
@@ -430,6 +435,10 @@ async def handle_incoming_call_webhook(request: Request):
     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
     connect.append(stream)
     response.append(connect)
+    
+    # Add a Pause to keep the call active while Media Streams connects
+    response.append(Pause(length=30))  # 30 second pause to keep call active
+    logger.info(f"[WebRTC] Added Pause(30s) to keep call active while Media Streams connects")
     
     # Log the actual TwiML being sent to Twilio
     twiml_xml = str(response)
