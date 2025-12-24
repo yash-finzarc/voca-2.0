@@ -39,9 +39,14 @@ app.add_middleware(
 async def log_websocket_attempts(request, call_next):
     """Log WebSocket upgrade attempts for debugging."""
     if request.url.path.startswith("/media/") or request.url.path.startswith("/webrtc/"):
-        logger.info(f"[WEBSOCKET_DEBUG] WebSocket upgrade attempt: {request.method} {request.url.path}")
+        logger.info(f"[WEBSOCKET_DEBUG] ===== WebSocket upgrade attempt =====")
+        logger.info(f"[WEBSOCKET_DEBUG] Method: {request.method}")
+        logger.info(f"[WEBSOCKET_DEBUG] Path: {request.url.path}")
+        logger.info(f"[WEBSOCKET_DEBUG] Client: {request.client}")
         logger.info(f"[WEBSOCKET_DEBUG] Headers: {dict(request.headers)}")
     response = await call_next(request)
+    if request.url.path.startswith("/media/") or request.url.path.startswith("/webrtc/"):
+        logger.info(f"[WEBSOCKET_DEBUG] Response status: {response.status_code}")
     return response
 
 for router in routers:

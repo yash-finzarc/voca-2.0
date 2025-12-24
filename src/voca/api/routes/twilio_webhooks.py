@@ -585,7 +585,10 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
     
     try:
         await websocket.accept()
-        logger.info(f"[WebRTC] WebRTC WebSocket connected for call {call_sid}")
+        logger.info(f"[WebRTC] ===== WebRTC WebSocket ACCEPTED for call {call_sid} =====")
+        logger.info(f"[WebRTC] WebSocket client: {websocket.client}")
+        logger.info(f"[WebRTC] WebSocket URL: {websocket.url}")
+        logger.info(f"[WebRTC] Waiting for Twilio stream events...")
     except Exception as e:
         logger.error(f"[WebRTC] Error accepting WebSocket for call {call_sid}: {e}", exc_info=True)
         return
@@ -655,7 +658,8 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
             event = data.get('event')
             
             if event == 'connected':
-                logger.info(f"[WebRTC] WebRTC stream connected for call {call_sid}")
+                logger.info(f"[WebRTC] WebRTC stream 'connected' event received for call {call_sid}")
+                logger.info(f"[WebRTC] Connection data: {json.dumps(data, indent=2)}")
             elif event == 'start':
                 logger.info(f"[WebRTC] WebRTC stream started for call {call_sid}")
                 stream_sid = data.get('start', {}).get('streamSid')
@@ -665,29 +669,47 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                         'streamSid': stream_sid
                     }
                     logger.info(f"[WebRTC] Stored WebRTC stream for call {call_sid}, streamSid: {stream_sid}")
+                    logger.info(f"[WebRTC] Stream is ready - call state: {call_state.get('status', 'unknown')}")
                     
-                    # Deliver welcome message (Step 4)
+                    # Deliver welcome message (Step 4) - ONLY after stream start
                     if call_sid in voice_handler.pending_greetings and not call_state.get('welcome_sent', False):
                         greeting = voice_handler.pending_greetings[call_sid]
-                        logger.info(f"[WebRTC] Delivering welcome message for call {call_sid}")
+                        logger.info(f"[WebRTC] Delivering welcome message for call {call_sid} (streamSid: {stream_sid})")
                         app_state._log_callback("=" * 80)
                         app_state._log_callback(f"[AI] Call {call_sid} - Welcome Message: \"{greeting}\"")
                         app_state._log_callback("=" * 80)
                         
                         try:
-                            await stream_tts_to_twilio(voice_handler, call_sid, greeting)
-                            call_state['welcome_sent'] = True
-                            call_state['turn_count'] = call_state.get('turn_count', 0) + 1
-                            del voice_handler.pending_greetings[call_sid]
+                            logger.info(f"[WebRTC] Starting TTS for welcome message: {greeting[:50]}...")
+                            success = await stream_tts_to_twilio(voice_handler, call_sid, greeting)
+                            if success:
+                                logger.info(f"[WebRTC] Welcome message TTS streamed successfully for call {call_sid}")
+                                call_state['welcome_sent'] = True
+                                call_state['turn_count'] = call_state.get('turn_count', 0) + 1
+                                del voice_handler.pending_greetings[call_sid]
+                            else:
+                                logger.error(f"[WebRTC] Failed to stream welcome message TTS for call {call_sid}")
                         except Exception as e:
                             logger.error(f"[WebRTC] Error delivering welcome message: {e}", exc_info=True)
+                else:
+                    logger.error(f"[WebRTC] No streamSid in start event for call {call_sid} - cannot send audio!")
             elif event == 'media':
                 # Incoming audio from caller (Step 5 - Live User Speech Capture)
                 media_payload = data.get('media', {}).get('payload')
                 if media_payload:
                     try:
+                        # Log inbound media frame
+                        payload_size = len(media_payload)
+                        logger.info(f"[WebRTC] Inbound media frame received for call {call_sid}: payload_size={payload_size} bytes (base64)")
+                        
                         # Decode base64 audio (μ-law, 8kHz from Twilio)
                         audio_bytes = base64.b64decode(media_payload)
+                        audio_bytes_size = len(audio_bytes)
+                        logger.debug(f"[WebRTC] Decoded audio bytes: {audio_bytes_size} bytes (μ-law)")
+                        
+                        if audio_bytes_size == 0:
+                            logger.warning(f"[WebRTC] Empty audio payload received for call {call_sid}")
+                            continue
                         
                         # Convert μ-law to linear16 for Deepgram STT
                         import numpy as np
@@ -730,7 +752,11 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                             stt_client = voice_handler.deepgram_stt_connections[call_sid]
                             # Convert to bytes (16-bit PCM)
                             pcm_bytes = audio_array.astype(np.int16).tobytes()
+                            pcm_size = len(pcm_bytes)
+                            logger.debug(f"[WebRTC] Sending {pcm_size} bytes to Deepgram STT (PCM16, {len(audio_array)} samples)")
                             stt_client.send_audio(pcm_bytes)
+                        else:
+                            logger.warning(f"[WebRTC] Deepgram STT not initialized for call {call_sid}, skipping audio")
                             
                     except Exception as e:
                         logger.error(f"[WebRTC] Error processing media: {e}", exc_info=True)
@@ -800,4 +826,36 @@ async def handle_media_stream_websocket(websocket: WebSocket, call_sid: str):
             await websocket.close()
         except:
             pass
+
+
+@router.get("/webrtc/{call_sid}/test-audio")
+async def test_audio_endpoint(call_sid: str):
+    """
+    Test endpoint to verify WebRTC audio setup.
+    Returns diagnostic information about the call's audio state.
+    """
+    twilio_manager = app_state.get_twilio_manager()
+    if not twilio_manager:
+        return JSONResponse({"error": "Twilio manager not available"})
+    
+    voice_handler = twilio_manager.voice_handler
+    
+    # Check call state
+    call_info = {
+        "call_sid": call_sid,
+        "has_active_call": call_sid in voice_handler.active_calls,
+        "has_websocket": call_sid in voice_handler.twilio_media_websockets,
+        "has_pending_greeting": call_sid in voice_handler.pending_greetings,
+        "has_stt_connection": call_sid in voice_handler.deepgram_stt_connections,
+    }
+    
+    if call_sid in voice_handler.active_calls:
+        call_info["call_state"] = voice_handler.active_calls[call_sid]
+    
+    if call_sid in voice_handler.twilio_media_websockets:
+        stream_info = voice_handler.twilio_media_websockets[call_sid]
+        call_info["stream_sid"] = stream_info.get("streamSid")
+        call_info["websocket_connected"] = stream_info.get("websocket") is not None
+    
+    return JSONResponse(call_info)
 

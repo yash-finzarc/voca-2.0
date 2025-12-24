@@ -137,11 +137,22 @@ async def stream_tts_to_twilio(
             resp.raise_for_status()
             
             # Stream audio chunks to Twilio Media Streams
-            chunk_size = 1600  # ~200ms of audio at 8kHz
+            # Twilio expects ~20ms chunks = 160 bytes at 8kHz μ-law (1 byte per sample)
+            chunk_size = 160  # ~20ms of audio at 8kHz (μ-law is 1 byte per sample)
+            total_bytes_sent = 0
+            chunk_count = 0
+            
+            handler.logger.info(f"[TTS_STREAM] Starting TTS stream for call {call_sid}: text='{text[:50]}...', chunk_size={chunk_size} bytes")
+            
             for chunk in resp.iter_content(chunk_size=chunk_size):
                 if chunk:
+                    chunk_bytes = len(chunk)
+                    total_bytes_sent += chunk_bytes
+                    chunk_count += 1
+                    
                     # Encode to base64 for Twilio
                     audio_base64 = base64.b64encode(chunk).decode('utf-8')
+                    base64_size = len(audio_base64)
                     
                     # Send to Twilio Media Streams
                     message = {
@@ -151,9 +162,15 @@ async def stream_tts_to_twilio(
                             "payload": audio_base64
                         }
                     }
-                    await twilio_websocket.send_json(message)
+                    
+                    try:
+                        await twilio_websocket.send_json(message)
+                        handler.logger.debug(f"[TTS_STREAM] Sent chunk {chunk_count} to Twilio: {chunk_bytes} bytes (μ-law) = {base64_size} bytes (base64), streamSid={stream_sid}")
+                    except Exception as send_error:
+                        handler.logger.error(f"[TTS_STREAM] Error sending audio chunk {chunk_count} to Twilio: {send_error}", exc_info=True)
+                        raise
             
-            handler.logger.info(f"[TTS_STREAM] Streamed TTS audio to Twilio for call {call_sid}: {text[:50]}...")
+            handler.logger.info(f"[TTS_STREAM] Streamed TTS audio to Twilio for call {call_sid}: {chunk_count} chunks, {total_bytes_sent} total bytes, text='{text[:50]}...'")
             return True
             
         except Exception as e:
