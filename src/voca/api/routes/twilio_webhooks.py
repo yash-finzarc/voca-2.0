@@ -1148,12 +1148,12 @@ async def send_test_tone(call_sid: str):
             
             audio_base64 = base64.b64encode(chunk_bytes).decode('utf-8')
             
-            # Reference: https://developers.deepgram.com/docs/twilio-and-deepgram-tts
-            # Deepgram example shows "track" field should NOT be in media object
+            # When using both_tracks mode, Twilio REQUIRES the "track" field to route audio correctly
             message = {
                 "event": "media",
                 "streamSid": stream_sid,
                 "media": {
+                    "track": "outbound",
                     "payload": audio_base64
                 }
             }
@@ -1194,12 +1194,12 @@ async def send_test_tone(call_sid: str):
             
             audio_base64 = base64.b64encode(padded_chunk).decode('utf-8')
             
-            # Reference: https://developers.deepgram.com/docs/twilio-and-deepgram-tts
-            # Deepgram example shows "track" field should NOT be in media object
+            # When using both_tracks mode, Twilio REQUIRES the "track" field to route audio correctly
             message = {
                 "event": "media",
                 "streamSid": stream_sid,
                 "media": {
+                    "track": "outbound",
                     "payload": audio_base64
                 }
             }

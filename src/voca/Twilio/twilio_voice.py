@@ -194,14 +194,12 @@ async def stream_tts_to_twilio(
                 audio_base64 = base64.b64encode(chunk).decode('utf-8')
                 
                 # Send chunk to Twilio Media Streams with correct format
-                # Reference: https://developers.deepgram.com/docs/twilio-and-deepgram-tts
-                # Note: According to Deepgram docs, "track" field is NOT in the media object
-                # However, Twilio Media Streams docs say "track" should be included for outbound
-                # Let's try WITHOUT track first (matching Deepgram example exactly)
+                # When using both_tracks mode, Twilio REQUIRES the "track" field to route audio correctly
                 message = {
                     "event": "media",
                     "streamSid": stream_sid,
                     "media": {
+                        "track": "outbound",
                         "payload": audio_base64
                     }
                 }
@@ -216,6 +214,7 @@ async def stream_tts_to_twilio(
                             "event": message["event"],
                             "streamSid": message["streamSid"],
                             "media": {
+                                "track": message["media"]["track"],
                                 "payload": message["media"]["payload"][:50] + "..." if len(message["media"]["payload"]) > 50 else message["media"]["payload"]
                             }
                         }
@@ -267,11 +266,12 @@ async def stream_tts_to_twilio(
                 audio_base64 = base64.b64encode(padded_chunk).decode('utf-8')
                 
                 # Send padded chunk to Twilio Media Streams
-                # Reference: https://developers.deepgram.com/docs/twilio-and-deepgram-tts
+                # When using both_tracks mode, Twilio REQUIRES the "track" field to route audio correctly
                 message = {
                     "event": "media",
                     "streamSid": stream_sid,
                     "media": {
+                        "track": "outbound",
                         "payload": audio_base64
                     }
                 }
