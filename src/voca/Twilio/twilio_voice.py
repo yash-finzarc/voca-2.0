@@ -216,7 +216,6 @@ async def stream_tts_to_twilio(
                             "event": message["event"],
                             "streamSid": message["streamSid"],
                             "media": {
-                                "track": message["media"]["track"],
                                 "payload": message["media"]["payload"][:50] + "..." if len(message["media"]["payload"]) > 50 else message["media"]["payload"]
                             }
                         }
