@@ -193,6 +193,9 @@ class TwilioVoiceHandler:
         # Twilio Media Streams WebSocket connections for sending audio back
         self.twilio_media_websockets: Dict[str, Dict[str, Any]] = {}  # call_sid -> {websocket, streamSid}
         
+        # Pending greetings to send when Media Streams connect
+        self.pending_greetings: Dict[str, str] = {}  # call_sid -> greeting_text
+        
     def start_webhook_server(self, host='0.0.0.0', port=5000):
         """Start FastAPI server to handle Twilio webhooks with real-time audio streaming."""
         app = FastAPI(title="VOCA Twilio Webhook Server")
@@ -477,6 +480,16 @@ class TwilioVoiceHandler:
                                 'streamSid': stream_sid
                             }
                             handler.logger.info(f"[TTS_STREAM] Stored Twilio Media Stream for call {call_sid}, streamSid: {stream_sid}")
+                            
+                            # Send pending greeting if available
+                            if call_sid in handler.pending_greetings:
+                                greeting = handler.pending_greetings[call_sid]
+                                handler.logger.info(f"[TTS_STREAM] Sending pending greeting for call {call_sid}")
+                                try:
+                                    await stream_tts_to_twilio(handler, call_sid, greeting)
+                                    del handler.pending_greetings[call_sid]
+                                except Exception as e:
+                                    handler.logger.error(f"[TTS_STREAM] Error sending pending greeting: {e}")
                         else:
                             handler.logger.warning(f"[TTS_STREAM] No streamSid in start event for call {call_sid}")
                     elif event == 'media':
@@ -554,6 +567,9 @@ class TwilioVoiceHandler:
                         if call_sid in handler.twilio_media_websockets:
                             del handler.twilio_media_websockets[call_sid]
                             handler.logger.info(f"[TTS_STREAM] Cleaned up Twilio Media Stream for call {call_sid}")
+                        # Clean up pending greeting
+                        if call_sid in handler.pending_greetings:
+                            del handler.pending_greetings[call_sid]
                         break
                         
             except WebSocketDisconnect:
@@ -580,6 +596,12 @@ class TwilioVoiceHandler:
                 if call_sid in handler.twilio_media_websockets:
                     del handler.twilio_media_websockets[call_sid]
                     handler.logger.info(f"[TTS_STREAM] Cleaned up Twilio Media Stream for call {call_sid}")
+                # Clean up pending greeting
+                if call_sid in handler.pending_greetings:
+                    del handler.pending_greetings[call_sid]
+                # Clean up pending greeting
+                if call_sid in handler.pending_greetings:
+                    del handler.pending_greetings[call_sid]
             except Exception as e:
                 handler.logger.error(f"[AUDIO_DEBUG] Error in Media Stream WebSocket: {e}")
                 # Close audio writer if exists

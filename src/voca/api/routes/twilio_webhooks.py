@@ -286,17 +286,10 @@ async def handle_outbound_call(request: Request):
         logger.error(f"Error generating greeting: {e}")
         greeting = "Hello! This is VOCA calling. How can I help you today?"
 
-    # Stream greeting via Deepgram TTS to Twilio Media Streams
-    try:
-        # Stream TTS audio via Media Streams WebSocket
-        streamed = await stream_tts_to_twilio(voice_handler, call_sid, greeting)
-        if not streamed:
-            # Fallback to <Say> if streaming fails
-            logger.warning(f"[TTS] Streaming failed for greeting, using <Say> fallback")
-            response.say(greeting)
-    except Exception as tts_err:
-        logger.error(f"[TTS] Greeting TTS streaming failed, using <Say> fallback: {tts_err}")
-        response.say(greeting)
+    # Store greeting to send when Media Streams WebSocket connects
+    # Media Streams WebSocket connects asynchronously after TwiML response
+    voice_handler.pending_greetings[call_sid] = greeting
+    logger.info(f"[TTS] Stored greeting for call {call_sid}, will send when Media Streams connect")
 
     # Keep the call alive after greeting by enabling speech-only Gather with VAD.
     _append_vad_gather(response, base_url, call_sid, language="en-IN")
@@ -392,17 +385,10 @@ async def handle_incoming_call_webhook(request: Request):
         logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
         logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
 
-    # Stream welcome message via Deepgram TTS to Twilio Media Streams
-    try:
-        # Stream TTS audio via Media Streams WebSocket
-        streamed = await stream_tts_to_twilio(voice_handler, call_sid, greeting)
-        if not streamed:
-            # Fallback to <Say> if streaming fails
-            logger.warning(f"[TTS] Streaming failed for welcome message, using <Say> fallback")
-            response.say(greeting)
-    except Exception as tts_err:
-        logger.error(f"[TTS] Welcome TTS streaming failed, using <Say> fallback: {tts_err}")
-        response.say(greeting)
+    # Store greeting to send when Media Streams WebSocket connects
+    # Media Streams WebSocket connects asynchronously after TwiML response
+    voice_handler.pending_greetings[call_sid] = greeting
+    logger.info(f"[TTS] Stored welcome message for call {call_sid}, will send when Media Streams connect")
 
     # Keep the call alive after greeting by enabling speech-only Gather with VAD.
     _append_vad_gather(response, base_url, call_sid, language="en-IN")
