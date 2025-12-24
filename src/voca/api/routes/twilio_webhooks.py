@@ -2,6 +2,8 @@ import logging
 import time
 import asyncio
 import base64
+import json
+import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
@@ -275,13 +277,18 @@ async def handle_outbound_call(request: Request):
     # CRITICAL: Use ACTUAL call_sid in URL - Twilio does NOT substitute {CallSid} in Stream URLs
     stream_url = f"{wss_base_url}/webrtc/{call_sid}"
     # Use <Connect><Stream> for WebRTC connection
+    # NOTE: For testing, you can change track to 'inbound_track' to only receive audio
+    # For production, use 'both_tracks' to send and receive audio
+    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')  # Default: both_tracks, can be 'inbound_track' for testing
     connect = Connect()
     stream = Stream(
         url=stream_url, 
-        track='both_tracks', 
+        track=track_mode, 
         parameters={'call_sid': call_sid}
     )
     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
+    logger.info(f"[WebRTC] Track mode: {track_mode} (set TWILIO_STREAM_TRACK env var to change)")
+    logger.info(f"[TWiML_DEBUG] Stream track parameter: {track_mode}")
     connect.append(stream)
     response.append(connect)
     
@@ -375,10 +382,13 @@ async def handle_incoming_call_webhook(request: Request):
     # CRITICAL: Use ACTUAL call_sid in URL - Twilio does NOT substitute {CallSid} in Stream URLs
     stream_url = f"{wss_base_url}/webrtc/{call_sid}"
     # Use <Connect><Stream> for WebRTC connection
+    # NOTE: For testing, you can change track to 'inbound_track' to only receive audio
+    # For production, use 'both_tracks' to send and receive audio
+    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')  # Default: both_tracks, can be 'inbound_track' for testing
     connect = Connect()
     stream = Stream(
         url=stream_url, 
-        track='both_tracks', 
+        track=track_mode, 
         parameters={'call_sid': call_sid}
     )
     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
@@ -717,29 +727,45 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                     # Deliver welcome message (Step 4) - ONLY after stream start
                     if call_sid in voice_handler.pending_greetings and not call_state.get('welcome_sent', False):
                         greeting = voice_handler.pending_greetings[call_sid]
-                        logger.info(f"[WebRTC] Delivering welcome message for call {call_sid} (streamSid: {stream_sid})")
+                        welcome_start_time = time.time()
+                        logger.info(f"[WebRTC] ===== DELIVERING WELCOME MESSAGE =====")
+                        logger.info(f"[WebRTC] Call SID: {call_sid}")
+                        logger.info(f"[WebRTC] StreamSid: {stream_sid}")
+                        logger.info(f"[WebRTC] Welcome message: \"{greeting}\"")
+                        logger.info(f"[WebRTC] WebSocket ready: {websocket is not None}")
+                        logger.info(f"[WebRTC] Twilio Media Streams connection: {call_sid in voice_handler.twilio_media_websockets}")
                         app_state._log_callback("=" * 80)
                         app_state._log_callback(f"[AI] Call {call_sid} - Welcome Message: \"{greeting}\"")
                         app_state._log_callback("=" * 80)
                         
                         try:
-                            logger.info(f"[WebRTC] ===== Starting welcome message delivery =====")
-                            logger.info(f"[WebRTC] Welcome message text: {greeting}")
-                            logger.info(f"[WebRTC] StreamSid: {stream_sid}")
-                            logger.info(f"[WebRTC] WebSocket ready: {websocket is not None}")
+                            # Verify WebSocket connection is ready
+                            if call_sid not in voice_handler.twilio_media_websockets:
+                                logger.error(f"[WebRTC] ✗ CRITICAL: Twilio Media Streams WebSocket not found for call {call_sid}")
+                                logger.error(f"[WebRTC] Available streams: {list(voice_handler.twilio_media_websockets.keys())}")
+                                raise Exception("Twilio Media Streams WebSocket not available")
                             
                             success = await stream_tts_to_twilio(voice_handler, call_sid, greeting)
+                            welcome_duration = time.time() - welcome_start_time
+                            
                             if success:
-                                logger.info(f"[WebRTC] ===== Welcome message TTS streamed successfully =====")
-                                logger.info(f"[WebRTC] ✓ Greeting should now be audible on the call")
+                                logger.info(f"[WebRTC] ===== WELCOME MESSAGE DELIVERED SUCCESSFULLY =====")
+                                logger.info(f"[WebRTC] ✓ Greeting TTS streamed in {welcome_duration:.3f}s")
+                                logger.info(f"[WebRTC] ✓ Audio should now be audible on the call")
                                 call_state['welcome_sent'] = True
                                 call_state['turn_count'] = call_state.get('turn_count', 0) + 1
                                 del voice_handler.pending_greetings[call_sid]
                             else:
-                                logger.error(f"[WebRTC] ✗ Failed to stream welcome message TTS for call {call_sid}")
+                                logger.error(f"[WebRTC] ✗ FAILED to stream welcome message TTS for call {call_sid}")
+                                logger.error(f"[WebRTC] Duration: {welcome_duration:.3f}s")
                                 logger.error(f"[WebRTC] Check TTS_STREAM logs above for error details")
+                                logger.error(f"[WebRTC] WebSocket state: {call_sid in voice_handler.twilio_media_websockets}")
                         except Exception as e:
-                            logger.error(f"[WebRTC] ✗ Error delivering welcome message: {e}", exc_info=True)
+                            welcome_duration = time.time() - welcome_start_time
+                            logger.error(f"[WebRTC] ✗ ERROR delivering welcome message after {welcome_duration:.3f}s: {e}", exc_info=True)
+                            logger.error(f"[WebRTC] Call SID: {call_sid}")
+                            logger.error(f"[WebRTC] StreamSid: {stream_sid}")
+                            logger.error(f"[WebRTC] WebSocket available: {call_sid in voice_handler.twilio_media_websockets}")
                 else:
                     logger.error(f"[WebRTC] No streamSid in start event for call {call_sid} - cannot send audio!")
             elif event == 'media':
@@ -747,22 +773,30 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                 media_payload = data.get('media', {}).get('payload')
                 if media_payload:
                     try:
-                        # Log inbound media frame (first few frames only to avoid spam)
+                        # Log inbound media frame with timestamps
                         payload_size = len(media_payload)
+                        timestamp = time.time()
                         if not hasattr(handle_webrtc_websocket, '_media_frame_count'):
                             handle_webrtc_websocket._media_frame_count = {}
+                        if not hasattr(handle_webrtc_websocket, '_first_frame_time'):
+                            handle_webrtc_websocket._first_frame_time = {}
                         if call_sid not in handle_webrtc_websocket._media_frame_count:
                             handle_webrtc_websocket._media_frame_count[call_sid] = 0
+                            handle_webrtc_websocket._first_frame_time[call_sid] = timestamp
                         handle_webrtc_websocket._media_frame_count[call_sid] += 1
                         
                         frame_num = handle_webrtc_websocket._media_frame_count[call_sid]
+                        elapsed = timestamp - handle_webrtc_websocket._first_frame_time[call_sid]
+                        
                         if frame_num <= 5 or frame_num % 50 == 0:  # Log first 5, then every 50th
-                            logger.info(f"[WebRTC] ✓ Inbound media frame #{frame_num} received: {payload_size} bytes (base64)")
+                            logger.info(f"[WebRTC] ✓ Inbound media frame #{frame_num} received at {timestamp:.3f}s (elapsed: {elapsed:.3f}s): {payload_size} bytes (base64)")
                         
                         # Decode base64 audio (μ-law, 8kHz from Twilio)
+                        decode_start = time.time()
                         audio_bytes = base64.b64decode(media_payload)
                         audio_bytes_size = len(audio_bytes)
-                        logger.debug(f"[WebRTC] Decoded audio bytes: {audio_bytes_size} bytes (μ-law)")
+                        decode_time = (time.time() - decode_start) * 1000  # ms
+                        logger.debug(f"[WebRTC] Decoded audio bytes: {audio_bytes_size} bytes (μ-law) in {decode_time:.2f}ms")
                         
                         if audio_bytes_size == 0:
                             logger.warning(f"[WebRTC] Empty audio payload received for call {call_sid}")
@@ -810,7 +844,8 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                             # Convert to bytes (16-bit PCM)
                             pcm_bytes = audio_array.astype(np.int16).tobytes()
                             pcm_size = len(pcm_bytes)
-                            logger.debug(f"[WebRTC] Sending {pcm_size} bytes to Deepgram STT (PCM16, {len(audio_array)} samples)")
+                            stt_timestamp = time.time()
+                            logger.debug(f"[WebRTC] Sending {pcm_size} bytes to Deepgram STT (PCM16, {len(audio_array)} samples) at {stt_timestamp:.3f}s")
                             stt_client.send_audio(pcm_bytes)
                         else:
                             logger.warning(f"[WebRTC] Deepgram STT not initialized for call {call_sid}, skipping audio")
