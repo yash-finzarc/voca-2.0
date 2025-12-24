@@ -756,12 +756,23 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                 logger.error(f"[WebRTC] ✗ ERROR receiving JSON from WebSocket for call {call_sid}: {recv_error}", exc_info=True)
                 break
             
-            # Log EVERY message received
-            logger.info(f"[WebRTC] ===== RECEIVED MESSAGE for call {call_sid} =====")
-            logger.info(f"[WebRTC] Raw message: {json.dumps(data, indent=2)}")
-            
+            # Log message received (reduce verbosity - only log non-media events or first few messages)
             event = data.get('event')
-            logger.info(f"[WebRTC] Event type: {event}")
+            
+            # Only log verbose details for non-media events or first 3 messages
+            if not hasattr(handle_webrtc_websocket, '_message_count'):
+                handle_webrtc_websocket._message_count = {}
+            if call_sid not in handle_webrtc_websocket._message_count:
+                handle_webrtc_websocket._message_count[call_sid] = 0
+            handle_webrtc_websocket._message_count[call_sid] += 1
+            
+            msg_count = handle_webrtc_websocket._message_count[call_sid]
+            if event != 'media' or msg_count <= 3:
+                logger.info(f"[WebRTC] Message #{msg_count} for call {call_sid}: event={event}")
+                if event != 'media' and msg_count <= 10:
+                    logger.debug(f"[WebRTC] Full message: {json.dumps(data, indent=2)}")
+            else:
+                logger.debug(f"[WebRTC] Message #{msg_count} for call {call_sid}: event={event}")
             
             if event == 'connected':
                 logger.info(f"[WebRTC] ===== 'connected' event received for call {call_sid} =====")
@@ -851,12 +862,8 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                 media_payload = media_data.get('payload')
                 track = media_data.get('track', 'inbound')  # Default to 'inbound' if not specified
                 
-                # Log every media event with track information
-                logger.info(f"[WebRTC] ===== MEDIA EVENT received for call {call_sid} =====")
-                logger.info(f"[WebRTC] Event: {event}")
-                logger.info(f"[WebRTC] Track: {track}")
-                logger.info(f"[WebRTC] Payload length: {len(media_payload) if media_payload else 0} bytes (base64)")
-                logger.info(f"[WebRTC] Full message keys: {list(data.keys())}")
+                # Log media events at DEBUG level (reduced verbosity)
+                logger.debug(f"[WebRTC] Media event: call={call_sid}, track={track}, payload={len(media_payload) if media_payload else 0} bytes")
                 
                 if media_payload:
                     try:
