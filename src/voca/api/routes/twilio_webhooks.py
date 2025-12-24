@@ -673,6 +673,8 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                 app_state._log_callback("=" * 80)
                 
                 # Stream TTS back to user (Step 8)
+                logger.info(f"[WebRTC] ===== Starting AI response TTS =====")
+                logger.info(f"[WebRTC] AI response text: {ai_response}")
                 asyncio.create_task(stream_tts_to_twilio(voice_handler, call_sid, ai_response))
                 
                 call_state['turn_count'] = call_state.get('turn_count', 0) + 1
@@ -695,18 +697,22 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
             event = data.get('event')
             
             if event == 'connected':
-                logger.info(f"[WebRTC] WebRTC stream 'connected' event received for call {call_sid}")
+                logger.info(f"[WebRTC] ===== 'connected' event received for call {call_sid} =====")
                 logger.info(f"[WebRTC] Connection data: {json.dumps(data, indent=2)}")
+                logger.info(f"[WebRTC] ✓ Twilio WebSocket connection established - waiting for 'start' event...")
             elif event == 'start':
-                logger.info(f"[WebRTC] WebRTC stream started for call {call_sid}")
+                logger.info(f"[WebRTC] ===== 'start' event received for call {call_sid} =====")
+                logger.info(f"[WebRTC] Start event data: {json.dumps(data, indent=2)}")
                 stream_sid = data.get('start', {}).get('streamSid')
                 if stream_sid:
                     voice_handler.twilio_media_websockets[call_sid] = {
                         'websocket': websocket,
                         'streamSid': stream_sid
                     }
-                    logger.info(f"[WebRTC] Stored WebRTC stream for call {call_sid}, streamSid: {stream_sid}")
-                    logger.info(f"[WebRTC] Stream is ready - call state: {call_state.get('status', 'unknown')}")
+                    logger.info(f"[WebRTC] ✓ Stream started - streamSid: {stream_sid}")
+                    logger.info(f"[WebRTC] ✓ WebSocket stored - ready to send/receive audio")
+                    logger.info(f"[WebRTC] Call state: {call_state.get('status', 'unknown')}")
+                    logger.info(f"[WebRTC] ===== AUDIO PIPELINE IS NOW ACTIVE =====")
                     
                     # Deliver welcome message (Step 4) - ONLY after stream start
                     if call_sid in voice_handler.pending_greetings and not call_state.get('welcome_sent', False):
@@ -717,17 +723,23 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                         app_state._log_callback("=" * 80)
                         
                         try:
-                            logger.info(f"[WebRTC] Starting TTS for welcome message: {greeting[:50]}...")
+                            logger.info(f"[WebRTC] ===== Starting welcome message delivery =====")
+                            logger.info(f"[WebRTC] Welcome message text: {greeting}")
+                            logger.info(f"[WebRTC] StreamSid: {stream_sid}")
+                            logger.info(f"[WebRTC] WebSocket ready: {websocket is not None}")
+                            
                             success = await stream_tts_to_twilio(voice_handler, call_sid, greeting)
                             if success:
-                                logger.info(f"[WebRTC] Welcome message TTS streamed successfully for call {call_sid}")
+                                logger.info(f"[WebRTC] ===== Welcome message TTS streamed successfully =====")
+                                logger.info(f"[WebRTC] ✓ Greeting should now be audible on the call")
                                 call_state['welcome_sent'] = True
                                 call_state['turn_count'] = call_state.get('turn_count', 0) + 1
                                 del voice_handler.pending_greetings[call_sid]
                             else:
-                                logger.error(f"[WebRTC] Failed to stream welcome message TTS for call {call_sid}")
+                                logger.error(f"[WebRTC] ✗ Failed to stream welcome message TTS for call {call_sid}")
+                                logger.error(f"[WebRTC] Check TTS_STREAM logs above for error details")
                         except Exception as e:
-                            logger.error(f"[WebRTC] Error delivering welcome message: {e}", exc_info=True)
+                            logger.error(f"[WebRTC] ✗ Error delivering welcome message: {e}", exc_info=True)
                 else:
                     logger.error(f"[WebRTC] No streamSid in start event for call {call_sid} - cannot send audio!")
             elif event == 'media':
@@ -735,9 +747,17 @@ async def handle_webrtc_websocket(websocket: WebSocket, call_sid: str):
                 media_payload = data.get('media', {}).get('payload')
                 if media_payload:
                     try:
-                        # Log inbound media frame
+                        # Log inbound media frame (first few frames only to avoid spam)
                         payload_size = len(media_payload)
-                        logger.info(f"[WebRTC] Inbound media frame received for call {call_sid}: payload_size={payload_size} bytes (base64)")
+                        if not hasattr(handle_webrtc_websocket, '_media_frame_count'):
+                            handle_webrtc_websocket._media_frame_count = {}
+                        if call_sid not in handle_webrtc_websocket._media_frame_count:
+                            handle_webrtc_websocket._media_frame_count[call_sid] = 0
+                        handle_webrtc_websocket._media_frame_count[call_sid] += 1
+                        
+                        frame_num = handle_webrtc_websocket._media_frame_count[call_sid]
+                        if frame_num <= 5 or frame_num % 50 == 0:  # Log first 5, then every 50th
+                            logger.info(f"[WebRTC] ✓ Inbound media frame #{frame_num} received: {payload_size} bytes (base64)")
                         
                         # Decode base64 audio (μ-law, 8kHz from Twilio)
                         audio_bytes = base64.b64decode(media_payload)
@@ -895,4 +915,100 @@ async def test_audio_endpoint(call_sid: str):
         call_info["websocket_connected"] = stream_info.get("websocket") is not None
     
     return JSONResponse(call_info)
+
+
+@router.post("/webrtc/{call_sid}/send-test-tone")
+async def send_test_tone(call_sid: str):
+    """
+    Send a 1-second static PCM tone to test WebSocket audio pipeline.
+    This bypasses TTS/LLM to verify raw audio transmission works.
+    """
+    twilio_manager = app_state.get_twilio_manager()
+    if not twilio_manager:
+        return JSONResponse({"error": "Twilio manager not available"})
+    
+    voice_handler = twilio_manager.voice_handler
+    
+    if call_sid not in voice_handler.twilio_media_websockets:
+        return JSONResponse({"error": "No active WebSocket connection for this call"})
+    
+    try:
+        twilio_stream = voice_handler.twilio_media_websockets[call_sid]
+        twilio_websocket = twilio_stream['websocket']
+        stream_sid = twilio_stream['streamSid']
+        
+        # Generate 1 second of 440Hz tone (A4 note) at 8kHz μ-law
+        # 1 second = 8000 samples at 8kHz
+        # Generate sine wave: sin(2π * 440 * t)
+        import numpy as np
+        sample_rate = 8000
+        duration = 1.0  # 1 second
+        frequency = 440  # A4 note
+        
+        t = np.linspace(0, duration, int(sample_rate * duration), False)
+        sine_wave = np.sin(2 * np.pi * frequency * t)
+        
+        # Convert to μ-law (8-bit)
+        # First normalize to [-1, 1], then scale to int16, then convert to μ-law
+        audio_int16 = (sine_wave * 32767).astype(np.int16)
+        
+        # Simple μ-law encoder
+        def encode_mulaw(sample):
+            """Encode 16-bit linear PCM to 8-bit μ-law"""
+            sign = 0 if sample >= 0 else 0x80
+            sample = abs(sample)
+            if sample > 32635:
+                sample = 32635
+            sample += 0x84
+            exponent = 0
+            exp_mask = 0x4000
+            while (sample & exp_mask) == 0 and exponent < 7:
+                exponent += 1
+                exp_mask >>= 1
+            mantissa = (sample >> (exponent + 3)) & 0x0F
+            return sign | ((exponent + 1) << 4) | mantissa
+        
+        mu_law_audio = np.array([encode_mulaw(s) for s in audio_int16], dtype=np.uint8)
+        
+        # Send in 20ms chunks (160 bytes at 8kHz)
+        chunk_size = 160
+        total_chunks = 0
+        total_bytes = 0
+        
+        logger.info(f"[TEST_TONE] Sending 1-second test tone (440Hz) for call {call_sid}")
+        logger.info(f"[TEST_TONE] Total audio: {len(mu_law_audio)} bytes, will send in {len(mu_law_audio) // chunk_size} chunks")
+        
+        for i in range(0, len(mu_law_audio), chunk_size):
+            chunk = mu_law_audio[i:i + chunk_size]
+            audio_base64 = base64.b64encode(chunk.tobytes()).decode('utf-8')
+            
+            message = {
+                "event": "media",
+                "streamSid": stream_sid,
+                "media": {
+                    "payload": audio_base64
+                }
+            }
+            
+            await twilio_websocket.send_json(message)
+            total_chunks += 1
+            total_bytes += len(chunk)
+            
+            if total_chunks % 10 == 0:  # Log every 200ms
+                logger.info(f"[TEST_TONE] Sent {total_chunks} chunks ({total_bytes} bytes)")
+        
+        logger.info(f"[TEST_TONE] ✓ Test tone sent: {total_chunks} chunks, {total_bytes} bytes total")
+        
+        return JSONResponse({
+            "status": "success",
+            "message": "Test tone sent",
+            "chunks": total_chunks,
+            "bytes": total_bytes,
+            "duration_seconds": duration,
+            "frequency_hz": frequency
+        })
+        
+    except Exception as e:
+        logger.error(f"[TEST_TONE] Error sending test tone: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
 
