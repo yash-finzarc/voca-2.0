@@ -285,8 +285,7 @@ async def handle_outbound_call(request: Request):
     connect = Connect()
     stream = Stream(
         url=stream_url, 
-        track=track_mode, 
-        parameters={'call_sid': call_sid}
+        track=track_mode
     )
     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
     logger.info(f"[WebRTC] Track mode: {track_mode} (set TWILIO_STREAM_TRACK env var to change)")
@@ -392,8 +391,7 @@ async def handle_incoming_call_webhook(request: Request):
     connect = Connect()
     stream = Stream(
         url=stream_url, 
-        track=track_mode, 
-        parameters={'call_sid': call_sid}
+        track=track_mode
     )
     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
     connect.append(stream)
