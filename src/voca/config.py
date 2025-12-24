@@ -40,8 +40,7 @@ class Config:
     # Example: "Yash Verma,vermayash849,John Doe,johndoe@example.com"
     deepgram_keyterms: str = os.getenv("DEEPGRAM_KEYTERMS", "")
     
-    # Audio storage
-    audio_storage_dir: str = os.getenv("VOCA_AUDIO_STORAGE_DIR", "audio_storage")
+    # Audio storage (for Media Streams recording only, not TTS)
     audio_storage_enabled: bool = os.getenv("VOCA_AUDIO_STORAGE_ENABLED", "0") in ("1", "true", "TRUE", "yes", "Yes")
 
 

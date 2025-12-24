@@ -40,8 +40,6 @@ class LogEntry(BaseModel):
     message: str
 
 
-class NgrokUrlRequest(BaseModel):
-    url: str
 
 
 class CallRecord(BaseModel):

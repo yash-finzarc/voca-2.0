@@ -36,80 +36,133 @@ from src.voca.config import Config
 # can start even if an older SDK is installed.
 try:
     from deepgram import DeepgramClient, SpeakOptions  # SDK >=3.0
+    from deepgram.clients.speak.v1 import SpeakClient
+    from deepgram.clients.speak.v1.enums import Encoding, SampleRate
+    from deepgram.clients.speak.v1.models import SpeakOptions as SpeakOptionsV1
 except ImportError:  # Older SDKs
     from deepgram import DeepgramClient  # type: ignore
     SpeakOptions = None  # type: ignore
+    SpeakClient = None  # type: ignore
+    Encoding = None  # type: ignore
+    SampleRate = None  # type: ignore
+    SpeakOptionsV1 = None  # type: ignore
 
 
 def deepgramtts(text: str, filename: Optional[str] = None, model: str = "aura-2-odysseus-en") -> bytes:
     """
     Convert text to speech using Deepgram TTS.
+    Returns audio bytes directly without file storage for streaming TTS.
     
     Args:
         text: Text to convert to speech
-        filename: Optional filename to save audio file. If None, uses temporary file.
+        filename: Deprecated - kept for backward compatibility but ignored (no file storage)
         model: Deepgram TTS model (default: "aura-2-odysseus-en")
     
     Returns:
         bytes: Audio data as bytes (MP3 format)
     """
-    import tempfile
-    
     try:
-        # Deepgram SDK v3+ requires keyword arg; older versions also accept it
-        deepgram = DeepgramClient(api_key=Config.deepgram_api_key)
-        
-        # Construct speak options; tolerate older SDKs that lack SpeakOptions
-        if SpeakOptions:
-            options = SpeakOptions(model=model)
-        else:
-            options = {"model": model}
+        # Use REST API directly to get bytes without file I/O
+        api_url = f"https://api.deepgram.com/v1/speak?model={model}"
+        headers = {
+            "Authorization": f"Token {Config.deepgram_api_key}",
+            "Content-Type": "application/json",
+        }
         
         text_data = {
             "text": text
         }
         
-        # Use temporary file if filename not provided
-        if not filename:
-            tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
-            filename = tmp_file.name
-            tmp_file.close()
+        # Get audio bytes directly from API response
+        resp = requests.post(api_url, headers=headers, json=text_data, timeout=30)
+        resp.raise_for_status()
         
-        # Save audio to file; try SDK first, then REST fallback for compatibility
-        try:
-            deepgram.speak.v("1").save(
-                filename,
-                text_data,
-                options,
-            )
-        except Exception:
-            api_url = f"https://api.deepgram.com/v1/speak?model={model}"
-            headers = {
-                "Authorization": f"Token {Config.deepgram_api_key}",
-                "Content-Type": "application/json",
-            }
-            resp = requests.post(api_url, headers=headers, json=text_data, timeout=30)
-            resp.raise_for_status()
-            with open(filename, "wb") as f:
-                f.write(resp.content)
-        
-        # Read and return audio bytes
-        with open(filename, 'rb') as f:
-            audio_bytes = f.read()
-        
-        # Clean up temporary file if we created it
-        if filename.startswith(tempfile.gettempdir()):
-            try:
-                os.unlink(filename)
-            except:
-                pass
-        
-        return audio_bytes
+        # Return audio bytes directly - no file storage needed
+        return resp.content
             
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Error in deepgramtts: {e}", exc_info=True)
         raise
+
+
+async def stream_tts_to_twilio(
+    handler: 'TwilioVoiceHandler',
+    call_sid: str,
+    text: str,
+    model: str = "aura-2-odysseus-en"
+) -> bool:
+    """
+    Stream TTS text to Twilio via Deepgram TTS WebSocket and Twilio Media Streams.
+    
+    Flow:
+    1. Get or create Deepgram TTS WebSocket connection
+    2. Send text to Deepgram
+    3. Receive audio chunks from Deepgram
+    4. Convert format if needed (linear16 → μ-law)
+    5. Send to Twilio Media Streams WebSocket
+    
+    Args:
+        handler: TwilioVoiceHandler instance
+        call_sid: Call SID for the call
+        text: Text to synthesize and stream
+        model: Deepgram TTS model (default: "aura-2-thalia-en")
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Check if Twilio Media Streams WebSocket is available
+        if call_sid not in handler.twilio_media_websockets:
+            handler.logger.warning(f"[TTS_STREAM] No Twilio Media Stream available for call {call_sid}")
+            return False
+        
+        twilio_stream = handler.twilio_media_websockets[call_sid]
+        twilio_websocket = twilio_stream['websocket']
+        stream_sid = twilio_stream['streamSid']
+        
+        # Use Deepgram REST API with streaming parameters (μ-law, 8kHz)
+        # This is more reliable than WebSocket for now
+        try:
+            api_url = f"https://api.deepgram.com/v1/speak?model={model}&encoding=mulaw&sample_rate=8000&container=none"
+            headers = {
+                "Authorization": f"Token {Config.deepgram_api_key}",
+                "Content-Type": "application/json",
+            }
+            
+            text_data = {"text": text}
+            
+            # Get audio bytes from Deepgram (μ-law @ 8kHz)
+            resp = requests.post(api_url, headers=headers, json=text_data, timeout=30, stream=True)
+            resp.raise_for_status()
+            
+            # Stream audio chunks to Twilio Media Streams
+            chunk_size = 1600  # ~200ms of audio at 8kHz
+            for chunk in resp.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    # Encode to base64 for Twilio
+                    audio_base64 = base64.b64encode(chunk).decode('utf-8')
+                    
+                    # Send to Twilio Media Streams
+                    message = {
+                        "event": "media",
+                        "streamSid": stream_sid,
+                        "media": {
+                            "payload": audio_base64
+                        }
+                    }
+                    await twilio_websocket.send_json(message)
+            
+            handler.logger.info(f"[TTS_STREAM] Streamed TTS audio to Twilio for call {call_sid}: {text[:50]}...")
+            return True
+            
+        except Exception as e:
+            handler.logger.error(f"[TTS_STREAM] Error streaming TTS to Twilio: {e}", exc_info=True)
+            return False
+            
+    except Exception as e:
+        handler.logger.error(f"[TTS_STREAM] Error in stream_tts_to_twilio: {e}", exc_info=True)
+        return False
 
 
 class TwilioVoiceHandler:
@@ -126,11 +179,19 @@ class TwilioVoiceHandler:
         self.websocket_connections: Dict[str, websocket.WebSocket] = {}
         self.audio_buffers: Dict[str, list] = {}
         
-        # Audio storage for testing/debugging
-        self.audio_storage_dir = Path(Config.audio_storage_dir)
+        # Audio storage for testing/debugging (Media Streams recording only, not TTS)
+        # Use environment variable or default path
+        audio_storage_dir = os.getenv("VOCA_AUDIO_STORAGE_DIR", "audio_storage")
+        self.audio_storage_dir = Path(audio_storage_dir)
         self.audio_storage_dir.mkdir(parents=True, exist_ok=True)
         self.audio_writers: Dict[str, wave.Wave_write] = {}  # call_sid -> wave writer
         self.audio_chunk_counts: Dict[str, int] = {}  # Track chunk count per call
+        
+        # Deepgram TTS WebSocket connections for streaming TTS
+        self.deepgram_tts_connections: Dict[str, Any] = {}  # call_sid -> Deepgram TTS connection
+        
+        # Twilio Media Streams WebSocket connections for sending audio back
+        self.twilio_media_websockets: Dict[str, Dict[str, Any]] = {}  # call_sid -> {websocket, streamSid}
         
     def start_webhook_server(self, host='0.0.0.0', port=5000):
         """Start FastAPI server to handle Twilio webhooks with real-time audio streaming."""
@@ -408,6 +469,16 @@ class TwilioVoiceHandler:
                         handler.logger.info(f"[AUDIO_DEBUG] Media stream connected for call {call_sid}")
                     elif event == 'start':
                         handler.logger.info(f"[AUDIO_DEBUG] Media stream started for call {call_sid}")
+                        # Store Twilio Media Streams WebSocket and streamSid for sending audio back
+                        stream_sid = data.get('start', {}).get('streamSid')
+                        if stream_sid:
+                            handler.twilio_media_websockets[call_sid] = {
+                                'websocket': websocket,
+                                'streamSid': stream_sid
+                            }
+                            handler.logger.info(f"[TTS_STREAM] Stored Twilio Media Stream for call {call_sid}, streamSid: {stream_sid}")
+                        else:
+                            handler.logger.warning(f"[TTS_STREAM] No streamSid in start event for call {call_sid}")
                     elif event == 'media':
                         # Extract base64 audio payload
                         media_payload = data.get('media', {}).get('payload')
@@ -471,6 +542,18 @@ class TwilioVoiceHandler:
                             except Exception as e:
                                 handler.logger.error(f"[AUDIO_CAPTURE] Error closing audio writer: {e}")
                             del handler.audio_writers[call_sid]
+                        # Clean up Deepgram TTS connection
+                        if call_sid in handler.deepgram_tts_connections:
+                            try:
+                                handler.deepgram_tts_connections[call_sid].finish()
+                                handler.logger.info(f"[TTS_STREAM] Closed Deepgram TTS connection for call {call_sid}")
+                            except Exception as e:
+                                handler.logger.error(f"[TTS_STREAM] Error closing Deepgram TTS connection: {e}")
+                            del handler.deepgram_tts_connections[call_sid]
+                        # Clean up Twilio Media Streams connection
+                        if call_sid in handler.twilio_media_websockets:
+                            del handler.twilio_media_websockets[call_sid]
+                            handler.logger.info(f"[TTS_STREAM] Cleaned up Twilio Media Stream for call {call_sid}")
                         break
                         
             except WebSocketDisconnect:
@@ -485,6 +568,18 @@ class TwilioVoiceHandler:
                     except Exception as e:
                         handler.logger.error(f"[AUDIO_CAPTURE] Error closing audio writer: {e}")
                     del handler.audio_writers[call_sid]
+                # Clean up Deepgram TTS connection
+                if call_sid in handler.deepgram_tts_connections:
+                    try:
+                        handler.deepgram_tts_connections[call_sid].finish()
+                        handler.logger.info(f"[TTS_STREAM] Closed Deepgram TTS connection for call {call_sid}")
+                    except Exception as e:
+                        handler.logger.error(f"[TTS_STREAM] Error closing Deepgram TTS connection: {e}")
+                    del handler.deepgram_tts_connections[call_sid]
+                # Clean up Twilio Media Streams connection
+                if call_sid in handler.twilio_media_websockets:
+                    del handler.twilio_media_websockets[call_sid]
+                    handler.logger.info(f"[TTS_STREAM] Cleaned up Twilio Media Stream for call {call_sid}")
             except Exception as e:
                 handler.logger.error(f"[AUDIO_DEBUG] Error in Media Stream WebSocket: {e}")
                 # Close audio writer if exists
