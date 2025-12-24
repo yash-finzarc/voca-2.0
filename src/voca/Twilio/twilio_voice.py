@@ -147,28 +147,39 @@ async def stream_tts_to_twilio(
             
             handler.logger.info(f"[TTS_STREAM] ✓ Audio received: {audio_length} bytes ({audio_duration_sec:.2f}s)")
             
-            # Encode to base64 for Twilio
-            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+            # Chunk audio into 160-byte pieces (20ms at 8kHz) and send quickly
+            # Simple chunking without delays - just send all chunks
+            chunk_size = 160  # 20ms of audio
+            chunk_count = 0
             
-            # Send entire audio to Twilio Media Streams
-            # For greeting messages, we can send it all at once
-            message = {
-                "event": "media",
-                "streamSid": stream_sid,
-                "media": {
-                    "track": "outbound",
-                    "payload": audio_base64
+            for i in range(0, audio_length, chunk_size):
+                chunk = audio_data[i:i + chunk_size]
+                if not chunk:
+                    break
+                
+                # Encode chunk to base64
+                audio_base64 = base64.b64encode(chunk).decode('utf-8')
+                
+                # Send chunk to Twilio Media Streams
+                message = {
+                    "event": "media",
+                    "streamSid": stream_sid,
+                    "media": {
+                        "track": "outbound",
+                        "payload": audio_base64
+                    }
                 }
-            }
+                
+                try:
+                    await twilio_websocket.send_json(message)
+                    chunk_count += 1
+                except Exception as send_error:
+                    handler.logger.error(f"[TTS_STREAM] ✗ Error sending chunk {chunk_count} to Twilio: {send_error}", exc_info=True)
+                    return False
             
-            try:
-                await twilio_websocket.send_json(message)
-                handler.logger.info(f"[TTS_STREAM] ✓ Audio sent to Twilio successfully ({audio_length} bytes)")
-                handler.logger.info(f"[TTS_STREAM] ===== TTS completed for call {call_sid} =====")
-                return True
-            except Exception as send_error:
-                handler.logger.error(f"[TTS_STREAM] ✗ Error sending audio to Twilio: {send_error}", exc_info=True)
-                return False
+            handler.logger.info(f"[TTS_STREAM] ✓ Audio sent to Twilio successfully ({chunk_count} chunks, {audio_length} bytes)")
+            handler.logger.info(f"[TTS_STREAM] ===== TTS completed for call {call_sid} =====")
+            return True
             
         except Exception as e:
             handler.logger.error(f"[TTS_STREAM] Error streaming TTS to Twilio: {e}", exc_info=True)
