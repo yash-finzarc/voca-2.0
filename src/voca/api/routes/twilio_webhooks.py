@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, JSONResponse
-from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription, Gather, Pause, Connect
+from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Transcription, Gather, Pause
 import numpy as np
 
 from src.voca.api.state import app_state
@@ -278,11 +278,10 @@ async def handle_outbound_call(request: Request):
     # Connect to WebRTC endpoint (Step 1)
     # CRITICAL: Use ACTUAL call_sid in URL - Twilio does NOT substitute {CallSid} in Stream URLs
     stream_url = f"{wss_base_url}/webrtc/{call_sid}"
-    # Use <Connect><Stream> for WebRTC connection
+    # Use <Start><Stream> for Media Streams on the current call
     # NOTE: For testing, you can change track to 'inbound_track' to only receive audio
     # For production, use 'both_tracks' to send and receive audio
     track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')  # Default: both_tracks, can be 'inbound_track' for testing
-    connect = Connect()
     stream = Stream(
         url=stream_url, 
         track=track_mode
@@ -290,8 +289,8 @@ async def handle_outbound_call(request: Request):
     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
     logger.info(f"[WebRTC] Track mode: {track_mode} (set TWILIO_STREAM_TRACK env var to change)")
     logger.info(f"[TWiML_DEBUG] Stream track parameter: {track_mode}")
-    connect.append(stream)
-    response.append(connect)
+    start = response.start()
+    start.stream(stream)
     
     # Add a Pause to keep the call active while Media Streams connects
     # Without this, Twilio might end the call immediately after Connect
@@ -304,9 +303,9 @@ async def handle_outbound_call(request: Request):
     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
     logger.info(f"[TWiML_DEBUG] TwiML XML for call {call_sid}:\n{twiml_xml}")
     
-    # Verify TwiML contains <Connect><Stream> and actual CallSid in URL
-    if "<Connect>" in twiml_xml and "<Stream" in twiml_xml:
-        logger.info(f"[TWiML_DEBUG] ✓ TwiML contains <Connect><Stream> - Twilio should connect")
+    # Verify TwiML contains <Start><Stream> and actual CallSid in URL
+    if "<Start>" in twiml_xml and "<Stream" in twiml_xml:
+        logger.info(f"[TWiML_DEBUG] ✓ TwiML contains <Start><Stream> - Twilio should connect")
         if call_sid in twiml_xml:
             logger.info(f"[TWiML_DEBUG] ✓ Stream URL contains actual CallSid: {call_sid}")
         else:
@@ -314,7 +313,7 @@ async def handle_outbound_call(request: Request):
         if "{CallSid}" in twiml_xml or "{{CallSid}}" in twiml_xml:
             logger.error(f"[TWiML_DEBUG] ✗ Stream URL contains {CallSid} variable - Twilio will NOT substitute it!")
     else:
-        logger.error(f"[TWiML_DEBUG] ✗ TwiML MISSING <Connect><Stream> - Twilio will NOT connect!")
+        logger.error(f"[TWiML_DEBUG] ✗ TwiML MISSING <Start><Stream> - Twilio will NOT connect!")
     
     return Response(content=twiml_xml, media_type="text/xml")
 
@@ -423,18 +422,17 @@ async def handle_incoming_call_webhook(request: Request):
     
     # CRITICAL: Use ACTUAL call_sid in URL - Twilio does NOT substitute {CallSid} in Stream URLs
     stream_url = f"{wss_base_url}/webrtc/{call_sid}"
-    # Use <Connect><Stream> for WebRTC connection
+    # Use <Start><Stream> for Media Streams on the current call
     # NOTE: For testing, you can change track to 'inbound_track' to only receive audio
     # For production, use 'both_tracks' to send and receive audio
     track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')  # Default: both_tracks, can be 'inbound_track' for testing
-    connect = Connect()
     stream = Stream(
         url=stream_url, 
         track=track_mode
     )
     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
-    connect.append(stream)
-    response.append(connect)
+    start = response.start()
+    start.stream(stream)
     
     # Add a Pause to keep the call active while Media Streams connects
     response.append(Pause(length=30))  # 30 second pause to keep call active
@@ -445,9 +443,9 @@ async def handle_incoming_call_webhook(request: Request):
     logger.info(f"[WebRTC] Enabled WebRTC connection for call {call_sid}")
     logger.info(f"[TWiML_DEBUG] TwiML XML for call {call_sid}:\n{twiml_xml}")
     
-    # Verify TwiML contains <Connect><Stream> and actual CallSid in URL
-    if "<Connect>" in twiml_xml and "<Stream" in twiml_xml:
-        logger.info(f"[TWiML_DEBUG] ✓ TwiML contains <Connect><Stream> - Twilio should connect")
+    # Verify TwiML contains <Start><Stream> and actual CallSid in URL
+    if "<Start>" in twiml_xml and "<Stream" in twiml_xml:
+        logger.info(f"[TWiML_DEBUG] ✓ TwiML contains <Start><Stream> - Twilio should connect")
         if call_sid in twiml_xml:
             logger.info(f"[TWiML_DEBUG] ✓ Stream URL contains actual CallSid: {call_sid}")
         else:
@@ -455,7 +453,7 @@ async def handle_incoming_call_webhook(request: Request):
         if "{CallSid}" in twiml_xml or "{{CallSid}}" in twiml_xml:
             logger.error(f"[TWiML_DEBUG] ✗ Stream URL contains {CallSid} variable - Twilio will NOT substitute it!")
     else:
-        logger.error(f"[TWiML_DEBUG] ✗ TwiML MISSING <Connect><Stream> - Twilio will NOT connect!")
+        logger.error(f"[TWiML_DEBUG] ✗ TwiML MISSING <Start><Stream> - Twilio will NOT connect!")
     
     return Response(content=twiml_xml, media_type="text/xml")
 
