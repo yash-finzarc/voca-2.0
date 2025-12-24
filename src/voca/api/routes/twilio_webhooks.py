@@ -272,7 +272,8 @@ async def handle_outbound_call(request: Request):
         wss_base_url = base_url
     
     # Connect to WebRTC endpoint (Step 1)
-    stream_url = f"{wss_base_url}/webrtc/{call_sid}"
+    # CRITICAL: Use {CallSid} variable so Twilio substitutes it at runtime
+    stream_url = f"{wss_base_url}/webrtc/{{CallSid}}"
     # Use <Connect><Stream> for WebRTC connection
     connect = Connect()
     stream = Stream(
@@ -280,11 +281,22 @@ async def handle_outbound_call(request: Request):
         track='both_tracks', 
         parameters={'call_sid': call_sid}
     )
+    logger.info(f"[WebRTC] Stream URL with CallSid variable: {stream_url}")
     connect.append(stream)
     response.append(connect)
+    
+    # Log the actual TwiML being sent to Twilio
+    twiml_xml = str(response)
     logger.info(f"[WebRTC] Enabled WebRTC connection for outbound call {call_sid}: {stream_url}")
-
-    return Response(content=str(response), media_type="text/xml")
+    logger.info(f"[TWiML_DEBUG] TwiML XML for call {call_sid}:\n{twiml_xml}")
+    
+    # Verify TwiML contains <Connect><Stream>
+    if "<Connect>" in twiml_xml and "<Stream" in twiml_xml:
+        logger.info(f"[TWiML_DEBUG] ✓ TwiML contains <Connect><Stream> - Twilio should connect")
+    else:
+        logger.error(f"[TWiML_DEBUG] ✗ TwiML MISSING <Connect><Stream> - Twilio will NOT connect!")
+    
+    return Response(content=twiml_xml, media_type="text/xml")
 
 
 @router.post("/webhook/voice")
@@ -353,7 +365,8 @@ async def handle_incoming_call_webhook(request: Request):
     else:
         wss_base_url = base_url
     
-    stream_url = f"{wss_base_url}/webrtc/{call_sid}"
+    # CRITICAL: Use {CallSid} variable so Twilio substitutes it at runtime
+    stream_url = f"{wss_base_url}/webrtc/{{CallSid}}"
     # Use <Connect><Stream> for WebRTC connection
     connect = Connect()
     stream = Stream(
@@ -361,11 +374,22 @@ async def handle_incoming_call_webhook(request: Request):
         track='both_tracks', 
         parameters={'call_sid': call_sid}
     )
+    logger.info(f"[WebRTC] Stream URL with CallSid variable: {stream_url}")
     connect.append(stream)
     response.append(connect)
+    
+    # Log the actual TwiML being sent to Twilio
+    twiml_xml = str(response)
     logger.info(f"[WebRTC] Enabled WebRTC connection for call {call_sid}: {stream_url}")
-
-    return Response(content=str(response), media_type="text/xml")
+    logger.info(f"[TWiML_DEBUG] TwiML XML for call {call_sid}:\n{twiml_xml}")
+    
+    # Verify TwiML contains <Connect><Stream>
+    if "<Connect>" in twiml_xml and "<Stream" in twiml_xml:
+        logger.info(f"[TWiML_DEBUG] ✓ TwiML contains <Connect><Stream> - Twilio should connect")
+    else:
+        logger.error(f"[TWiML_DEBUG] ✗ TwiML MISSING <Connect><Stream> - Twilio will NOT connect!")
+    
+    return Response(content=twiml_xml, media_type="text/xml")
 
 
 @router.post("/gather/continue/{call_sid}")
