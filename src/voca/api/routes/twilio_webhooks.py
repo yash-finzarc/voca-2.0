@@ -267,9 +267,18 @@ async def handle_outbound_call(request: Request):
             wss_base_url = base_url
         
         stream_url = f"{wss_base_url}/media/{call_sid}"
-        stream = Stream(url=stream_url, track='both_tracks', parameters={'call_sid': call_sid})
+        # Add status callback to monitor Media Streams connection status
+        status_callback_url = f"{base_url}/media/status/{call_sid}"
+        stream = Stream(
+            url=stream_url, 
+            track='both_tracks', 
+            parameters={'call_sid': call_sid},
+            statusCallback=status_callback_url,
+            statusCallbackMethod='POST'
+        )
         start.append(stream)
         logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for outbound call {call_sid}: {stream_url}")
+        logger.info(f"[AUDIO_DEBUG] Media Stream status callback: {status_callback_url}")
 
     response.append(start)
     logger.info(f"[TRANSCRIPTION] Enabled Real-Time Transcription for outbound call {call_sid}")
@@ -384,9 +393,18 @@ async def handle_incoming_call_webhook(request: Request):
             wss_base_url = base_url
         
         stream_url = f"{wss_base_url}/media/{call_sid}"
-        stream = Stream(url=stream_url, track='both_tracks', parameters={'call_sid': call_sid})
+        # Add status callback to monitor Media Streams connection status
+        status_callback_url = f"{base_url}/media/status/{call_sid}"
+        stream = Stream(
+            url=stream_url, 
+            track='both_tracks', 
+            parameters={'call_sid': call_sid},
+            statusCallback=status_callback_url,
+            statusCallbackMethod='POST'
+        )
         start.append(stream)
-        logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}")
+        logger.info(f"[AUDIO_DEBUG] Enabled Media Stream for call {call_sid}: {stream_url}")
+        logger.info(f"[AUDIO_DEBUG] Media Stream status callback: {status_callback_url}")
         logger.info(f"[AUDIO_DEBUG] Stream URL: {stream_url}")
 
     # Store greeting to send when Media Streams WebSocket connects
@@ -579,6 +597,22 @@ async def test_media_stream_endpoint(call_sid: str):
         "websocket_url": f"wss://voca2.duckdns.org/media/{call_sid}",
         "note": "WebSocket endpoint should be at /media/{call_sid}"
     }
+
+
+@router.post("/media/status/{call_sid}")
+async def handle_media_stream_status(call_sid: str, request: Request):
+    """Handle Media Streams status callbacks from Twilio."""
+    form_data = await request.form()
+    status = form_data.get('Status', 'unknown')
+    error_code = form_data.get('ErrorCode', '')
+    error_message = form_data.get('ErrorMessage', '')
+    
+    logger.info(f"[MEDIA_STREAM_STATUS] Call {call_sid}: Status={status}, ErrorCode={error_code}, ErrorMessage={error_message}")
+    
+    if status == 'failed' or error_code:
+        logger.error(f"[MEDIA_STREAM_STATUS] Media Stream failed for call {call_sid}: {error_code} - {error_message}")
+    
+    return PlainTextResponse("OK")
 
 
 @router.websocket("/media/{call_sid}")
