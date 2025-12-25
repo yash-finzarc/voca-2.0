@@ -1128,32 +1128,45 @@ class WebSocketAdapter:
             pass
 
 
+@router.get("/twilio")
+async def twilio_websocket_info():
+    """HTTP GET endpoint to verify /twilio WebSocket route is accessible."""
+    return JSONResponse({
+        "status": "ok",
+        "message": "WebSocket endpoint /twilio is registered",
+        "websocket_url": "wss://voca2.duckdns.org/twilio",
+        "note": "Twilio should connect to this WebSocket URL from TwiML Bin"
+    })
+
+
 @router.websocket("/twilio")
 async def handle_twilio_websocket(websocket: WebSocket):
     """
     Handle Twilio Media Streams WebSocket connection using Deepgram Voice Agent.
     This endpoint is used by TwiML Bin (static URL without call_sid in path).
-    Extracts call_sid from the first WebSocket message.
     """
+    logger.info(f"[DEEPGRAM_AGENT] ===== WebSocket connection attempt to /twilio =====")
+    
     if twilio_handler is None:
         logger.error("[DEEPGRAM_AGENT] server.py not available, cannot handle Deepgram agent")
         try:
+            await websocket.accept()
             await websocket.close(code=1008, reason="Deepgram agent not available")
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"[DEEPGRAM_AGENT] Error accepting/closing WebSocket: {e}")
         return
-    
-    logger.info(f"[DEEPGRAM_AGENT] ===== Deepgram Agent WebSocket handler (TwiML Bin) =====")
     
     try:
         await websocket.accept()
-        logger.info(f"[DEEPGRAM_AGENT] WebSocket accepted")
+        logger.info(f"[DEEPGRAM_AGENT] WebSocket accepted for /twilio endpoint")
         
         # Create adapter to make FastAPI WebSocket compatible with server.py
         ws_adapter = WebSocketAdapter(websocket)
+        logger.info(f"[DEEPGRAM_AGENT] WebSocket adapter created, calling twilio_handler")
         
         # Use the twilio_handler from server.py with the adapter
         await twilio_handler(ws_adapter)
+        logger.info(f"[DEEPGRAM_AGENT] twilio_handler completed")
         
     except Exception as e:
         logger.error(f"[DEEPGRAM_AGENT] Error in Deepgram agent handler: {e}", exc_info=True)

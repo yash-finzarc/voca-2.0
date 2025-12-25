@@ -262,22 +262,39 @@ async def twilio_receiver(twilio_ws, audio_queue, streamsid_queue):
             break
 
 async def twilio_handler(twilio_ws):
+    print("twilio_handler started")
     audio_queue = asyncio.Queue()
     streamsid_queue = asyncio.Queue()
 
-    async with sts_connect() as sts_ws:
-        config_message = load_config()
-        await sts_ws.send(json.dumps(config_message))
+    try:
+        print("Connecting to Deepgram STS...")
+        async with sts_connect() as sts_ws:
+            print("Connected to Deepgram STS")
+            print("Loading config...")
+            config_message = load_config()
+            print(f"Sending config to Deepgram: {json.dumps(config_message)[:200]}...")
+            await sts_ws.send(json.dumps(config_message))
+            print("Config sent to Deepgram")
 
-        await asyncio.wait(
-            [
-                asyncio.ensure_future(sts_sender(sts_ws, audio_queue)),
-                asyncio.ensure_future(sts_receiver(sts_ws, twilio_ws, streamsid_queue)),
-                asyncio.ensure_future(twilio_receiver(twilio_ws, audio_queue, streamsid_queue)),
-            ]
-        )
-
-        await twilio_ws.close()
+            print("Starting async tasks...")
+            await asyncio.wait(
+                [
+                    asyncio.ensure_future(sts_sender(sts_ws, audio_queue)),
+                    asyncio.ensure_future(sts_receiver(sts_ws, twilio_ws, streamsid_queue)),
+                    asyncio.ensure_future(twilio_receiver(twilio_ws, audio_queue, streamsid_queue)),
+                ]
+            )
+            print("Async tasks completed")
+    except Exception as e:
+        print(f"Error in twilio_handler: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        try:
+            await twilio_ws.close()
+            print("WebSocket closed")
+        except:
+            pass
 
 
 async def server():
