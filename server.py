@@ -6,8 +6,6 @@ import asyncio
 from supabase import create_client
 from dotenv import load_dotenv
 from src.voca.langgraph_agent import FUNCTION_MAP
-from ..langgraph_agent import FUNCTION_MAP
-from langgraph_agent import FUNCTION_MAP
 
 load_dotenv()
 
@@ -43,6 +41,16 @@ def get_system_prompt(prompt_name: str):
 
     return response.data["system_prompt"], response.data["welcome_message"]
 
+async def execute_function_call(func_name, arguments):
+    """Execute a function call from the FUNCTION_MAP."""
+    if func_name in FUNCTION_MAP:
+        result = await FUNCTION_MAP[func_name](**arguments)
+        print(f"Function call result: {result}")
+        return result
+    else:
+        print(f"error: Unknown function: {func_name}")
+        return {"error": f"Unknown function: {func_name}"}
+
 async def handle_barge_in(decoded,twilio_ws, streamsid):
     if decoded["type"] == "UserStartedSpeaking":
         clear_message = {
@@ -51,14 +59,6 @@ async def handle_barge_in(decoded,twilio_ws, streamsid):
         }
         await twilio_ws.send(json.dumps(clear_message))
 
-        async def execute_function_call(func_name, arguments):
-            if func_name in FUNCTION_MAP:
-                result = await FUNCTION_MAP[func_name](**arguments)
-                print(f"Function call result: {result}")
-                return result
-            else:
-                print(f"error: Unknown function: {func_name}")
-                return {"error": f"Unknown function: {func_name}"}
 def create_function_call_response(func_id, func_name, result):
     return {
         "type": "FunctionCallResponse",
@@ -75,7 +75,7 @@ async def handle_function_call_request(decoded, sts_ws):
 
             print(f"Function call: {func_name} with id {func_id} and arguments {arguments}")
 
-            result = execute_function_call(func_name, arguments)
+            result = await execute_function_call(func_name, arguments)
 
             function_result = create_function_call_response(func_id, func_name, result)
             await sts_ws.send(json.dumps(function_result))
@@ -94,7 +94,7 @@ async def handle_text_message(decoded,twilio_ws, sts_ws, streamsid):
     await handle_barge_in(decoded,twilio_ws, streamsid)
 
     if decoded["type"] == "FunctionCallRequest":
-        await handle_function_call(decoded, sts_ws)
+        await handle_function_call_request(decoded, sts_ws)
 
 async def sts_sender(sts_ws, audio_queue):
     print("STS sender started")
