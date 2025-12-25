@@ -151,16 +151,41 @@ supabase = create_client(
 )
 
 def get_system_prompt(prompt_name: str):
+    """
+    Get system prompt and welcome message from Supabase.
+    First tries to find by name and is_active=True, then falls back to is_default=True.
+    """
+    # Try to find by name and is_active
     response = (
         supabase
         .table("system_prompts")
-        .select("system_prompt, welcome_message")
+        .select("prompt, welcome_message")
         .eq("name", prompt_name)
-        .single()
+        .eq("is_active", True)
+        .limit(1)
         .execute()
     )
-
-    return response.data["system_prompt"], response.data["welcome_message"]
+    
+    if response.data:
+        row = response.data[0]
+        return row["prompt"], row["welcome_message"]
+    
+    # Fallback to default prompt if named prompt not found
+    response = (
+        supabase
+        .table("system_prompts")
+        .select("prompt, welcome_message")
+        .eq("is_default", True)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    
+    if not response.data:
+        raise RuntimeError("No active system prompt found (neither by name nor default)")
+    
+    row = response.data[0]
+    return row["prompt"], row["welcome_message"]
 
 async def execute_function_call(func_name, arguments):
     """Execute a function call from the FUNCTION_MAP."""
