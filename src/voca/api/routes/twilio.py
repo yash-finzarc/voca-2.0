@@ -139,30 +139,14 @@ async def make_twilio_call(request: Request):
         try:
             client = Client(config.account_sid, config.auth_token)
             
-            # Check if TwiML Bin is configured for outbound calls
-            twiml_bin_url = config.get_twiml_bin_url("outbound")
-            
-            if twiml_bin_url:
-                # Use TwiML Bin URL
-                logger.info(f"Using TwiML Bin for outbound call: {twiml_bin_url}")
-                call = client.calls.create(
-                    to=phone_number,
-                    from_=config.phone_number,
-                    url=twiml_bin_url,
-                    method='GET'  # TwiML Bins use GET
-                )
-            else:
-                # Use webhook URL (fallback)
-                webhook_url = config.get_webhook_url()
-                base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
-                outbound_url = f"{base_url}/outbound"
-                
-                call = client.calls.create(
-                    to=phone_number,
-                    from_=config.phone_number,
-                    url=outbound_url,
-                    method='POST'
-                )
+            # Don't specify URL - let Twilio use the phone number's configured TwiML Bin
+            # The phone number should be configured in Twilio Console to use TwiML Bin "voice-agent"
+            logger.info(f"[MAKE_CALL] Making outbound call - Twilio will use phone number's configured TwiML Bin")
+            call = client.calls.create(
+                to=phone_number,
+                from_=config.phone_number
+                # No URL parameter - Twilio will use the phone number's TwiML Bin configuration from Console
+            )
             
             if call.sid:
                 app_state._log_callback(f"Call initiated to {phone_number}, SID: {call.sid}")
