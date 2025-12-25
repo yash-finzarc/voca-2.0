@@ -24,17 +24,26 @@ async def test_websocket_connection(url: str, use_ssl: bool = True):
     print(f"Testing WebSocket Connection")
     print(f"{'='*60}")
     print(f"URL: {url}")
-    print(f"SSL Verification: {'Enabled' if use_ssl else 'Disabled'}")
+    
+    # Detect if URL uses wss:// (secure) or ws:// (non-secure)
+    is_secure = url.startswith('wss://')
+    print(f"Protocol: {'WSS (Secure)' if is_secure else 'WS (Non-secure)'}")
+    print(f"SSL Verification: {'Enabled' if (use_ssl and is_secure) else 'Disabled'}")
     print(f"Time: {datetime.now().isoformat()}")
     print(f"{'='*60}\n")
     
-    # SSL context
+    # SSL context - only use for wss:// URLs
     ssl_context = None
-    if use_ssl:
+    if is_secure and use_ssl:
         ssl_context = ssl.create_default_context()
         # For testing, you might want to disable verification if using self-signed certs
         # ssl_context.check_hostname = False
         # ssl_context.verify_mode = ssl.CERT_NONE
+    elif is_secure and not use_ssl:
+        # Create SSL context but disable verification
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
     
     try:
         print("1. Attempting to connect to WebSocket...")
@@ -118,14 +127,17 @@ async def test_websocket_connection(url: str, use_ssl: bool = True):
             print("✓ WebSocket connection test completed successfully!")
             print("="*60 + "\n")
             
-    except websockets.exceptions.InvalidStatusCode as e:
-        print(f"\n✗ Connection failed with HTTP status: {e.status_code}")
-        print(f"  Response headers: {e.headers}")
-        if e.status_code == 401:
+    except websockets.exceptions.InvalidStatus as e:
+        status_code = getattr(e, 'status_code', getattr(e, 'status', 'unknown'))
+        headers = getattr(e, 'headers', {})
+        print(f"\n✗ Connection failed with HTTP status: {status_code}")
+        if headers:
+            print(f"  Response headers: {headers}")
+        if status_code == 401:
             print("  → This indicates authentication/authorization issue")
-        elif e.status_code == 404:
+        elif status_code == 404:
             print("  → WebSocket endpoint not found - check the URL path")
-        elif e.status_code == 403:
+        elif status_code == 403:
             print("  → Access forbidden - check nginx/firewall configuration")
         return False
     except websockets.exceptions.InvalidURI as e:
