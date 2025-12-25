@@ -1155,6 +1155,50 @@ async def handle_incoming_call_webhook(request: Request):
 
 
 # Deepgram Voice Agent implementation using server.py
+class WebSocketAdapter:
+    """Adapter to make FastAPI WebSocket compatible with websockets library interface."""
+    
+    def __init__(self, websocket: WebSocket):
+        self.websocket = websocket
+        self._closed = False
+    
+    async def __aiter__(self):
+        return self
+    
+    async def __anext__(self):
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            # Receive message from FastAPI WebSocket
+            # Try JSON first, then text
+            try:
+                message = await self.websocket.receive_json()
+                # Convert back to string for json.load() compatibility
+                import json
+                return json.dumps(message)
+            except:
+                message = await self.websocket.receive_text()
+                return message
+        except Exception as e:
+            self._closed = True
+            raise StopAsyncIteration
+    
+    async def send(self, data):
+        """Send data through the WebSocket."""
+        if isinstance(data, str):
+            await self.websocket.send_text(data)
+        else:
+            await self.websocket.send_bytes(data)
+    
+    async def close(self):
+        """Close the WebSocket connection."""
+        self._closed = True
+        try:
+            await self.websocket.close()
+        except:
+            pass
+
+
 @router.websocket("/deepgram-agent/{call_sid}")
 async def handle_deepgram_agent_websocket(websocket: WebSocket, call_sid: str):
     """
@@ -1175,8 +1219,11 @@ async def handle_deepgram_agent_websocket(websocket: WebSocket, call_sid: str):
         await websocket.accept()
         logger.info(f"[DEEPGRAM_AGENT] WebSocket accepted for call {call_sid}")
         
-        # Use the twilio_handler from server.py
-        await twilio_handler(websocket)
+        # Create adapter to make FastAPI WebSocket compatible with server.py
+        ws_adapter = WebSocketAdapter(websocket)
+        
+        # Use the twilio_handler from server.py with the adapter
+        await twilio_handler(ws_adapter)
         
     except Exception as e:
         logger.error(f"[DEEPGRAM_AGENT] Error in Deepgram agent handler: {e}", exc_info=True)

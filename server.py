@@ -127,7 +127,8 @@ async def twilio_receiver(twilio_ws, audio_queue, streamsid_queue):
 
     async for message in twilio_ws:
         try:
-            data = json.load(message)
+            # message is a string, use json.loads() instead of json.load()
+            data = json.loads(message)
             event = data["event"]
 
             if event == "start":
@@ -142,9 +143,8 @@ async def twilio_receiver(twilio_ws, audio_queue, streamsid_queue):
                 chunk = base64.b64decode(media["payload"])
                 if media["track"] == "inbound":
                     inbuffer.extend(chunk)
-
-                elif event == "stop":
-                    break
+            elif event == "stop":
+                break
                 while len(inbuffer) > BUFFER_SIZE:
                     chunk = inbuffer[:BUFFER_SIZE]
                     audio_queue.put_nowait(chunk)
