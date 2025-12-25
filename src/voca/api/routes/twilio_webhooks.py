@@ -1155,7 +1155,9 @@ async def handle_twilio_websocket(websocket: WebSocket):
     logger.info(f"[DEEPGRAM_AGENT] WebSocket path: {websocket.url.path}")
     logger.info(f"[DEEPGRAM_AGENT] WebSocket query: {websocket.url.query}")
     logger.info(f"[DEEPGRAM_AGENT] WebSocket headers: {dict(websocket.headers)}")
-    logger.info(f"[DEEPGRAM_AGENT] WebSocket subprotocols: {websocket.subprotocols}")
+    # Get subprotocols from scope if available (FastAPI WebSocket doesn't expose subprotocols directly)
+    subprotocols = websocket.scope.get('subprotocols', []) if hasattr(websocket, 'scope') else []
+    logger.info(f"[DEEPGRAM_AGENT] WebSocket subprotocols: {subprotocols}")
     
     if twilio_handler is None:
         logger.error("[DEEPGRAM_AGENT] server.py not available, cannot handle Deepgram agent")
