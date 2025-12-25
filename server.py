@@ -1,6 +1,7 @@
 import os
 import base64
 import json
+import re
 import websockets
 from websockets.legacy.client import connect
 import asyncio
@@ -172,6 +173,21 @@ async def handle_function_call_request(decoded, sts_ws):
                 {"error": f"Function call failed with: {str(e)}"}
             )
             await sts_ws.send(json.dumps(error_result))
+
+def strip_markdown(text: str) -> str:
+    """Remove markdown formatting from text to prevent TTS from reading formatting characters."""
+    if not text:
+        return text
+    # Remove bold/italic markers (**text**, *text*)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    # Remove markdown list markers (-, *, •)
+    text = re.sub(r'^[\s]*[-*•]\s+', '', text, flags=re.MULTILINE)
+    # Remove markdown headers (#)
+    text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
+    # Clean up extra whitespace
+    text = re.sub(r'\n\s*\n', '\n', text)
+    return text.strip()
 
 async def handle_text_message(decoded,twilio_ws, sts_ws, streamsid):
     await handle_barge_in(decoded,twilio_ws, streamsid)
