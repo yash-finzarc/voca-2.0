@@ -78,7 +78,7 @@ def load_config():
                 {
                     "name": "book_appointment",
                     "description": "Book an appointment for a customer. Use this when the customer wants to schedule an appointment, meeting, or consultation.",
-                    "parameters": {
+                    "schema": {
                         "type": "object",
                         "properties": {
                             "customer_name": {
@@ -108,7 +108,7 @@ def load_config():
                 {
                     "name": "book_room",
                     "description": "Book a room or venue for a customer. Use this when the customer wants to reserve a room, meeting space, or venue.",
-                    "parameters": {
+                    "schema": {
                         "type": "object",
                         "properties": {
                             "customer_name": {
@@ -315,8 +315,9 @@ async def twilio_handler(twilio_ws):
             print("Connected to Deepgram STS")
             print("Loading config...")
             config_message = load_config()
-            print(f"Sending config to Deepgram: {json.dumps(config_message)[:200]}...")
-            await sts_ws.send(json.dumps(config_message))
+            config_json = json.dumps(config_message)
+            print(f"Sending config to Deepgram (full): {config_json}")
+            await sts_ws.send(config_json)
             print("Config sent to Deepgram")
 
             print("Starting async tasks...")
