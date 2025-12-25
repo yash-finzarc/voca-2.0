@@ -1099,15 +1099,19 @@ class WebSocketAdapter:
             raise StopAsyncIteration
         try:
             # Receive message from FastAPI WebSocket
-            # Try JSON first, then text
+            # Twilio Media Streams sends text messages (JSON strings), not JSON objects
+            # So we should receive as text first
             try:
-                message = await self.websocket.receive_json()
-                # Convert back to string for json.load() compatibility
-                import json
-                return json.dumps(message)
-            except:
                 message = await self.websocket.receive_text()
                 return message
+            except Exception as e:
+                # If text fails, try JSON (for compatibility)
+                try:
+                    message = await self.websocket.receive_json()
+                    import json
+                    return json.dumps(message)
+                except:
+                    raise e
         except Exception as e:
             self._closed = True
             raise StopAsyncIteration
@@ -1145,7 +1149,13 @@ async def handle_twilio_websocket(websocket: WebSocket):
     Handle Twilio Media Streams WebSocket connection using Deepgram Voice Agent.
     This endpoint is used by TwiML Bin (static URL without call_sid in path).
     """
-    logger.info(f"[DEEPGRAM_AGENT] ===== WebSocket connection attempt to /twilio =====")
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    logger.info(f"[DEEPGRAM_AGENT] ===== WebSocket connection attempt to /twilio from {client_ip} =====")
+    logger.info(f"[DEEPGRAM_AGENT] WebSocket URL: {websocket.url}")
+    logger.info(f"[DEEPGRAM_AGENT] WebSocket path: {websocket.url.path}")
+    logger.info(f"[DEEPGRAM_AGENT] WebSocket query: {websocket.url.query}")
+    logger.info(f"[DEEPGRAM_AGENT] WebSocket headers: {dict(websocket.headers)}")
+    logger.info(f"[DEEPGRAM_AGENT] WebSocket subprotocols: {websocket.subprotocols}")
     
     if twilio_handler is None:
         logger.error("[DEEPGRAM_AGENT] server.py not available, cannot handle Deepgram agent")
@@ -1153,12 +1163,15 @@ async def handle_twilio_websocket(websocket: WebSocket):
             await websocket.accept()
             await websocket.close(code=1008, reason="Deepgram agent not available")
         except Exception as e:
-            logger.error(f"[DEEPGRAM_AGENT] Error accepting/closing WebSocket: {e}")
+            logger.error(f"[DEEPGRAM_AGENT] Error accepting/closing WebSocket: {e}", exc_info=True)
         return
     
     try:
+        logger.info(f"[DEEPGRAM_AGENT] Accepting WebSocket connection...")
+        # Accept with subprotocols if provided (Twilio Media Streams may send specific subprotocols)
         await websocket.accept()
-        logger.info(f"[DEEPGRAM_AGENT] WebSocket accepted for /twilio endpoint")
+        logger.info(f"[DEEPGRAM_AGENT] ✓ WebSocket accepted for /twilio endpoint from {client_ip}")
+        logger.info(f"[DEEPGRAM_AGENT] WebSocket state after accept: {websocket.client_state if hasattr(websocket, 'client_state') else 'unknown'}")
         
         # Create adapter to make FastAPI WebSocket compatible with server.py
         ws_adapter = WebSocketAdapter(websocket)
@@ -1168,8 +1181,12 @@ async def handle_twilio_websocket(websocket: WebSocket):
         await twilio_handler(ws_adapter)
         logger.info(f"[DEEPGRAM_AGENT] twilio_handler completed")
         
+    except WebSocketDisconnect:
+        logger.info(f"[DEEPGRAM_AGENT] WebSocket disconnected by client")
     except Exception as e:
         logger.error(f"[DEEPGRAM_AGENT] Error in Deepgram agent handler: {e}", exc_info=True)
+        import traceback
+        logger.error(f"[DEEPGRAM_AGENT] Traceback: {traceback.format_exc()}")
         try:
             await websocket.close()
         except:
