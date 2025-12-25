@@ -10,14 +10,14 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, JSONResponse
-from twilio.twiml.voice_response import VoiceResponse, Start, Transcription, Gather, Pause
+# from twilio.twiml.voice_response import VoiceResponse, Start, Transcription, Gather, Pause
 import numpy as np
 
 from src.voca.api.state import app_state
 from src.voca.Twilio.twilio_config import get_twilio_config
 from src.voca.config import Config
-from src.voca.Twilio.twilio_voice import deepgramtts, stream_tts_to_twilio
-from src.voca.Twilio.webrtc import WebRTCSession, DeepgramSTTClient
+# Removed unused imports: deepgramtts, stream_tts_to_twilio, WebRTCSession, DeepgramSTTClient
+# These were used by the old STT-LLM-TTS pipeline which is now replaced by Deepgram Voice Agent
 
 # Import Deepgram agent handler from server.py
 # Add project root to path to import server.py
@@ -37,19 +37,19 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _append_vad_gather(response: VoiceResponse, base_url: str, call_sid: str, language: str = "en-IN"):
-    """Attach a speech-only Gather to keep the call alive using VAD (no barge-in)."""
-    action_url = f"{base_url}/gather/continue/{call_sid}"
-    gather = Gather(
-        input="speech",
-        speech_timeout="auto",  # Let VAD decide end-of-speech
-        action=action_url,
-        method="POST",
-        language=language,
-        bargeIn=False,  # Ensure greeting finishes before listening
-    )
-    response.append(gather)
-    return response
+# def _append_vad_gather(response: VoiceResponse, base_url: str, call_sid: str, language: str = "en-IN"):
+#     """Attach a speech-only Gather to keep the call alive using VAD (no barge-in)."""
+#     action_url = f"{base_url}/gather/continue/{call_sid}"
+#     gather = Gather(
+#         input="speech",
+#         speech_timeout="auto",  # Let VAD decide end-of-speech
+#         action=action_url,
+#         method="POST",
+#         language=language,
+#         bargeIn=False,  # Ensure greeting finishes before listening
+#     )
+#     response.append(gather)
+#     return response
 
 
 # @router.get("/conversation/{call_sid}/test")
@@ -229,59 +229,25 @@ def _append_vad_gather(response: VoiceResponse, base_url: str, call_sid: str, la
 
 @router.post("/outbound")
 async def handle_outbound_call(request: Request):
-    """Handle outbound call TwiML using WebRTC-first architecture."""
-    twilio_manager = app_state.get_twilio_manager()
-    if not twilio_manager:
-        response = VoiceResponse()
-        logger.error("[WebRTC] Twilio manager not available")
-        return Response(content=str(response), media_type="text/xml")
-
-    voice_handler = twilio_manager.voice_handler
-
+    """
+    Handle outbound Twilio call webhook using Deepgram Voice Agent.
+    This endpoint uses Deepgram STS from server.py instead of STT-LLM-TTS pipeline.
+    """
     form_data = await request.form()
     call_sid = form_data.get("CallSid")
-
-    if call_sid:
-        # Get organization_id from form data if available
-        org_id = form_data.get("organization_id") or app_state.get_orchestrator().default_organization_id
-        
-        voice_handler.active_calls[call_sid] = {
-            "to_number": "outbound",
-            "status": "ringing",
-            "start_time": time.time(),
-            "audio_buffer": [],
-            "unclear_count": 0,
-            "last_speech_attempt": None,
-            "name_attempt_count": 0,
-            "organization_id": org_id
-        }
-
+    to_number = form_data.get("To")
+    
+    logger.info(f"[DEEPGRAM_AGENT] Outbound call to {to_number}, SID: {call_sid}")
+    
     # Create TwiML response
     response = VoiceResponse()
-
-    # Generate greeting from system prompt (Step 3)
-    try:
-        org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
-        greeting = voice_handler.orchestrator.generate_greeting(
-            conversation_id=call_sid,
-            organization_id=org_id
-        )
-        logger.info(f"[WebRTC] Generated greeting for outbound call {call_sid}: {greeting}")
-    except Exception as e:
-        logger.error(f"[WebRTC] Error generating greeting: {e}")
-        greeting = "Hello! This is VOCA calling. How can I help you today?"
-
-    # Store greeting for WebRTC session
-    voice_handler.pending_greetings[call_sid] = greeting
-
-    # Connect call to WebRTC (Step 1)
+    
+    # Get webhook URL and convert to WebSocket URL
     config = get_twilio_config()
     webhook_url = config.get_webhook_url()
-    logger.info(f"[WebRTC] Original webhook_url: {webhook_url}")
     base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
-    logger.info(f"[WebRTC] Extracted base_url: {base_url}")
     
-    # Convert to WebSocket URL for WebRTC connection
+    # Convert to WebSocket URL
     if base_url.startswith('http://'):
         wss_base_url = base_url.replace('http://', 'wss://')
     elif base_url.startswith('https://'):
@@ -291,179 +257,104 @@ async def handle_outbound_call(request: Request):
     else:
         wss_base_url = base_url
     
-    # Connect to WebRTC endpoint (Step 1)
-    # CRITICAL: Use ACTUAL call_sid in URL - Twilio does NOT substitute {CallSid} in Stream URLs
-    stream_url = f"{wss_base_url}/webrtc/{call_sid}"
-    # Use <Start><Stream> for Media Streams on the current call
-    # NOTE: For testing, you can change track to 'inbound_track' to only receive audio
-    # For production, use 'both_tracks' to send and receive audio
-    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')  # Default: both_tracks, can be 'inbound_track' for testing
-    logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
-    logger.info(f"[WebRTC] Track mode: {track_mode} (set TWILIO_STREAM_TRACK env var to change)")
-    logger.info(f"[TWiML_DEBUG] Stream track parameter: {track_mode}")
+    # Connect to Deepgram agent endpoint
+    stream_url = f"{wss_base_url}/deepgram-agent/{call_sid}"
+    logger.info(f"[DEEPGRAM_AGENT] Stream URL: {stream_url}")
+    
+    # Enable Media Streams
     start = response.start()
+    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')
     start.stream(url=stream_url, track=track_mode)
     
-    # Add a Pause to keep the call active while Media Streams connects
-    # Without this, Twilio might end the call immediately after Connect
-    response.append(Pause(length=30))  # 30 second pause to keep call active
-    logger.info(f"[WebRTC] Added Pause(30s) to keep call active while Media Streams connects")
+    # Add pause to keep call active
+    response.append(Pause(length=30))
     
-    # Log the actual TwiML being sent to Twilio
     twiml_xml = str(response)
-    logger.info(f"[WebRTC] Enabled WebRTC connection for outbound call {call_sid}")
-    logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
-    logger.info(f"[TWiML_DEBUG] TwiML XML for call {call_sid}:\n{twiml_xml}")
-    
-    # Verify TwiML contains <Start><Stream> and actual CallSid in URL
-    if "<Start>" in twiml_xml and "<Stream" in twiml_xml:
-        logger.info(f"[TWiML_DEBUG] ✓ TwiML contains <Start><Stream> - Twilio should connect")
-        if call_sid in twiml_xml:
-            logger.info(f"[TWiML_DEBUG] ✓ Stream URL contains actual CallSid: {call_sid}")
-        else:
-            logger.error(f"[TWiML_DEBUG] ✗ Stream URL does NOT contain actual CallSid - check URL format!")
-        if "{CallSid}" in twiml_xml or "{{CallSid}}" in twiml_xml:
-            logger.error(f"[TWiML_DEBUG] ✗ Stream URL contains {CallSid} variable - Twilio will NOT substitute it!")
-    else:
-        logger.error(f"[TWiML_DEBUG] ✗ TwiML MISSING <Start><Stream> - Twilio will NOT connect!")
+    logger.info(f"[DEEPGRAM_AGENT] TwiML for outbound call {call_sid}:\n{twiml_xml}")
     
     return Response(content=twiml_xml, media_type="text/xml")
 
 
-@router.post("/call/status")
-async def handle_call_status_callback(request: Request):
-    """Handle call status callbacks from Twilio to track call state."""
-    form_data = await request.form()
-    call_sid = form_data.get("CallSid")
-    call_status = form_data.get("CallStatus")
-    call_duration = form_data.get("CallDuration", "0")
-    
-    logger.info(f"[CALL_STATUS] ===== Call Status Callback =====")
-    logger.info(f"[CALL_STATUS] Call SID: {call_sid}")
-    logger.info(f"[CALL_STATUS] Status: {call_status}")
-    logger.info(f"[CALL_STATUS] Duration: {call_duration}s")
-    logger.info(f"[CALL_STATUS] All form data: {dict(form_data)}")
-    
-    # Update call state if we have it
-    twilio_manager = app_state.get_twilio_manager()
-    if twilio_manager and call_sid:
-        voice_handler = twilio_manager.voice_handler
-        if call_sid in voice_handler.active_calls:
-            voice_handler.active_calls[call_sid]["status"] = call_status
-            voice_handler.active_calls[call_sid]["duration"] = call_duration
-            logger.info(f"[CALL_STATUS] Updated call state for {call_sid}: {call_status}")
-    
-    # Log important status changes
-    if call_status == "answered":
-        logger.info(f"[CALL_STATUS] ⚠️  Call {call_sid} was ANSWERED - Media Streams should connect now!")
-    elif call_status == "completed":
-        logger.info(f"[CALL_STATUS] ⚠️  Call {call_sid} COMPLETED after {call_duration}s")
-    elif call_status in ["busy", "no-answer", "failed", "canceled"]:
-        logger.warning(f"[CALL_STATUS] ⚠️  Call {call_sid} ended with status: {call_status} - Media Streams will NOT connect")
-    
-    return Response(content="OK", media_type="text/plain")
-
-
-# @router.post("/webhook/voice")
-# async def handle_incoming_call_webhook(request: Request):
-#     """Handle incoming Twilio call webhook using WebRTC-first architecture."""
-#     twilio_manager = app_state.get_twilio_manager()
-#     if not twilio_manager:
-#         response = VoiceResponse()
-#         logger.error("[WebRTC] Twilio manager not available")
-#         return Response(content=str(response), media_type="text/xml")
-
-#     voice_handler = twilio_manager.voice_handler
-
+# @router.post("/call/status")
+# async def handle_call_status_callback(request: Request):
+#     """Handle call status callbacks from Twilio to track call state."""
 #     form_data = await request.form()
 #     call_sid = form_data.get("CallSid")
-#     from_number = form_data.get("From")
-
-#     logger.info(f"[WebRTC] Incoming call from {from_number}, SID: {call_sid}")
-
-#     if call_sid:
-#         # Get organization_id from form data if available
-#         org_id = form_data.get("organization_id") or app_state.get_orchestrator().default_organization_id
-        
-#         voice_handler.active_calls[call_sid] = {
-#             "from_number": from_number,
-#             "status": "ringing",
-#             "start_time": time.time(),
-#             "audio_buffer": [],
-#             "unclear_count": 0,
-#             "last_speech_attempt": None,
-#             "name_attempt_count": 0,
-#             "organization_id": org_id
-#         }
-
-#     # Create TwiML response
-#     response = VoiceResponse()
-
-#     # Generate welcome message from system prompt (Step 3)
-#     try:
-#         org_id = form_data.get('organization_id') or app_state.get_orchestrator().default_organization_id
-#         greeting = voice_handler.orchestrator.generate_greeting(
-#             conversation_id=call_sid,
-#             organization_id=org_id
-#         )
-#         logger.info(f"[WebRTC] Generated greeting for call {call_sid}: {greeting}")
-#     except Exception as e:
-#         logger.error(f"[WebRTC] Error generating greeting: {e}")
-#         greeting = "Hello! How can I help you today?"
-
-#     # Store greeting for WebRTC session
-#     voice_handler.pending_greetings[call_sid] = greeting
-
-#     # Connect call to WebRTC (Step 1) - Use <Connect> with WebRTC gateway URL
-#     config = get_twilio_config()
-#     webhook_url = config.get_webhook_url()
-#     logger.info(f"[WebRTC] Original webhook_url: {webhook_url}")
-#     base_url = webhook_url.replace('/webhook/voice', '')
-#     logger.info(f"[WebRTC] Extracted base_url: {base_url}")
+#     call_status = form_data.get("CallStatus")
+#     call_duration = form_data.get("CallDuration", "0")
     
-#     # Connect to WebRTC endpoint (Step 1)
-#     # Convert to WebSocket URL for WebRTC connection
-#     if base_url.startswith('http://'):
-#         wss_base_url = base_url.replace('http://', 'wss://')
-#     elif base_url.startswith('https://'):
-#         wss_base_url = base_url.replace('https://', 'wss://')
-#     elif not base_url.startswith('wss://'):
-#         wss_base_url = f"wss://{base_url.lstrip('/')}"
-#     else:
-#         wss_base_url = base_url
+#     logger.info(f"[CALL_STATUS] ===== Call Status Callback =====")
+#     logger.info(f"[CALL_STATUS] Call SID: {call_sid}")
+#     logger.info(f"[CALL_STATUS] Status: {call_status}")
+#     logger.info(f"[CALL_STATUS] Duration: {call_duration}s")
+#     logger.info(f"[CALL_STATUS] All form data: {dict(form_data)}")
     
-#     # CRITICAL: Use ACTUAL call_sid in URL - Twilio does NOT substitute {CallSid} in Stream URLs
-#     stream_url = f"{wss_base_url}/webrtc/{call_sid}"
-#     # Use <Start><Stream> for Media Streams on the current call
-#     # NOTE: For testing, you can change track to 'inbound_track' to only receive audio
-#     # For production, use 'both_tracks' to send and receive audio
-#     track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')  # Default: both_tracks, can be 'inbound_track' for testing
-#     logger.info(f"[WebRTC] Stream URL with actual CallSid: {stream_url}")
-#     start = response.start()
-#     start.stream(url=stream_url, track=track_mode)
+#     # Update call state if we have it
+#     twilio_manager = app_state.get_twilio_manager()
+#     if twilio_manager and call_sid:
+#         voice_handler = twilio_manager.voice_handler
+#         if call_sid in voice_handler.active_calls:
+#             voice_handler.active_calls[call_sid]["status"] = call_status
+#             voice_handler.active_calls[call_sid]["duration"] = call_duration
+#             logger.info(f"[CALL_STATUS] Updated call state for {call_sid}: {call_status}")
     
-#     # Add a Pause to keep the call active while Media Streams connects
-#     response.append(Pause(length=30))  # 30 second pause to keep call active
-#     logger.info(f"[WebRTC] Added Pause(30s) to keep call active while Media Streams connects")
+#     # Log important status changes
+#     if call_status == "answered":
+#         logger.info(f"[CALL_STATUS] ⚠️  Call {call_sid} was ANSWERED - Media Streams should connect now!")
+#     elif call_status == "completed":
+#         logger.info(f"[CALL_STATUS] ⚠️  Call {call_sid} COMPLETED after {call_duration}s")
+#     elif call_status in ["busy", "no-answer", "failed", "canceled"]:
+#         logger.warning(f"[CALL_STATUS] ⚠️  Call {call_sid} ended with status: {call_status} - Media Streams will NOT connect")
     
-#     # Log the actual TwiML being sent to Twilio
-#     twiml_xml = str(response)
-#     logger.info(f"[WebRTC] Enabled WebRTC connection for call {call_sid}")
-#     logger.info(f"[TWiML_DEBUG] TwiML XML for call {call_sid}:\n{twiml_xml}")
+#     return Response(content="OK", media_type="text/plain")
+
+
+@router.post("/webhook/voice")
+async def handle_incoming_call_webhook(request: Request):
+    """
+    Handle incoming Twilio call webhook using Deepgram Voice Agent.
+    This endpoint uses Deepgram STS from server.py instead of STT-LLM-TTS pipeline.
+    """
+    form_data = await request.form()
+    call_sid = form_data.get("CallSid")
+    from_number = form_data.get("From")
     
-#     # Verify TwiML contains <Start><Stream> and actual CallSid in URL
-#     if "<Start>" in twiml_xml and "<Stream" in twiml_xml:
-#         logger.info(f"[TWiML_DEBUG] ✓ TwiML contains <Start><Stream> - Twilio should connect")
-#         if call_sid in twiml_xml:
-#             logger.info(f"[TWiML_DEBUG] ✓ Stream URL contains actual CallSid: {call_sid}")
-#         else:
-#             logger.error(f"[TWiML_DEBUG] ✗ Stream URL does NOT contain actual CallSid - check URL format!")
-#         if "{CallSid}" in twiml_xml or "{{CallSid}}" in twiml_xml:
-#             logger.error(f"[TWiML_DEBUG] ✗ Stream URL contains {CallSid} variable - Twilio will NOT substitute it!")
-#     else:
-#         logger.error(f"[TWiML_DEBUG] ✗ TwiML MISSING <Start><Stream> - Twilio will NOT connect!")
+    logger.info(f"[DEEPGRAM_AGENT] Incoming call from {from_number}, SID: {call_sid}")
     
-#     return Response(content=twiml_xml, media_type="text/xml")
+    # Create TwiML response
+    response = VoiceResponse()
+    
+    # Get webhook URL and convert to WebSocket URL
+    config = get_twilio_config()
+    webhook_url = config.get_webhook_url()
+    base_url = webhook_url.replace('/webhook/voice', '')
+    
+    # Convert to WebSocket URL
+    if base_url.startswith('http://'):
+        wss_base_url = base_url.replace('http://', 'wss://')
+    elif base_url.startswith('https://'):
+        wss_base_url = base_url.replace('https://', 'wss://')
+    elif not base_url.startswith('wss://'):
+        wss_base_url = f"wss://{base_url.lstrip('/')}"
+    else:
+        wss_base_url = base_url
+    
+    # Connect to Deepgram agent endpoint
+    stream_url = f"{wss_base_url}/deepgram-agent/{call_sid}"
+    logger.info(f"[DEEPGRAM_AGENT] Stream URL: {stream_url}")
+    
+    # Enable Media Streams
+    start = response.start()
+    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')
+    start.stream(url=stream_url, track=track_mode)
+    
+    # Add pause to keep call active
+    response.append(Pause(length=30))
+    
+    twiml_xml = str(response)
+    logger.info(f"[DEEPGRAM_AGENT] TwiML for call {call_sid}:\n{twiml_xml}")
+    
+    return Response(content=twiml_xml, media_type="text/xml")
 
 
 # @router.post("/gather/continue/{call_sid}")
