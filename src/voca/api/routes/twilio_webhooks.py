@@ -10,7 +10,6 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, JSONResponse
-from twilio.twiml.voice_response import VoiceResponse, Start, Pause
 import numpy as np
 
 from src.voca.api.state import app_state
@@ -230,53 +229,18 @@ logger = logging.getLogger(__name__)
 @router.post("/outbound")
 async def handle_outbound_call(request: Request):
     """
-    Handle outbound Twilio call webhook using Deepgram Voice Agent.
-    This endpoint uses Deepgram STS from server.py instead of STT-LLM-TTS pipeline.
-    
-    Note: If TwiML Bin is configured (TWILIO_TWIML_BIN_URL_OUTBOUND), Twilio should
-    be configured to use the TwiML Bin URL directly. This endpoint will still work
-    as a fallback or if the TwiML Bin redirects here.
+    Handle outbound Twilio call webhook.
+    Note: Since TwiML Bin is used, this endpoint is kept for compatibility but returns minimal response.
+    Twilio should be configured to use the TwiML Bin URL directly.
     """
     form_data = await request.form()
     call_sid = form_data.get("CallSid")
     to_number = form_data.get("To")
     
-    logger.info(f"[DEEPGRAM_AGENT] Outbound call to {to_number}, SID: {call_sid}")
+    logger.info(f"[DEEPGRAM_AGENT] Outbound call to {to_number}, SID: {call_sid} (TwiML Bin should handle this)")
     
-    # Generate TwiML dynamically
-    response = VoiceResponse()
-    
-    # Get webhook URL and convert to WebSocket URL
-    config = get_twilio_config()
-    webhook_url = config.get_webhook_url()
-    base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
-    
-    # Convert to WebSocket URL
-    if base_url.startswith('http://'):
-        wss_base_url = base_url.replace('http://', 'wss://')
-    elif base_url.startswith('https://'):
-        wss_base_url = base_url.replace('https://', 'wss://')
-    elif not base_url.startswith('wss://'):
-        wss_base_url = f"wss://{base_url.lstrip('/')}"
-    else:
-        wss_base_url = base_url
-    
-    # Connect to Deepgram agent endpoint
-    stream_url = f"{wss_base_url}/deepgram-agent/{call_sid}"
-    logger.info(f"[DEEPGRAM_AGENT] Stream URL: {stream_url}")
-    
-    # Enable Media Streams
-    start = response.start()
-    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')
-    start.stream(url=stream_url, track=track_mode)
-    
-    # Add pause to keep call active
-    response.append(Pause(length=30))
-    
-    twiml_xml = str(response)
-    logger.info(f"[DEEPGRAM_AGENT] TwiML for outbound call {call_sid}:\n{twiml_xml}")
-    
-    return Response(content=twiml_xml, media_type="text/xml")
+    # Return minimal response - TwiML Bin handles the actual TwiML
+    return PlainTextResponse(content="OK", status_code=200)
 
 
 # @router.post("/call/status")
@@ -316,53 +280,18 @@ async def handle_outbound_call(request: Request):
 @router.post("/webhook/voice")
 async def handle_incoming_call_webhook(request: Request):
     """
-    Handle incoming Twilio call webhook using Deepgram Voice Agent.
-    This endpoint uses Deepgram STS from server.py instead of STT-LLM-TTS pipeline.
-    
-    Note: If TwiML Bin is configured (TWILIO_TWIML_BIN_URL_INCOMING), Twilio should
-    be configured to use the TwiML Bin URL directly. This endpoint will still work
-    as a fallback or if the TwiML Bin redirects here.
+    Handle incoming Twilio call webhook.
+    Note: Since TwiML Bin is used, this endpoint is kept for compatibility but returns minimal response.
+    Twilio should be configured to use the TwiML Bin URL directly.
     """
     form_data = await request.form()
     call_sid = form_data.get("CallSid")
     from_number = form_data.get("From")
     
-    logger.info(f"[DEEPGRAM_AGENT] Incoming call from {from_number}, SID: {call_sid}")
+    logger.info(f"[DEEPGRAM_AGENT] Incoming call from {from_number}, SID: {call_sid} (TwiML Bin should handle this)")
     
-    # Generate TwiML dynamically
-    response = VoiceResponse()
-    
-    # Get webhook URL and convert to WebSocket URL
-    config = get_twilio_config()
-    webhook_url = config.get_webhook_url()
-    base_url = webhook_url.replace('/webhook/voice', '')
-    
-    # Convert to WebSocket URL
-    if base_url.startswith('http://'):
-        wss_base_url = base_url.replace('http://', 'wss://')
-    elif base_url.startswith('https://'):
-        wss_base_url = base_url.replace('https://', 'wss://')
-    elif not base_url.startswith('wss://'):
-        wss_base_url = f"wss://{base_url.lstrip('/')}"
-    else:
-        wss_base_url = base_url
-    
-    # Connect to Deepgram agent endpoint
-    stream_url = f"{wss_base_url}/deepgram-agent/{call_sid}"
-    logger.info(f"[DEEPGRAM_AGENT] Stream URL: {stream_url}")
-    
-    # Enable Media Streams
-    start = response.start()
-    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')
-    start.stream(url=stream_url, track=track_mode)
-    
-    # Add pause to keep call active
-    response.append(Pause(length=30))
-    
-    twiml_xml = str(response)
-    logger.info(f"[DEEPGRAM_AGENT] TwiML for call {call_sid}:\n{twiml_xml}")
-    
-    return Response(content=twiml_xml, media_type="text/xml")
+    # Return minimal response - TwiML Bin handles the actual TwiML
+    return PlainTextResponse(content="OK", status_code=200)
 
 
 # @router.post("/gather/continue/{call_sid}")
@@ -1236,95 +1165,33 @@ async def handle_deepgram_agent_websocket(websocket: WebSocket, call_sid: str):
 @router.post("/webhook/voice/deepgram-agent")
 async def handle_incoming_call_deepgram_agent(request: Request):
     """
-    Handle incoming Twilio call webhook using Deepgram Voice Agent.
-    This endpoint uses Deepgram STS instead of the STT-LLM-TTS pipeline.
+    Handle incoming Twilio call webhook.
+    Note: Since TwiML Bin is used, this endpoint is kept for compatibility but returns minimal response.
+    Twilio should be configured to use the TwiML Bin URL directly.
     """
     form_data = await request.form()
     call_sid = form_data.get("CallSid")
     from_number = form_data.get("From")
     
-    logger.info(f"[DEEPGRAM_AGENT] Incoming call from {from_number}, SID: {call_sid}")
+    logger.info(f"[DEEPGRAM_AGENT] Incoming call from {from_number}, SID: {call_sid} (TwiML Bin should handle this)")
     
-    # Create TwiML response
-    response = VoiceResponse()
-    
-    # Get webhook URL and convert to WebSocket URL
-    config = get_twilio_config()
-    webhook_url = config.get_webhook_url()
-    base_url = webhook_url.replace('/webhook/voice', '').replace('/webhook/voice/deepgram-agent', '')
-    
-    # Convert to WebSocket URL
-    if base_url.startswith('http://'):
-        wss_base_url = base_url.replace('http://', 'wss://')
-    elif base_url.startswith('https://'):
-        wss_base_url = base_url.replace('https://', 'wss://')
-    elif not base_url.startswith('wss://'):
-        wss_base_url = f"wss://{base_url.lstrip('/')}"
-    else:
-        wss_base_url = base_url
-    
-    # Connect to Deepgram agent endpoint
-    stream_url = f"{wss_base_url}/deepgram-agent/{call_sid}"
-    logger.info(f"[DEEPGRAM_AGENT] Stream URL: {stream_url}")
-    
-    # Enable Media Streams
-    start = response.start()
-    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')
-    start.stream(url=stream_url, track=track_mode)
-    
-    # Add pause to keep call active
-    response.append(Pause(length=30))
-    
-    twiml_xml = str(response)
-    logger.info(f"[DEEPGRAM_AGENT] TwiML for call {call_sid}:\n{twiml_xml}")
-    
-    return Response(content=twiml_xml, media_type="text/xml")
+    # Return minimal response - TwiML Bin handles the actual TwiML
+    return PlainTextResponse(content="OK", status_code=200)
 
 
 @router.post("/outbound/deepgram-agent")
 async def handle_outbound_call_deepgram_agent(request: Request):
     """
-    Handle outbound Twilio call webhook using Deepgram Voice Agent.
-    This endpoint uses Deepgram STS instead of the STT-LLM-TTS pipeline.
+    Handle outbound Twilio call webhook.
+    Note: Since TwiML Bin is used, this endpoint is kept for compatibility but returns minimal response.
+    Twilio should be configured to use the TwiML Bin URL directly.
     """
     form_data = await request.form()
     call_sid = form_data.get("CallSid")
     to_number = form_data.get("To")
     
-    logger.info(f"[DEEPGRAM_AGENT] Outbound call to {to_number}, SID: {call_sid}")
+    logger.info(f"[DEEPGRAM_AGENT] Outbound call to {to_number}, SID: {call_sid} (TwiML Bin should handle this)")
     
-    # Create TwiML response
-    response = VoiceResponse()
-    
-    # Get webhook URL and convert to WebSocket URL
-    config = get_twilio_config()
-    webhook_url = config.get_webhook_url()
-    base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '').replace('/outbound/deepgram-agent', '')
-    
-    # Convert to WebSocket URL
-    if base_url.startswith('http://'):
-        wss_base_url = base_url.replace('http://', 'wss://')
-    elif base_url.startswith('https://'):
-        wss_base_url = base_url.replace('https://', 'wss://')
-    elif not base_url.startswith('wss://'):
-        wss_base_url = f"wss://{base_url.lstrip('/')}"
-    else:
-        wss_base_url = base_url
-    
-    # Connect to Deepgram agent endpoint
-    stream_url = f"{wss_base_url}/deepgram-agent/{call_sid}"
-    logger.info(f"[DEEPGRAM_AGENT] Stream URL: {stream_url}")
-    
-    # Enable Media Streams
-    start = response.start()
-    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')
-    start.stream(url=stream_url, track=track_mode)
-    
-    # Add pause to keep call active
-    response.append(Pause(length=30))
-    
-    twiml_xml = str(response)
-    logger.info(f"[DEEPGRAM_AGENT] TwiML for outbound call {call_sid}:\n{twiml_xml}")
-    
-    return Response(content=twiml_xml, media_type="text/xml")
+    # Return minimal response - TwiML Bin handles the actual TwiML
+    return PlainTextResponse(content="OK", status_code=200)
 
