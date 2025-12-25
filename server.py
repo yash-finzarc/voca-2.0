@@ -14,8 +14,9 @@ def sts_connect():
     if not api_key:
         raise Exception("DEEPGRAM_API_KEY is not set")
 
+    # Deepgram STS requires the API key as a query parameter
     sts_ws = websockets.connect(
-        "wss://agent.deepgram.com/v1/agent/converse",
+        f"wss://agent.deepgram.com/v1/agent/converse?token={api_key}",
         subprotocols=["token", "api_key"],
     )
     return sts_ws

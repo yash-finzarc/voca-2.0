@@ -294,20 +294,33 @@ async def get_twilio_call_status_summary(
         for call in calls:
             # Try to get 'from' number - Twilio uses 'from_' attribute (with underscore)
             from_number = None
-            if hasattr(call, 'from_'):
-                from_number = call.from_
-            elif hasattr(call, 'from'):
-                from_number = getattr(call, 'from')
-            elif hasattr(call, 'from_formatted'):
-                from_number = call.from_formatted
+            try:
+                # Try different ways to access the 'from' number
+                if hasattr(call, 'from_'):
+                    from_number = call.from_
+                elif hasattr(call, 'from'):
+                    from_number = getattr(call, 'from')
+                elif hasattr(call, 'from_formatted'):
+                    from_number = call.from_formatted
+            except Exception as e:
+                logger.warning(f"Could not get 'from' number for call {call.sid}: {e}")
+                from_number = None
+            
+            # Safely get duration
+            duration_seconds = None
+            try:
+                if hasattr(call, 'duration') and call.duration:
+                    duration_seconds = int(call.duration)
+            except (ValueError, TypeError):
+                duration_seconds = None
             
             record = CallRecord(
                 sid=call.sid,
                 status=call.status,
                 from_number=from_number,
-                to_number=call.to,
-                direction=call.direction,
-                duration=call.duration,
+                to_number=call.to if hasattr(call, 'to') else None,
+                direction=call.direction if hasattr(call, 'direction') else None,
+                duration_seconds=duration_seconds,
                 start_time=call.start_time.isoformat() if call.start_time else None,
                 end_time=call.end_time.isoformat() if call.end_time else None,
             )
