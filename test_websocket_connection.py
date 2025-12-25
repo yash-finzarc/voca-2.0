@@ -52,7 +52,8 @@ async def test_websocket_connection(url: str, use_ssl: bool = True):
             ssl=ssl_context,
             ping_interval=20,
             ping_timeout=10,
-            close_timeout=10
+            close_timeout=10,
+            open_timeout=10  # Add timeout for connection
         ) as websocket:
             print("   ✓ WebSocket connection established!")
             print(f"   Connection state: {websocket.state}")
