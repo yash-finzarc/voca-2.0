@@ -18,13 +18,15 @@ def sts_connect():
     api_key_preview = api_key[:10] + "..." if len(api_key) > 10 else api_key[:len(api_key)]
     print(f"Using Deepgram API key: {api_key_preview} (length: {len(api_key)})")
 
-    # Deepgram STS requires the API key as a query parameter
-    sts_url = f"wss://agent.deepgram.com/v1/agent/converse?token={api_key}"
-    print(f"Connecting to Deepgram STS: wss://agent.deepgram.com/v1/agent/converse?token={api_key_preview}...")
+    # Deepgram Agent STS requires Authorization header, NOT query parameter
+    print(f"Connecting to Deepgram STS: wss://agent.deepgram.com/v1/agent/converse")
+    print(f"Using Authorization header (Token {api_key_preview}...)")
     
     sts_ws = websockets.connect(
-        sts_url,
-        subprotocols=["token", "api_key"],
+        "wss://agent.deepgram.com/v1/agent/converse",
+        extra_headers={
+            "Authorization": f"Token {api_key}"
+        }
     )
     return sts_ws
 
