@@ -1091,10 +1091,12 @@ class WebSocketAdapter:
         self.websocket = websocket
         self._closed = False
     
-    async def __aiter__(self):
+    def __aiter__(self):
+        """Return self as the async iterator. Must be a regular method, not async."""
         return self
     
     async def __anext__(self):
+        """Get the next message from the WebSocket. This is the async iterator method."""
         if self._closed:
             raise StopAsyncIteration
         try:
