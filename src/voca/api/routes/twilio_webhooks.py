@@ -1128,11 +1128,47 @@ class WebSocketAdapter:
             pass
 
 
+@router.websocket("/twilio")
+async def handle_twilio_websocket(websocket: WebSocket):
+    """
+    Handle Twilio Media Streams WebSocket connection using Deepgram Voice Agent.
+    This endpoint is used by TwiML Bin (static URL without call_sid in path).
+    Extracts call_sid from the first WebSocket message.
+    """
+    if twilio_handler is None:
+        logger.error("[DEEPGRAM_AGENT] server.py not available, cannot handle Deepgram agent")
+        try:
+            await websocket.close(code=1008, reason="Deepgram agent not available")
+        except:
+            pass
+        return
+    
+    logger.info(f"[DEEPGRAM_AGENT] ===== Deepgram Agent WebSocket handler (TwiML Bin) =====")
+    
+    try:
+        await websocket.accept()
+        logger.info(f"[DEEPGRAM_AGENT] WebSocket accepted")
+        
+        # Create adapter to make FastAPI WebSocket compatible with server.py
+        ws_adapter = WebSocketAdapter(websocket)
+        
+        # Use the twilio_handler from server.py with the adapter
+        await twilio_handler(ws_adapter)
+        
+    except Exception as e:
+        logger.error(f"[DEEPGRAM_AGENT] Error in Deepgram agent handler: {e}", exc_info=True)
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
 @router.websocket("/deepgram-agent/{call_sid}")
 async def handle_deepgram_agent_websocket(websocket: WebSocket, call_sid: str):
     """
     Handle Twilio Media Streams WebSocket connection using Deepgram Voice Agent.
     This endpoint uses the twilio_handler function from server.py directly.
+    Kept for backward compatibility if needed.
     """
     if twilio_handler is None:
         logger.error("[DEEPGRAM_AGENT] server.py not available, cannot handle Deepgram agent")
