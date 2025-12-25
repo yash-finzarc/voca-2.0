@@ -12,11 +12,18 @@ load_dotenv()
 def sts_connect():
     api_key = os.getenv("DEEPGRAM_API_KEY")
     if not api_key:
-        raise Exception("DEEPGRAM_API_KEY is not set")
+        raise Exception("DEEPGRAM_API_KEY is not set in environment variables")
+    
+    # Log API key status (first 10 chars only for security)
+    api_key_preview = api_key[:10] + "..." if len(api_key) > 10 else api_key[:len(api_key)]
+    print(f"Using Deepgram API key: {api_key_preview} (length: {len(api_key)})")
 
     # Deepgram STS requires the API key as a query parameter
+    sts_url = f"wss://agent.deepgram.com/v1/agent/converse?token={api_key}"
+    print(f"Connecting to Deepgram STS: wss://agent.deepgram.com/v1/agent/converse?token={api_key_preview}...")
+    
     sts_ws = websockets.connect(
-        f"wss://agent.deepgram.com/v1/agent/converse?token={api_key}",
+        sts_url,
         subprotocols=["token", "api_key"],
     )
     return sts_ws
