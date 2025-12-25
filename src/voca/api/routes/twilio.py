@@ -141,7 +141,9 @@ async def make_twilio_call(request: Request):
             
             # Don't specify URL - let Twilio use the phone number's configured TwiML Bin
             # The phone number should be configured in Twilio Console to use TwiML Bin "voice-agent"
-            logger.info(f"[MAKE_CALL] Making outbound call - Twilio will use phone number's configured TwiML Bin")
+            logger.info(f"[MAKE_CALL] Making outbound call to {phone_number} - Twilio will use phone number's configured TwiML Bin")
+            logger.info(f"[MAKE_CALL] Using phone number: {config.phone_number}")
+            
             call = client.calls.create(
                 to=phone_number,
                 from_=config.phone_number
@@ -149,10 +151,13 @@ async def make_twilio_call(request: Request):
             )
             
             if call.sid:
+                logger.info(f"[MAKE_CALL] Call initiated successfully to {phone_number}, SID: {call.sid}")
                 app_state._log_callback(f"Call initiated to {phone_number}, SID: {call.sid}")
             else:
+                logger.error(f"[MAKE_CALL] Failed to initiate call to {phone_number} - no SID returned")
                 app_state._log_callback(f"Failed to initiate call to {phone_number}")
         except Exception as e:
+            logger.error(f"[MAKE_CALL] Call error: {e}", exc_info=True)
             app_state._log_callback(f"Call error: {e}")
 
     threading.Thread(target=_worker, daemon=True).start()
@@ -198,7 +203,7 @@ async def get_twilio_status():
             calls_dict[call.sid] = {
                 "sid": call.sid,
                 "status": call.status,
-                "from": call.from_,
+                "from": getattr(call, 'from'),
                 "to": call.to,
                 "direction": call.direction,
                 "start_time": call.start_time.isoformat() if call.start_time else None,
@@ -276,7 +281,7 @@ async def get_twilio_call_status_summary(
             record = CallRecord(
                 sid=call.sid,
                 status=call.status,
-                from_number=call.from_,
+                from_number=getattr(call, 'from'),
                 to_number=call.to,
                 direction=call.direction,
                 duration=call.duration,
