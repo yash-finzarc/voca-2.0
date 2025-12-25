@@ -24,7 +24,7 @@ def sts_connect():
     
     sts_ws = websockets.connect(
         "wss://agent.deepgram.com/v1/agent/converse",
-        extra_headers={
+        headers={
             "Authorization": f"Token {api_key}"
         }
     )
