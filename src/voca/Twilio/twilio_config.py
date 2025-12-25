@@ -17,6 +17,8 @@ class TwilioConfig:
     auth_token: str
     phone_number: str
     webhook_url: str
+    twiml_bin_url_incoming: Optional[str] = None  # TwiML Bin URL for incoming calls
+    twiml_bin_url_outbound: Optional[str] = None  # TwiML Bin URL for outbound calls
     api_key_sid: Optional[str] = None
     api_key_secret: Optional[str] = None
     
@@ -28,6 +30,8 @@ class TwilioConfig:
             auth_token=os.getenv('TWILIO_AUTH_TOKEN', ''),
             phone_number=os.getenv('TWILIO_PHONE_NUMBER', ''),
             webhook_url=os.getenv('TWILIO_WEBHOOK_URL', ''),
+            twiml_bin_url_incoming=os.getenv('TWILIO_TWIML_BIN_URL_INCOMING'),
+            twiml_bin_url_outbound=os.getenv('TWILIO_TWIML_BIN_URL_OUTBOUND'),
             api_key_sid=os.getenv('TWILIO_API_KEY_SID'),
             api_key_secret=os.getenv('TWILIO_API_KEY_SECRET')
         )
@@ -43,6 +47,22 @@ class TwilioConfig:
             return self.webhook_url
         # Default to Linode server IP if webhook_url not set
         return f"{base_url}/webhook/voice"
+    
+    def get_twiml_bin_url(self, call_type: str = "incoming") -> Optional[str]:
+        """
+        Get the TwiML Bin URL for calls.
+        
+        Args:
+            call_type: "incoming" or "outbound"
+        
+        Returns:
+            TwiML Bin URL if configured, None otherwise
+        """
+        if call_type == "incoming":
+            return self.twiml_bin_url_incoming
+        elif call_type == "outbound":
+            return self.twiml_bin_url_outbound
+        return None
 
 
 # Global configuration instance - will be loaded when first accessed

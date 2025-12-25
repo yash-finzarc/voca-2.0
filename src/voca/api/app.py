@@ -112,17 +112,12 @@ async def startup_event():
     os.environ["GLOG_minloglevel"] = "2"
 
     try:
-        # Get orchestrator and load all models (STT, TTS, LLM) at startup
-        orchestrator = app_state.get_orchestrator()
-        try:
-            orchestrator.load_models()
-        except Exception as e:
-            logger.error(f"Failed to load models at startup: {e}")
-            raise
-        
-        twilio_manager = app_state.get_twilio_manager()
-        if not twilio_manager:
-            logger.warning("Twilio manager not available (Twilio not configured)")
+        # Verify Twilio is configured (Deepgram agent handles everything via server.py)
+        twilio_config = app_state.get_twilio_manager()
+        if not twilio_config:
+            logger.warning("Twilio not configured (check environment variables)")
+        else:
+            logger.info("Twilio configuration verified - using Deepgram Voice Agent from server.py")
     except Exception as e:
         logger.error(f"Error initializing components: {e}")
 

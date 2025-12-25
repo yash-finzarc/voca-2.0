@@ -9,53 +9,30 @@ from typing import Optional, List, Dict, Any
 from fastapi import WebSocket
 
 from src.voca.config import Config
-from src.voca.orchestrator import VocaOrchestrator
 from src.voca.Twilio.twilio_config import get_twilio_config
-from src.voca.Twilio.twilio_voice import TwilioCallManager
 
 
 class AppState:
     def __init__(self):
-        self.orchestrator: Optional[VocaOrchestrator] = None
-        self.twilio_manager: Optional[TwilioCallManager] = None
+        # Orchestrator removed - using Deepgram Voice Agent from server.py instead
         self.log_queue: Queue = Queue()
         self.is_twilio_server_running: bool = False
         self.is_continuous_call_running: bool = False
         self.continuous_call_thread: Optional[threading.Thread] = None
 
-    def get_orchestrator(self) -> VocaOrchestrator:
-        if self.orchestrator is None:
-            self.orchestrator = VocaOrchestrator(on_log=self._log_callback)
-        return self.orchestrator
-
     def get_twilio_manager(self):
-        """Get Twilio call manager. STT and TTS are handled by TwiML with Deepgram."""
-        if self.twilio_manager is None:
-            config = get_twilio_config()
-            if not config.validate():
-                return None
-
-            logger = logging.getLogger(__name__)
-
-            # Note: Deepgram STT/TTS are handled by TwiML - no API key needed
-            # The Deepgram API key check is kept for backward compatibility but not required
-            deepgram_key_env = os.getenv("DEEPGRAM_API_KEY", "")
-            deepgram_key_config = Config.deepgram_api_key
-            deepgram_key = deepgram_key_config or deepgram_key_env
-
-            if deepgram_key and deepgram_key.strip():
-                # Update Config if we found it in environment but not in Config
-                if not Config.deepgram_api_key and deepgram_key_env:
-                    Config.deepgram_api_key = deepgram_key_env
-                    logger.debug("Loaded DEEPGRAM_API_KEY from environment (not required for TwiML)")
-
-            try:
-                self.twilio_manager = TwilioCallManager(self.get_orchestrator())
-            except Exception as e:
-                logger.error(f"Failed to create TwilioCallManager: {e}")
-                return None
-
-        return self.twilio_manager
+        """
+        Get Twilio configuration.
+        Note: Twilio calls now use Deepgram Voice Agent from server.py via WebSocket endpoints.
+        This method is kept for compatibility but returns None since TwilioCallManager is not needed.
+        """
+        # Verify Twilio is configured
+        config = get_twilio_config()
+        if not config.validate():
+            return None
+        
+        # Deepgram agent handles everything via server.py - just return config
+        return config
 
     def _log_callback(self, message: str):
         """Callback for log messages."""

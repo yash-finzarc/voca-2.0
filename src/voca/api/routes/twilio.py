@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request, Query
+from twilio.rest import Client
 
 from src.voca.api.models import (
     CountryCode,
@@ -73,36 +74,18 @@ async def get_country_codes():
 
 @router.post("/start-server", response_model=StatusResponse)
 async def start_twilio_server():
-    """Start the Twilio webhook server."""
-    if app_state.is_twilio_server_running:
-        return StatusResponse(status="success", message="Twilio server is already running")
-
-    twilio_manager = app_state.get_twilio_manager()
-    if not twilio_manager:
+    """
+    Start the Twilio webhook server.
+    Note: With Deepgram Voice Agent, calls are handled via webhooks, not a separate server.
+    This endpoint is kept for compatibility but is a no-op.
+    """
+    config = app_state.get_twilio_manager()
+    if not config:
         raise HTTPException(status_code=400, detail="Twilio not configured. Please set up environment variables.")
-
-    def _worker():
-        try:
-            twilio_manager.start(host="0.0.0.0", port=5000)
-            app_state.is_twilio_server_running = True
-            app_state._log_callback("Twilio server started")
-        except Exception as e:
-            app_state._log_callback(f"Failed to start Twilio server: {e}")
-            app_state.is_twilio_server_running = False
-
-    threading.Thread(target=_worker, daemon=True).start()
-
-    timeout_seconds = 30
-    poll_interval = 0.5
-    elapsed = 0.0
-
-    while elapsed < timeout_seconds:
-        if app_state.is_twilio_server_running:
-            return StatusResponse(status="success", message="Twilio server started")
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
-
-    raise HTTPException(status_code=500, detail="Failed to start Twilio server")
+    
+    app_state.is_twilio_server_running = True
+    app_state._log_callback("Twilio webhook server ready (using Deepgram Voice Agent)")
+    return StatusResponse(status="success", message="Twilio webhook server ready (using Deepgram Voice Agent)")
 
 
 @router.post("/make-call", response_model=Dict[str, Any])
@@ -148,15 +131,41 @@ async def make_twilio_call(request: Request):
             detail='Phone number is required. Expected format: {"phone_number": "+1234567890"}',
         )
 
-    twilio_manager = app_state.get_twilio_manager()
-    if not twilio_manager:
+    config = app_state.get_twilio_manager()
+    if not config:
         raise HTTPException(status_code=400, detail="Twilio not configured. Please set up environment variables.")
 
     def _worker():
         try:
-            call_sid = twilio_manager.make_call(phone_number)
-            if call_sid:
-                app_state._log_callback(f"Call initiated to {phone_number}, SID: {call_sid}")
+            client = Client(config.account_sid, config.auth_token)
+            
+            # Check if TwiML Bin is configured for outbound calls
+            twiml_bin_url = config.get_twiml_bin_url("outbound")
+            
+            if twiml_bin_url:
+                # Use TwiML Bin URL
+                logger.info(f"Using TwiML Bin for outbound call: {twiml_bin_url}")
+                call = client.calls.create(
+                    to=phone_number,
+                    from_=config.phone_number,
+                    url=twiml_bin_url,
+                    method='GET'  # TwiML Bins use GET
+                )
+            else:
+                # Use webhook URL (fallback)
+                webhook_url = config.get_webhook_url()
+                base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+                outbound_url = f"{base_url}/outbound"
+                
+                call = client.calls.create(
+                    to=phone_number,
+                    from_=config.phone_number,
+                    url=outbound_url,
+                    method='POST'
+                )
+            
+            if call.sid:
+                app_state._log_callback(f"Call initiated to {phone_number}, SID: {call.sid}")
             else:
                 app_state._log_callback(f"Failed to initiate call to {phone_number}")
         except Exception as e:
@@ -170,14 +179,21 @@ async def make_twilio_call(request: Request):
 @router.post("/hangup-all", response_model=StatusResponse)
 async def hangup_all_calls():
     """Hang up all active calls."""
-    twilio_manager = app_state.get_twilio_manager()
-    if not twilio_manager:
+    config = app_state.get_twilio_manager()
+    if not config:
         raise HTTPException(status_code=400, detail="Twilio not configured. Please set up environment variables.")
 
     try:
-        twilio_manager.hangup_all_calls()
-        app_state._log_callback("All calls hung up")
-        return StatusResponse(status="success", message="All calls hung up")
+        client = Client(config.account_sid, config.auth_token)
+        calls = client.calls.list(status='in-progress')
+        
+        hung_up_count = 0
+        for call in calls:
+            call.update(status='completed')
+            hung_up_count += 1
+        
+        app_state._log_callback(f"Hung up {hung_up_count} active call(s)")
+        return StatusResponse(status="success", message=f"Hung up {hung_up_count} active call(s)")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to hang up calls: {e}")
 
@@ -185,13 +201,30 @@ async def hangup_all_calls():
 @router.get("/status", response_model=CallStatusResponse)
 async def get_twilio_status():
     """Get Twilio call status."""
-    twilio_manager = app_state.get_twilio_manager()
-    if not twilio_manager:
+    config = app_state.get_twilio_manager()
+    if not config:
         return CallStatusResponse(active_calls=0, models_ready=False, calls={})
 
     try:
-        status = twilio_manager.get_call_status()
-        return CallStatusResponse(**status)
+        client = Client(config.account_sid, config.auth_token)
+        active_calls = client.calls.list(status='in-progress')
+        
+        calls_dict = {}
+        for call in active_calls:
+            calls_dict[call.sid] = {
+                "sid": call.sid,
+                "status": call.status,
+                "from": call.from_,
+                "to": call.to,
+                "direction": call.direction,
+                "start_time": call.start_time.isoformat() if call.start_time else None,
+            }
+        
+        return CallStatusResponse(
+            active_calls=len(active_calls),
+            models_ready=True,  # Deepgram agent is always ready
+            calls=calls_dict
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get status: {e}")
 
@@ -203,10 +236,9 @@ async def get_twilio_call_status_summary(
     start_time_before: Optional[str] = Query(None, description="ISO 8601 timestamp. Only calls starting before this time are returned."),
 ):
     """Fetch categorized Twilio call records for the dashboard."""
-    twilio_manager = app_state.get_twilio_manager()
-    if not twilio_manager:
-        config = get_twilio_config()
-        if not config.validate():
+    config = app_state.get_twilio_manager()
+    if not config:
+        if not get_twilio_config().validate():
             raise HTTPException(
                 status_code=400,
                 detail="Twilio not configured. Please set up environment variables (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER).",
@@ -214,7 +246,7 @@ async def get_twilio_call_status_summary(
         else:
             raise HTTPException(
                 status_code=500,
-                detail="Twilio configuration is valid but manager failed to initialize. Check server logs for details.",
+                detail="Twilio configuration is valid but failed to initialize. Check server logs for details.",
             )
 
     def _parse_iso8601(value: Optional[str], field_name: str) -> Optional[datetime]:
@@ -232,16 +264,59 @@ async def get_twilio_call_status_summary(
     parsed_before = _parse_iso8601(start_time_before, "start_time_before")
 
     try:
-        summary = twilio_manager.fetch_call_history(limit=limit, start_time_after=parsed_after, start_time_before=parsed_before)
+        client = Client(config.account_sid, config.auth_token)
+        
+        # Fetch calls from Twilio
+        calls = client.calls.list(limit=limit)
+        
+        # Filter by date if provided
+        if parsed_after or parsed_before:
+            filtered_calls = []
+            for call in calls:
+                if call.start_time:
+                    call_time = call.start_time.replace(tzinfo=None)
+                    if parsed_after and call_time < parsed_after:
+                        continue
+                    if parsed_before and call_time > parsed_before:
+                        continue
+                filtered_calls.append(call)
+            calls = filtered_calls
+        
+        # Categorize calls
+        ongoing = []
+        declined = []
+        completed = []
+        others = []
+        
+        for call in calls:
+            record = CallRecord(
+                sid=call.sid,
+                status=call.status,
+                from_number=call.from_,
+                to_number=call.to,
+                direction=call.direction,
+                duration=call.duration,
+                start_time=call.start_time.isoformat() if call.start_time else None,
+                end_time=call.end_time.isoformat() if call.end_time else None,
+            )
+            
+            if call.status == 'in-progress' or call.status == 'ringing' or call.status == 'queued':
+                ongoing.append(record)
+            elif call.status == 'completed':
+                completed.append(record)
+            elif call.status == 'canceled' or call.status == 'failed' or call.status == 'busy' or call.status == 'no-answer':
+                declined.append(record)
+            else:
+                others.append(record)
+        
+        return CallStatusSummary(
+            ongoing=ongoing,
+            declined=declined,
+            completed=completed,
+            others=others,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch call history: {exc}") from exc
-
-    return CallStatusSummary(
-        ongoing=[CallRecord(**record) for record in summary.get("ongoing", [])],
-        declined=[CallRecord(**record) for record in summary.get("declined", [])],
-        completed=[CallRecord(**record) for record in summary.get("completed", [])],
-        others=[CallRecord(**record) for record in summary.get("others", [])],
-    )
 
 
 @router.get("/configured", response_model=Dict[str, bool])

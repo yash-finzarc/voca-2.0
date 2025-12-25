@@ -232,6 +232,10 @@ async def handle_outbound_call(request: Request):
     """
     Handle outbound Twilio call webhook using Deepgram Voice Agent.
     This endpoint uses Deepgram STS from server.py instead of STT-LLM-TTS pipeline.
+    
+    Note: If TwiML Bin is configured (TWILIO_TWIML_BIN_URL_OUTBOUND), Twilio should
+    be configured to use the TwiML Bin URL directly. This endpoint will still work
+    as a fallback or if the TwiML Bin redirects here.
     """
     form_data = await request.form()
     call_sid = form_data.get("CallSid")
@@ -239,7 +243,7 @@ async def handle_outbound_call(request: Request):
     
     logger.info(f"[DEEPGRAM_AGENT] Outbound call to {to_number}, SID: {call_sid}")
     
-    # Create TwiML response
+    # Generate TwiML dynamically
     response = VoiceResponse()
     
     # Get webhook URL and convert to WebSocket URL
@@ -314,6 +318,10 @@ async def handle_incoming_call_webhook(request: Request):
     """
     Handle incoming Twilio call webhook using Deepgram Voice Agent.
     This endpoint uses Deepgram STS from server.py instead of STT-LLM-TTS pipeline.
+    
+    Note: If TwiML Bin is configured (TWILIO_TWIML_BIN_URL_INCOMING), Twilio should
+    be configured to use the TwiML Bin URL directly. This endpoint will still work
+    as a fallback or if the TwiML Bin redirects here.
     """
     form_data = await request.form()
     call_sid = form_data.get("CallSid")
@@ -321,7 +329,7 @@ async def handle_incoming_call_webhook(request: Request):
     
     logger.info(f"[DEEPGRAM_AGENT] Incoming call from {from_number}, SID: {call_sid}")
     
-    # Create TwiML response
+    # Generate TwiML dynamically
     response = VoiceResponse()
     
     # Get webhook URL and convert to WebSocket URL
