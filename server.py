@@ -2,6 +2,7 @@ import os
 import base64
 import json
 import websockets
+from websockets.legacy.client import connect
 import asyncio
 from supabase import create_client
 from dotenv import load_dotenv
@@ -18,13 +19,14 @@ def sts_connect():
     api_key_preview = api_key[:10] + "..." if len(api_key) > 10 else api_key[:len(api_key)]
     print(f"Using Deepgram API key: {api_key_preview} (length: {len(api_key)})")
 
-    # Deepgram Agent STS requires Authorization header, NOT query parameter
+    # Deepgram Agent STS requires Authorization header
+    # Use legacy client for websockets 15.0.1 compatibility
     print(f"Connecting to Deepgram STS: wss://agent.deepgram.com/v1/agent/converse")
     print(f"Using Authorization header (Token {api_key_preview}...)")
     
-    sts_ws = websockets.connect(
+    sts_ws = connect(
         "wss://agent.deepgram.com/v1/agent/converse",
-        headers={
+        extra_headers={
             "Authorization": f"Token {api_key}"
         }
     )
