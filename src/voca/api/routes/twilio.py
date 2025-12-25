@@ -139,16 +139,30 @@ async def make_twilio_call(request: Request):
         try:
             client = Client(config.account_sid, config.auth_token)
             
-            # Don't specify URL - let Twilio use the phone number's configured TwiML Bin
-            # The phone number should be configured in Twilio Console to use TwiML Bin "voice-agent"
-            logger.info(f"[MAKE_CALL] Making outbound call to {phone_number} - Twilio will use phone number's configured TwiML Bin")
-            logger.info(f"[MAKE_CALL] Using phone number: {config.phone_number}")
+            # For outbound API calls, Twilio REQUIRES a URL parameter
+            # Use TwiML Bin URL if configured, otherwise fall back to webhook
+            twiml_bin_url = config.get_twiml_bin_url("outbound")
             
-            call = client.calls.create(
-                to=phone_number,
-                from_=config.phone_number
-                # No URL parameter - Twilio will use the phone number's TwiML Bin configuration from Console
-            )
+            if twiml_bin_url:
+                logger.info(f"[MAKE_CALL] Making outbound call to {phone_number} using TwiML Bin: {twiml_bin_url}")
+                call = client.calls.create(
+                    to=phone_number,
+                    from_=config.phone_number,
+                    url=twiml_bin_url,
+                    method='GET'
+                )
+            else:
+                # Fallback: use webhook URL if TwiML Bin not configured
+                webhook_url = config.get_webhook_url()
+                base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '')
+                outbound_url = f"{base_url}/outbound"
+                logger.info(f"[MAKE_CALL] Making outbound call to {phone_number} using webhook: {outbound_url}")
+                call = client.calls.create(
+                    to=phone_number,
+                    from_=config.phone_number,
+                    url=outbound_url,
+                    method='POST'
+                )
             
             if call.sid:
                 logger.info(f"[MAKE_CALL] Call initiated successfully to {phone_number}, SID: {call.sid}")
@@ -203,7 +217,7 @@ async def get_twilio_status():
             calls_dict[call.sid] = {
                 "sid": call.sid,
                 "status": call.status,
-                "from": getattr(call, 'from'),
+                "from": call.from_ if hasattr(call, 'from_') else getattr(call, 'from', None),
                 "to": call.to,
                 "direction": call.direction,
                 "start_time": call.start_time.isoformat() if call.start_time else None,
@@ -278,10 +292,19 @@ async def get_twilio_call_status_summary(
         others = []
         
         for call in calls:
+            # Try to get 'from' number - Twilio uses 'from_' attribute (with underscore)
+            from_number = None
+            if hasattr(call, 'from_'):
+                from_number = call.from_
+            elif hasattr(call, 'from'):
+                from_number = getattr(call, 'from')
+            elif hasattr(call, 'from_formatted'):
+                from_number = call.from_formatted
+            
             record = CallRecord(
                 sid=call.sid,
                 status=call.status,
-                from_number=getattr(call, 'from'),
+                from_number=from_number,
                 to_number=call.to,
                 direction=call.direction,
                 duration=call.duration,
