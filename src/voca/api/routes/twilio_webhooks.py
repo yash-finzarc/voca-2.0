@@ -4,7 +4,9 @@ import asyncio
 import base64
 import json
 import os
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, JSONResponse
@@ -16,6 +18,20 @@ from src.voca.Twilio.twilio_config import get_twilio_config
 from src.voca.config import Config
 from src.voca.Twilio.twilio_voice import deepgramtts, stream_tts_to_twilio
 from src.voca.Twilio.webrtc import WebRTCSession, DeepgramSTTClient
+
+# Import Deepgram agent handler from server.py
+# Add project root to path to import server.py
+project_root = Path(__file__).parent.parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+try:
+    import server
+    from server import twilio_handler
+except ImportError as e:
+    logger = logging.getLogger(__name__)
+    logger.error(f"Failed to import server.py: {e}")
+    twilio_handler = None
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1237,4 +1253,132 @@ async def send_test_tone(call_sid: str):
     except Exception as e:
         logger.error(f"[TEST_TONE] Error sending test tone: {e}", exc_info=True)
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# Deepgram Voice Agent implementation using server.py
+@router.websocket("/deepgram-agent/{call_sid}")
+async def handle_deepgram_agent_websocket(websocket: WebSocket, call_sid: str):
+    """
+    Handle Twilio Media Streams WebSocket connection using Deepgram Voice Agent.
+    This endpoint uses the twilio_handler function from server.py directly.
+    """
+    if twilio_handler is None:
+        logger.error("[DEEPGRAM_AGENT] server.py not available, cannot handle Deepgram agent")
+        try:
+            await websocket.close(code=1008, reason="Deepgram agent not available")
+        except:
+            pass
+        return
+    
+    logger.info(f"[DEEPGRAM_AGENT] ===== Deepgram Agent WebSocket handler for call {call_sid} =====")
+    
+    try:
+        await websocket.accept()
+        logger.info(f"[DEEPGRAM_AGENT] WebSocket accepted for call {call_sid}")
+        
+        # Use the twilio_handler from server.py
+        await twilio_handler(websocket)
+        
+    except Exception as e:
+        logger.error(f"[DEEPGRAM_AGENT] Error in Deepgram agent handler: {e}", exc_info=True)
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+@router.post("/webhook/voice/deepgram-agent")
+async def handle_incoming_call_deepgram_agent(request: Request):
+    """
+    Handle incoming Twilio call webhook using Deepgram Voice Agent.
+    This endpoint uses Deepgram STS instead of the STT-LLM-TTS pipeline.
+    """
+    form_data = await request.form()
+    call_sid = form_data.get("CallSid")
+    from_number = form_data.get("From")
+    
+    logger.info(f"[DEEPGRAM_AGENT] Incoming call from {from_number}, SID: {call_sid}")
+    
+    # Create TwiML response
+    response = VoiceResponse()
+    
+    # Get webhook URL and convert to WebSocket URL
+    config = get_twilio_config()
+    webhook_url = config.get_webhook_url()
+    base_url = webhook_url.replace('/webhook/voice', '').replace('/webhook/voice/deepgram-agent', '')
+    
+    # Convert to WebSocket URL
+    if base_url.startswith('http://'):
+        wss_base_url = base_url.replace('http://', 'wss://')
+    elif base_url.startswith('https://'):
+        wss_base_url = base_url.replace('https://', 'wss://')
+    elif not base_url.startswith('wss://'):
+        wss_base_url = f"wss://{base_url.lstrip('/')}"
+    else:
+        wss_base_url = base_url
+    
+    # Connect to Deepgram agent endpoint
+    stream_url = f"{wss_base_url}/deepgram-agent/{call_sid}"
+    logger.info(f"[DEEPGRAM_AGENT] Stream URL: {stream_url}")
+    
+    # Enable Media Streams
+    start = response.start()
+    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')
+    start.stream(url=stream_url, track=track_mode)
+    
+    # Add pause to keep call active
+    response.append(Pause(length=30))
+    
+    twiml_xml = str(response)
+    logger.info(f"[DEEPGRAM_AGENT] TwiML for call {call_sid}:\n{twiml_xml}")
+    
+    return Response(content=twiml_xml, media_type="text/xml")
+
+
+@router.post("/outbound/deepgram-agent")
+async def handle_outbound_call_deepgram_agent(request: Request):
+    """
+    Handle outbound Twilio call webhook using Deepgram Voice Agent.
+    This endpoint uses Deepgram STS instead of the STT-LLM-TTS pipeline.
+    """
+    form_data = await request.form()
+    call_sid = form_data.get("CallSid")
+    to_number = form_data.get("To")
+    
+    logger.info(f"[DEEPGRAM_AGENT] Outbound call to {to_number}, SID: {call_sid}")
+    
+    # Create TwiML response
+    response = VoiceResponse()
+    
+    # Get webhook URL and convert to WebSocket URL
+    config = get_twilio_config()
+    webhook_url = config.get_webhook_url()
+    base_url = webhook_url.replace('/webhook/voice', '').replace('/outbound', '').replace('/outbound/deepgram-agent', '')
+    
+    # Convert to WebSocket URL
+    if base_url.startswith('http://'):
+        wss_base_url = base_url.replace('http://', 'wss://')
+    elif base_url.startswith('https://'):
+        wss_base_url = base_url.replace('https://', 'wss://')
+    elif not base_url.startswith('wss://'):
+        wss_base_url = f"wss://{base_url.lstrip('/')}"
+    else:
+        wss_base_url = base_url
+    
+    # Connect to Deepgram agent endpoint
+    stream_url = f"{wss_base_url}/deepgram-agent/{call_sid}"
+    logger.info(f"[DEEPGRAM_AGENT] Stream URL: {stream_url}")
+    
+    # Enable Media Streams
+    start = response.start()
+    track_mode = os.getenv('TWILIO_STREAM_TRACK', 'both_tracks')
+    start.stream(url=stream_url, track=track_mode)
+    
+    # Add pause to keep call active
+    response.append(Pause(length=30))
+    
+    twiml_xml = str(response)
+    logger.info(f"[DEEPGRAM_AGENT] TwiML for outbound call {call_sid}:\n{twiml_xml}")
+    
+    return Response(content=twiml_xml, media_type="text/xml")
 

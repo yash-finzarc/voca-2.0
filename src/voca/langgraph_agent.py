@@ -18,6 +18,91 @@ from src.voca.system_prompt import get_state_tracker_prompt
 logger = logging.getLogger("voca.langgraph")
 
 
+# Function implementations for voice AI agent
+async def book_appointment(
+    customer_name: str,
+    appointment_date: str,
+    appointment_time: str,
+    service_type: str = None,
+    notes: str = None,
+) -> dict:
+    """
+    Book an appointment for a customer.
+    
+    Args:
+        customer_name: The name of the customer booking the appointment
+        appointment_date: The date of the appointment in YYYY-MM-DD format
+        appointment_time: The time of the appointment in HH:MM format (24-hour format)
+        service_type: The type of service or appointment (optional)
+        notes: Any additional notes or special requests (optional)
+    
+    Returns:
+        Dictionary with booking confirmation details
+    """
+    logger.info(f"Booking appointment for {customer_name} on {appointment_date} at {appointment_time}")
+    
+    # TODO: Implement actual booking logic (e.g., save to database)
+    # For now, return a confirmation message
+    
+    result = {
+        "status": "success",
+        "message": f"Appointment booked successfully for {customer_name}",
+        "appointment_date": appointment_date,
+        "appointment_time": appointment_time,
+        "service_type": service_type,
+        "notes": notes,
+    }
+    
+    return result
+
+
+async def book_room(
+    customer_name: str,
+    check_in_date: str,
+    room_type: str,
+    check_out_date: str = None,
+    number_of_guests: int = None,
+    special_requests: str = None,
+) -> dict:
+    """
+    Book a room or venue for a customer.
+    
+    Args:
+        customer_name: The name of the customer booking the room
+        check_in_date: The check-in date in YYYY-MM-DD format
+        room_type: The type of room requested
+        check_out_date: The check-out date in YYYY-MM-DD format (optional, for multi-day bookings)
+        number_of_guests: The number of guests or people for the room booking (optional)
+        special_requests: Any special requests or requirements (optional)
+    
+    Returns:
+        Dictionary with room booking confirmation details
+    """
+    logger.info(f"Booking {room_type} room for {customer_name} from {check_in_date}")
+    
+    # TODO: Implement actual booking logic (e.g., save to database)
+    # For now, return a confirmation message
+    
+    result = {
+        "status": "success",
+        "message": f"Room booked successfully for {customer_name}",
+        "room_type": room_type,
+        "check_in_date": check_in_date,
+        "check_out_date": check_out_date,
+        "number_of_guests": number_of_guests,
+        "special_requests": special_requests,
+    }
+    
+    return result
+
+
+# Map function names to their implementations
+FUNCTION_MAP = {
+    "book_appointment": book_appointment,
+    "book_room": book_room,
+}
+
+
 class LeadData(BaseModel):
     """Structured representation of the key booking/lead fields."""
 
