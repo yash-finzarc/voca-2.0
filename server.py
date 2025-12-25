@@ -57,9 +57,8 @@ async def handle_barge_in(decoded,twilio_ws, streamsid):
                 print(f"Function call result: {result}")
                 return result
             else:
-                print{"error"f"Unknown function: {func_name}"}
-                print(result)
-                return result
+                print(f"error: Unknown function: {func_name}")
+                return {"error": f"Unknown function: {func_name}"}
 def create_function_call_response(func_id, func_name, result):
     return {
         "type": "FunctionCallResponse",
