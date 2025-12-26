@@ -179,20 +179,28 @@ class SarvamTTSClient:
         
         try:
             # Check if connection is still open
-            if self.websocket.closed:
-                logger.warning("TTS WebSocket is closed, cannot send text")
+            if not self.websocket or self.websocket.closed:
+                logger.warning(f"TTS WebSocket is closed (is_connected={self.is_connected}, websocket={self.websocket is not None}), cannot send text")
                 self.is_connected = False
                 return
             
-            # SarvamAI TTS message format: Simple dictionary with text, voice, language
-            # Format: {"text": "...", "voice": "...", "language": "..."}
-            message = {
-                "text": text,
-                "voice": self.voice,
-                "language": self.language
+            # SarvamAI TTS WebSocket message format: {"type": "text", "data": {...}}
+            # Format per SarvamAI documentation
+            payload = {
+                "type": "text",
+                "data": {
+                    "text": text,
+                    "voice": "default",
+                    "language": self.language
+                }
             }
-            await self.websocket.send(json.dumps(message))
-            logger.debug(f"Sent text to TTS (length: {len(text)}, final: {is_final})")
+            
+            message_json = json.dumps(payload)
+            logger.info(f"Sending TTS payload: {message_json}")
+            logger.info(f"TTS connection state: is_connected={self.is_connected}, websocket_closed={self.websocket.closed if self.websocket else 'N/A'}")
+            
+            await self.websocket.send(message_json)
+            logger.info(f"✓ TTS message sent successfully (text length: {len(text)}, voice: default, language: {self.language})")
         except websockets.exceptions.ConnectionClosed as e:
             logger.warning(f"TTS connection closed while sending: {e.code} - {e.reason}")
             self.is_connected = False
