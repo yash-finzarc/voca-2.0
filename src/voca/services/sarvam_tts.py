@@ -232,11 +232,12 @@ class SarvamTTSClient:
             }
             
             message_json = json.dumps(payload)
-            logger.info(f"Sending TTS payload: {message_json}")
-            logger.info(f"TTS connection state: is_connected={self.is_connected}, websocket_closed={self.websocket.closed if self.websocket else 'N/A'}")
+            # Log payload structure but not full content (to avoid cluttering logs)
+            logger.debug(f"TTS payload structure: type={payload.get('type')}, text_length={len(text)}, voice={payload.get('data', {}).get('voice')}, language={payload.get('data', {}).get('language')}")
+            logger.info(f"TTS sending text (length: {len(text)} chars, voice: default, language: {self.language})")
             
             await self.websocket.send(message_json)
-            logger.info(f"✓ TTS message sent successfully (text length: {len(text)}, voice: default, language: {self.language})")
+            logger.debug(f"✓ TTS message sent successfully")
         except websockets.exceptions.ConnectionClosed as e:
             logger.warning(f"TTS connection closed while sending: {e.code} - {e.reason}")
             self.is_connected = False

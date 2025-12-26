@@ -1136,6 +1136,8 @@ async def handle_twilio_websocket(websocket: WebSocket):
     conversation_history = []
     current_tts_task = None
     welcome_complete_event = asyncio.Event()  # Signals when welcome TTS completes
+    welcome_audio_received = False  # Track if we've received any audio for welcome
+    welcome_audio_timeout = 10.0  # Timeout for welcome audio (10 seconds)
     tts_active = False
     audio_buffer = bytearray()
     BUFFER_SIZE = 20 * 160  # 20ms of audio at 8kHz
@@ -1155,17 +1157,23 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # Set up TTS audio callback
         async def tts_audio_callback(pcm_audio: bytes):
             """Callback for TTS audio output."""
-            nonlocal call_state
+            nonlocal call_state, welcome_audio_received
             if not tts_active or not streamsid:
                 return
             # Convert PCM to μ-law and send to Twilio
             mulaw_audio = pcm_to_mulaw(pcm_audio)
+            # Encode to base64 (do NOT log the payload - it's too large)
+            audio_payload = base64.b64encode(mulaw_audio).decode("ascii")
             media_message = {
                 "event": "media",
                 "streamSid": streamsid,
-                "media": {"payload": base64.b64encode(mulaw_audio).decode("ascii")}
+                "media": {"payload": audio_payload}
             }
             await websocket.send_json(media_message)
+            
+            # Mark that we've received audio (for welcome message tracking)
+            if call_state == CallState.WELCOME:
+                welcome_audio_received = True
         
         tts_client.set_audio_callback(tts_audio_callback)
         
@@ -1264,14 +1272,39 @@ async def handle_twilio_websocket(websocket: WebSocket):
                             
                             async def send_welcome():
                                 """Send welcome message via TTS and wait for completion."""
+                                nonlocal tts_active, call_state, welcome_complete_event, welcome_audio_received
                                 try:
                                     logger.info(f"[CUSTOM_LLM_PIPELINE] Sending welcome message: {welcome_message}")
+                                    welcome_audio_received = False
+                                    
+                                    # Send text to TTS
                                     await tts_client.send_text_chunks(welcome_message)
+                                    
+                                    # Wait for audio to start arriving (with timeout)
+                                    timeout_elapsed = 0
+                                    timeout_limit = 5.0  # 5 seconds to start receiving audio
+                                    check_interval = 0.1
+                                    
+                                    while not welcome_audio_received and timeout_elapsed < timeout_limit:
+                                        await asyncio.sleep(check_interval)
+                                        timeout_elapsed += check_interval
+                                    
+                                    if not welcome_audio_received:
+                                        logger.warning("[CUSTOM_LLM_PIPELINE] No audio received for welcome message within timeout")
+                                    else:
+                                        logger.info("[CUSTOM_LLM_PIPELINE] Welcome message audio started")
+                                    
+                                    # Wait a bit more for audio to finish streaming (rough estimate)
+                                    # TTS typically takes ~1-2 seconds per sentence
+                                    estimated_duration = len(welcome_message) / 10.0  # Rough estimate: 10 chars per second
+                                    wait_time = min(estimated_duration + 1.0, 10.0)  # Max 10 seconds
+                                    logger.info(f"[CUSTOM_LLM_PIPELINE] Waiting {wait_time:.1f}s for welcome audio to complete...")
+                                    await asyncio.sleep(wait_time)
+                                    
                                     logger.info("[CUSTOM_LLM_PIPELINE] Welcome message TTS completed")
                                 except Exception as e:
                                     logger.error(f"[CUSTOM_LLM_PIPELINE] Error sending welcome: {e}", exc_info=True)
                                 finally:
-                                    nonlocal tts_active, call_state, welcome_complete_event
                                     tts_active = False
                                     # Signal welcome completion
                                     welcome_complete_event.set()
