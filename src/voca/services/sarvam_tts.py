@@ -173,7 +173,7 @@ class SarvamTTSClient:
                     "pitch": 0.8,
                     "loudness": 1,
                     "speech_sample_rate": 8000,
-                    "enable_preprocessing": false,
+                   # "enable_preprocessing": false,
                     "output_audio_bitrate": "128k",
                     "min_buffer_size": 50,
                     "max_chunk_length": 150,
