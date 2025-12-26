@@ -129,3 +129,66 @@ async def stop_stt(client: Dict[str, Any]):
         await client["websocket"].close()
 
     client["is_connected"] = False
+
+
+class SarvamSTTClient:
+    """
+    SarvamAI STT client for speech-to-text conversion.
+    
+    Wraps the functional STT API with a class-based interface for easier usage.
+    """
+    
+    def __init__(self, api_key: str, language: str = "hi-IN", sample_rate: int = 16000, 
+                 model: str = "saarika:v2.5", high_vad_sensitivity: bool = True,
+                 vad_signals: bool = True, flush_signal: bool = True):
+        """
+        Initialize SarvamAI STT client.
+        
+        Args:
+            api_key: SarvamAI API subscription key
+            language: Language code (default: hi-IN)
+            sample_rate: Audio sample rate in Hz (default: 16000)
+            model: STT model to use (default: saarika:v2.5)
+            high_vad_sensitivity: Enable high VAD sensitivity (default: True)
+            vad_signals: Enable VAD signals (default: True)
+            flush_signal: Enable flush signal (default: True)
+        """
+        config = {
+            "language": language,
+            "sample_rate": sample_rate,
+            "model": model,
+            "high_vad_sensitivity": high_vad_sensitivity,
+            "vad_signals": vad_signals,
+            "flush_signal": flush_signal,
+        }
+        self._client = create_stt_client(api_key, config)
+    
+    @property
+    def is_connected(self) -> bool:
+        """Check if STT client is connected."""
+        return self._client.get("is_connected", False)
+    
+    async def connect(self):
+        """Establish WebSocket connection to SarvamAI STT service."""
+        await connect_stt(self._client)
+    
+    async def send_audio(self, pcm_audio: bytes):
+        """Send PCM audio data to STT service."""
+        await send_audio(self._client, pcm_audio)
+    
+    async def send_flush(self):
+        """Send flush signal to STT service."""
+        await send_flush(self._client)
+    
+    def set_transcript_callback(self, callback: Callable[[str, bool], None]):
+        """
+        Set callback function for transcript updates.
+        
+        Args:
+            callback: Async function that receives (transcript: str, is_final: bool)
+        """
+        set_transcript_callback(self._client, callback)
+    
+    async def stop(self):
+        """Stop STT client and close WebSocket connection."""
+        await stop_stt(self._client)
