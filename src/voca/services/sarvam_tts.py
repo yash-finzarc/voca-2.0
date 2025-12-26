@@ -178,7 +178,8 @@ class SarvamTTSClient:
                 raise ValueError(f"Invalid config payload structure: {config_payload}")
             
             config_json = json.dumps(config_payload)
-            logger.debug(f"TTS config JSON being sent: {config_json}")
+            # Log at INFO level to see exact config being sent (critical for debugging 422 errors)
+            logger.info(f"TTS config JSON being sent: {config_json}")
             await self.websocket.send(config_json)
             self._config_sent = True  # Mark as sent
             logger.info(f"✓ TTS config sent (requesting PCM): speaker={self.voice}, language={self.language}, output_audio_codec=pcm")
