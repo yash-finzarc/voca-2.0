@@ -1311,10 +1311,10 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                     logger.info(f"[CUSTOM_LLM_PIPELINE] Waiting {wait_time:.1f}s for welcome audio to complete...")
                                     await asyncio.sleep(wait_time)
                                     
-                                    # Send end message to flush audio from Sarvam's pipeline
+                                    # Send flush message to flush audio from Sarvam's pipeline
                                     try:
-                                        await tts_client.send_end()
-                                        logger.debug("[CUSTOM_LLM_PIPELINE] Sent end message to flush welcome audio")
+                                        await tts_client.send_flush()
+                                        logger.debug("[CUSTOM_LLM_PIPELINE] Sent flush message to flush welcome audio")
                                     except Exception as e:
                                         logger.warning(f"[CUSTOM_LLM_PIPELINE] Error sending end message: {e}")
                                     

@@ -283,6 +283,8 @@ class SarvamTTSClient:
                             # The error is about message format, not authentication
                             if error_code == 422:
                                 logger.warning("TTS parameter error (422) - connection remains open, check message format")
+                                # Don't break the receive loop on 422 - connection is still valid
+                                # Continue receiving messages (might get audio or other messages)
                             else:
                                 # Only disconnect on critical errors (auth, server errors, etc.)
                                 logger.error(f"TTS critical error (code {error_code}) - disconnecting")
@@ -330,15 +332,13 @@ class SarvamTTSClient:
         
         try:
             # Check if connection is still open
-            if not self.websocket or self.websocket.closed:
-                logger.warning(f"TTS WebSocket is closed (is_connected={self.is_connected}, websocket={self.websocket is not None}), cannot send text")
+            if not self.websocket:
+                logger.warning(f"TTS WebSocket is None (is_connected={self.is_connected}), cannot send text")
                 self.is_connected = False
                 return
             
-            # CRITICAL: Sarvam TTS text message format - ONLY "text" field allowed
+            # CRITICAL: Sarvam TTS text message format per docs: {"type": "text", "data": {"text": "..."}}
             # Voice and language are bound from config, NOT per message
-            # Valid format: {"type": "text", "data": {"text": "..."}}
-            # Invalid: {"type": "text", "data": {"text": "...", "voice": "...", "language": "..."}}
             payload = {
                 "type": "text",
                 "data": {
@@ -351,6 +351,8 @@ class SarvamTTSClient:
             logger.debug(f"TTS payload structure: type={payload.get('type')}, text_length={len(text)}")
             logger.info(f"TTS sending text (length: {len(text)} chars)")
             
+            # Attempt to send - if connection is truly closed, this will raise an exception
+            # Don't pre-check websocket.closed as it can be unreliable
             await self.websocket.send(message_json)
             logger.debug(f"✓ TTS message sent successfully")
         except websockets.exceptions.ConnectionClosed as e:
@@ -396,38 +398,42 @@ class SarvamTTSClient:
             if not is_final:
                 await asyncio.sleep(0.05)
     
-    async def send_end(self):
+    async def send_flush(self):
         """
-        Send end message to flush audio and signal completion.
+        Send flush message to flush audio and signal completion.
+        Per Sarvam docs: {"type": "flush"}
         This should be called after all text chunks are sent to ensure
         all audio is flushed from Sarvam's pipeline.
         """
         if not self.is_connected or not self.websocket:
-            logger.warning("TTS not connected, cannot send end message")
+            logger.warning("TTS not connected, cannot send flush message")
             return
         
         if self._is_cancelled:
-            logger.debug("TTS cancelled, ignoring end message")
+            logger.debug("TTS cancelled, ignoring flush message")
             return
         
         try:
             # Check if connection is still open
-            if not self.websocket or self.websocket.closed:
-                logger.warning("TTS WebSocket is closed, cannot send end message")
+            if not self.websocket:
+                logger.warning("TTS WebSocket is None, cannot send flush message")
                 self.is_connected = False
                 return
             
-            # Sarvam TTS end message format: {"type": "end"}
+            # Sarvam TTS flush message format per docs: {"type": "flush"}
             payload = {
-                "type": "end"
+                "type": "flush"
             }
             
             message_json = json.dumps(payload)
-            logger.debug("TTS sending end message to flush audio")
+            logger.debug("TTS sending flush message to flush audio")
+            
+            # Attempt to send - if connection is truly closed, this will raise an exception
+            # Don't pre-check websocket.closed as it can be unreliable
             await self.websocket.send(message_json)
-            logger.debug("✓ TTS end message sent successfully")
+            logger.debug("✓ TTS flush message sent successfully")
         except websockets.exceptions.ConnectionClosed as e:
-            logger.warning(f"TTS connection closed while sending end: {e.code} - {e.reason}")
+            logger.warning(f"TTS connection closed while sending flush: {e.code} - {e.reason}")
             self.is_connected = False
         except Exception as e:
             logger.error(f"Error sending end message to TTS: {e}", exc_info=True)
