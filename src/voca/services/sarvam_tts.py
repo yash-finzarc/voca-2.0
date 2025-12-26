@@ -51,24 +51,25 @@ class SarvamTTSClient:
             if not self.api_key or not self.api_key.strip():
                 raise ValueError("SarvamAI API key is empty or not set")
             
-            # SarvamAI TTS WebSocket requires Authorization: Bearer format
-            # (Different from STT HTTP which uses api-key header)
+            # SarvamAI TTS WebSocket authentication
+            # Try api-key header format (as per original instructions)
+            # If this fails, may need to try: x-api-key or Authorization: Bearer
             api_key_clean = self.api_key.strip()
             
             headers = {
-                "Authorization": f"Bearer {api_key_clean}",
-                "Content-Type": "application/json"
+                "api-key": api_key_clean
             }
             
             logger.info(f"Connecting to SarvamAI TTS: {uri}")
             logger.info(f"API key present: {bool(self.api_key)}, length: {len(self.api_key) if self.api_key else 0}")
             logger.info(f"API key starts with: {self.api_key[:10] if self.api_key and len(self.api_key) >= 10 else 'N/A'}")
+            logger.info(f"Headers being sent: {dict(headers)}")  # Log actual headers (without value for security)
+            logger.info(f"Header keys: {list(headers.keys())}")
             logger.debug(f"Language: {self.language}, Voice: {self.voice}, Sample rate: {self.sample_rate}")
-            logger.debug(f"Headers being sent: {list(headers.keys())}")
-            logger.debug(f"Authorization header present: {'Authorization' in headers}")
             
             # Use legacy client for websockets 15.0.1 compatibility
             try:
+                logger.info(f"Attempting WebSocket connection with headers: {list(headers.keys())}")
                 self.websocket = await connect(uri, extra_headers=headers)
                 self.is_connected = True
                 self._is_cancelled = False
