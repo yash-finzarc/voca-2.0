@@ -160,14 +160,13 @@ class SarvamTTSClient:
             #   }
             # }
             # CRITICAL: ALL Sarvam messages must follow { "type": "<event>", "data": { ... } } structure
-            # Minimal config with only required fields first
-            # If this works, we can add optional fields incrementally
+            # Try absolute minimal config - just speaker and language
+            # output_audio_codec might not be supported or "pcm" might be invalid
             config_payload = {
                 "type": "config",
                 "data": {
                     "speaker": "anushka",
-                    "target_language_code": "en-IN",
-                    "output_audio_codec": "pcm"
+                    "target_language_code": "en-IN"
                 }
             }
 
