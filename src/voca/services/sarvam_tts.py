@@ -88,10 +88,10 @@ class SarvamTTSClient:
                         pass
                 raise
             
-            # SarvamAI TTS WebSocket: Config may be sent as first message or may not be required
-            # If config is needed, send it as a simple dictionary (not nested in "type"/"data")
-            # For now, skip config - send it with first text message instead
-            logger.info("Connected to SarvamAI TTS (config will be sent with first text message)")
+            # CRITICAL: SarvamAI TTS requires a config message FIRST before any text messages
+            # This initializes the TTS session on Sarvam's side
+            logger.info("Connected to SarvamAI TTS, sending config...")
+            await self._send_config()
             
             # Start receiving audio
             self._receive_task = asyncio.create_task(self._receive_audio())
@@ -99,6 +99,33 @@ class SarvamTTSClient:
         except Exception as e:
             logger.error(f"Error connecting to SarvamAI TTS: {e}")
             self.is_connected = False
+            raise
+    
+    async def _send_config(self):
+        """
+        Send configuration message to SarvamAI TTS.
+        This MUST be sent immediately after WebSocket connection, before any text messages.
+        """
+        if not self.websocket or not self.is_connected:
+            logger.warning("Cannot send TTS config: WebSocket not connected")
+            return
+        
+        try:
+            config_payload = {
+                "type": "config",
+                "data": {
+                    "audio_format": "pcm",
+                    "sample_rate": self.sample_rate,
+                    "language": self.language,
+                    "voice": "default"
+                }
+            }
+            
+            config_json = json.dumps(config_payload)
+            await self.websocket.send(config_json)
+            logger.info(f"✓ TTS config sent: {config_payload}")
+        except Exception as e:
+            logger.error(f"Error sending TTS config: {e}", exc_info=True)
             raise
     
     async def _receive_audio(self):
@@ -122,11 +149,20 @@ class SarvamTTSClient:
                         
                         if data.get("type") == "audio":
                             # Base64-encoded audio
-                            audio_b64 = data.get("data", "")
-                            if audio_b64:
-                                audio_bytes = base64.b64decode(audio_b64)
-                                if self.audio_callback and not self._is_cancelled:
-                                    await self.audio_callback(audio_bytes)
+                            # Defensive parsing: data["data"] must be a string (base64), not a dict
+                            audio_data = data.get("data", "")
+                            if isinstance(audio_data, str) and audio_data:
+                                try:
+                                    audio_bytes = base64.b64decode(audio_data)
+                                    if self.audio_callback and not self._is_cancelled:
+                                        await self.audio_callback(audio_bytes)
+                                except Exception as e:
+                                    logger.error(f"Error decoding TTS audio: {e}")
+                            elif isinstance(audio_data, dict):
+                                # If data["data"] is a dict, it might be an error or different format
+                                logger.warning(f"TTS audio message has dict data instead of base64 string: {audio_data}")
+                            else:
+                                logger.debug(f"TTS audio message with empty or invalid data: {type(audio_data)}")
                                     
                         elif data.get("type") == "error":
                             error_data = data.get("data", {})
