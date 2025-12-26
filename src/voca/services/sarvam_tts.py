@@ -139,27 +139,19 @@ class SarvamTTSClient:
         try:
             # CRITICAL: According to Sarvam documentation, output_audio_codec MUST be set to "pcm"
             # If not specified, Sarvam defaults to MP3 (audio/mpeg), which cannot be converted to μ-law
-            # Official format per Sarvam docs (EXACT format - no extra fields):
-            # {
-            #   "type": "config",
-            #   "data": {
-            #     "speaker": "anushka",
-            #     "language": "en-IN",
-            #     "output_audio_codec": "pcm"
-            #   }
-            # }
+            # EXACT format per Sarvam docs (hardcoded values):
             config_payload = {
                 "type": "config",
                 "data": {
-                    "speaker": self.voice,  # Voice name (e.g., "anushka" or "default")
-                    "language": self.language,  # Language code (e.g., "en-IN") - NOT target_language_code
-                    "output_audio_codec": "pcm"  # CRITICAL: Must be "pcm" to avoid MP3 default
+                    "speaker": "anushka",
+                    "language": "en-IN",
+                    "output_audio_codec": "pcm"
                 }
             }
             
             config_json = json.dumps(config_payload)
             await self.websocket.send(config_json)
-            logger.info(f"✓ TTS config sent (requesting PCM): speaker={self.voice}, language={self.language}, output_audio_codec=pcm")
+            logger.info(f"✓ TTS config sent (requesting PCM): speaker=anushka, language=en-IN, output_audio_codec=pcm")
         except Exception as e:
             logger.error(f"Error sending TTS config: {e}", exc_info=True)
             raise
