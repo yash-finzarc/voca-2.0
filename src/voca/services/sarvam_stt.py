@@ -44,16 +44,24 @@ class SarvamSTTClient:
             # SarvamAI STT WebSocket endpoint
             # Based on SarvamAI documentation: wss://api.sarvam.ai/speech-to-text/ws
             uri = "wss://api.sarvam.ai/speech-to-text/ws"
+            # Use lowercase header name as per SarvamAI documentation
             headers = {
-                "Api-Subscription-Key": self.api_key
+                "api-subscription-key": self.api_key
             }
             
             logger.info(f"Connecting to SarvamAI STT: {uri}")
             logger.debug(f"Language: {self.language}, Sample rate: {self.sample_rate}")
+            logger.debug(f"API key present: {bool(self.api_key)}, length: {len(self.api_key) if self.api_key else 0}")
             
             # Use legacy client for websockets 15.0.1 compatibility
-            self.websocket = await connect(uri, extra_headers=headers)
-            self.is_connected = True
+            try:
+                self.websocket = await connect(uri, extra_headers=headers)
+                self.is_connected = True
+            except websockets.exceptions.InvalidStatusCode as e:
+                logger.error(f"STT connection failed with HTTP {e.status_code}")
+                if hasattr(e, 'headers'):
+                    logger.error(f"Response headers: {e.headers}")
+                raise
             
             # Note: SarvamAI may not require initial config message
             # If config is needed, it might be sent as query params or first message

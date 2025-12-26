@@ -47,17 +47,25 @@ class SarvamTTSClient:
             # SarvamAI TTS WebSocket endpoint
             # NOTE: Adjust endpoint URL based on actual SarvamAI API documentation
             uri = "wss://api.sarvam.ai/text-to-speech/ws"
+            # Use lowercase header name as per SarvamAI documentation
             headers = {
-                "Api-Subscription-Key": self.api_key
+                "api-subscription-key": self.api_key
             }
             
             logger.info(f"Connecting to SarvamAI TTS: {uri}")
             logger.debug(f"Language: {self.language}, Voice: {self.voice}, Sample rate: {self.sample_rate}")
+            logger.debug(f"API key present: {bool(self.api_key)}, length: {len(self.api_key) if self.api_key else 0}")
             
             # Use legacy client for websockets 15.0.1 compatibility
-            self.websocket = await connect(uri, extra_headers=headers)
-            self.is_connected = True
-            self._is_cancelled = False
+            try:
+                self.websocket = await connect(uri, extra_headers=headers)
+                self.is_connected = True
+                self._is_cancelled = False
+            except websockets.exceptions.InvalidStatusCode as e:
+                logger.error(f"TTS connection failed with HTTP {e.status_code}")
+                if hasattr(e, 'headers'):
+                    logger.error(f"Response headers: {e.headers}")
+                raise
             
             # Note: SarvamAI may not require initial config message
             # If config is needed, it might be sent as query params or first message

@@ -273,6 +273,10 @@ async def twilio_handler(twilio_ws):
         await twilio_ws.close()
         return
     
+    # Log API key status (first few chars only for security)
+    api_key_preview = sarvam_api_key[:10] + "..." if len(sarvam_api_key) > 10 else sarvam_api_key[:len(sarvam_api_key)]
+    logger.info(f"Using SarvamAI API key: {api_key_preview} (length: {len(sarvam_api_key)})")
+    
     # Get system prompt and welcome message
     try:
         system_prompt, welcome_message = get_system_prompt("customer_service")
