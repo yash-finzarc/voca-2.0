@@ -11,9 +11,12 @@ import sys
 import uvicorn
 
 # Suppress Google/gRPC/absl warnings before any imports
+from dotenv import load_dotenv
 import os
 os.environ["GRPC_VERBOSITY"] = "ERROR"
 os.environ["GLOG_minloglevel"] = "2"
+
+load_dotenv()
 
 # Setup comprehensive logging configuration
 logging.basicConfig(
