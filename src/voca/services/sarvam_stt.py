@@ -94,9 +94,9 @@ class SarvamSTTClient:
             # SarvamAI STT HTTP endpoint (NOT WebSocket)
             url = "https://api.sarvam.ai/speech-to-text"
             
-            # Use x-api-key header (NOT Authorization: Bearer)
+            # Use api-key header (NOT x-api-key, NOT Authorization: Bearer)
             headers = {
-                "x-api-key": self.api_key,
+                "api-key": self.api_key,
                 "Content-Type": "audio/raw",
                 "Transfer-Encoding": "chunked"
             }

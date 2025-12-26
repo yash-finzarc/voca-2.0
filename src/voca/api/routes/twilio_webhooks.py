@@ -7,6 +7,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from enum import Enum
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, JSONResponse
@@ -1115,15 +1116,26 @@ async def handle_twilio_websocket(websocket: WebSocket):
         organization_id=Config.default_organization_id
     )
     
-    # Initialize STT and TTS clients
+    # Initialize STT and TTS clients (but don't connect yet - sequential connection required)
     stt_client = SarvamSTTClient(api_key=sarvam_api_key, language=Config.sarvam_language, sample_rate=8000)
     tts_client = SarvamTTSClient(api_key=sarvam_api_key, language=Config.sarvam_language, voice=Config.sarvam_voice, sample_rate=8000)
+    
+    # State machine: INIT → WELCOME → LISTENING → PROCESSING → SPEAKING
+    class CallState(Enum):
+        INIT = "init"  # WebSocket accepted, waiting for start event
+        WELCOME = "welcome"  # TTS connected, playing welcome message
+        LISTENING = "listening"  # Welcome complete, STT connected, listening for user
+        PROCESSING = "processing"  # User spoke, processing through LLM
+        SPEAKING = "speaking"  # TTS playing response
+    
+    call_state = CallState.INIT
     
     # State management
     call_sid = ""
     streamsid = ""
     conversation_history = []
     current_tts_task = None
+    welcome_complete_event = asyncio.Event()  # Signals when welcome TTS completes
     tts_active = False
     audio_buffer = bytearray()
     BUFFER_SIZE = 20 * 160  # 20ms of audio at 8kHz
@@ -1131,18 +1143,19 @@ async def handle_twilio_websocket(websocket: WebSocket):
     try:
         await websocket.accept()
         logger.info(f"[CUSTOM_LLM_PIPELINE] ✓ WebSocket accepted from {client_ip}")
+        call_state = CallState.INIT
         
-        # Connect to SarvamAI STT
-        logger.info("[CUSTOM_LLM_PIPELINE] Connecting to SarvamAI STT...")
-        await stt_client.connect()
-        
-        # Connect to SarvamAI TTS
-        logger.info("[CUSTOM_LLM_PIPELINE] Connecting to SarvamAI TTS...")
+        # CRITICAL: Connect TTS FIRST (required for welcome message)
+        logger.info("[CUSTOM_LLM_PIPELINE] Connecting to SarvamAI TTS (FIRST)...")
         await tts_client.connect()
+        logger.info("[CUSTOM_LLM_PIPELINE] ✓ TTS connected")
+        
+        # NOTE: STT will be connected AFTER welcome message completes (see "start" event handler)
         
         # Set up TTS audio callback
         async def tts_audio_callback(pcm_audio: bytes):
             """Callback for TTS audio output."""
+            nonlocal call_state
             if not tts_active or not streamsid:
                 return
             # Convert PCM to μ-law and send to Twilio
@@ -1159,16 +1172,22 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # Set up STT transcript callback
         async def stt_transcript_callback(transcript: str, is_final: bool):
             """Callback for STT transcripts."""
-            nonlocal tts_active, current_tts_task, call_sid
+            nonlocal tts_active, current_tts_task, call_sid, call_state
             
             if not transcript.strip():
                 return
             
+            # CRITICAL: Ignore STT transcripts if we're not in LISTENING or PROCESSING state
+            if call_state not in [CallState.LISTENING, CallState.PROCESSING]:
+                logger.debug(f"[CUSTOM_LLM_PIPELINE] Ignoring STT transcript in state {call_state.value}")
+                return
+            
             logger.info(f"[CUSTOM_LLM_PIPELINE] STT transcript (final={is_final}): {transcript}")
             
-            # Handle barge-in: cancel TTS if user speaks
-            if tts_active:
+            # Handle barge-in: cancel TTS if user speaks during TTS playback
+            if call_state == CallState.SPEAKING and tts_active:
                 logger.info("[CUSTOM_LLM_PIPELINE] Barge-in detected: cancelling TTS")
+                call_state = CallState.LISTENING
                 tts_active = False
                 if current_tts_task:
                     await tts_client.cancel()
@@ -1183,6 +1202,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
             
             # Only process final transcripts
             if is_final:
+                call_state = CallState.PROCESSING
                 tts_active = False
                 
                 # Get organization ID (use default if not available)
@@ -1199,6 +1219,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
                 logger.info(f"[CUSTOM_LLM_PIPELINE] Assistant response: {assistant_response}")
                 
                 # Send to TTS
+                call_state = CallState.SPEAKING
                 tts_active = True
                 
                 async def send_tts():
@@ -1208,8 +1229,10 @@ async def handle_twilio_websocket(websocket: WebSocket):
                     except Exception as e:
                         logger.error(f"[CUSTOM_LLM_PIPELINE] Error in TTS: {e}", exc_info=True)
                     finally:
-                        nonlocal tts_active
+                        nonlocal tts_active, call_state
                         tts_active = False
+                        call_state = CallState.LISTENING  # Return to listening after TTS completes
+                        logger.info("[CUSTOM_LLM_PIPELINE] TTS completed, returning to LISTENING state")
                 
                 current_tts_task = asyncio.create_task(send_tts())
         
@@ -1228,8 +1251,9 @@ async def handle_twilio_websocket(websocket: WebSocket):
                     call_sid = start.get("callSid", "")
                     logger.info(f"[CUSTOM_LLM_PIPELINE] Stream started: SID={streamsid}, CallSid={call_sid}")
                     
-                    # Send welcome message after we have call_sid
+                    # CRITICAL: Send welcome message FIRST (state: WELCOME)
                     if not welcome_sent:
+                        call_state = CallState.WELCOME
                         welcome_message = orchestrator.generate_greeting(
                             conversation_id=call_sid,
                             organization_id=Config.default_organization_id
@@ -1237,17 +1261,44 @@ async def handle_twilio_websocket(websocket: WebSocket):
                         if welcome_message:
                             welcome_sent = True
                             tts_active = True
+                            
                             async def send_welcome():
+                                """Send welcome message via TTS and wait for completion."""
                                 try:
+                                    logger.info(f"[CUSTOM_LLM_PIPELINE] Sending welcome message: {welcome_message}")
                                     await tts_client.send_text_chunks(welcome_message)
+                                    logger.info("[CUSTOM_LLM_PIPELINE] Welcome message TTS completed")
+                                except Exception as e:
+                                    logger.error(f"[CUSTOM_LLM_PIPELINE] Error sending welcome: {e}", exc_info=True)
                                 finally:
-                                    nonlocal tts_active
+                                    nonlocal tts_active, call_state, welcome_complete_event
                                     tts_active = False
+                                    # Signal welcome completion
+                                    welcome_complete_event.set()
+                                    
+                                    # CRITICAL: Connect STT ONLY AFTER welcome completes
+                                    logger.info("[CUSTOM_LLM_PIPELINE] Welcome complete, connecting STT...")
+                                    try:
+                                        await stt_client.connect()
+                                        logger.info("[CUSTOM_LLM_PIPELINE] ✓ STT connected")
+                                        call_state = CallState.LISTENING
+                                        logger.info("[CUSTOM_LLM_PIPELINE] State: LISTENING (ready for user input)")
+                                    except Exception as e:
+                                        logger.error(f"[CUSTOM_LLM_PIPELINE] Failed to connect STT: {e}", exc_info=True)
+                                        call_state = CallState.INIT
+                            
+                            # Start welcome TTS (non-blocking)
                             asyncio.create_task(send_welcome())
                     
                 elif event == "media":
                     media = data.get("media", {})
                     if media.get("track") == "inbound":
+                        # CRITICAL: Only process audio if we're in LISTENING state (STT connected, welcome complete)
+                        if call_state != CallState.LISTENING:
+                            # Drop audio if not in listening state (welcome still playing or processing)
+                            logger.debug(f"[CUSTOM_LLM_PIPELINE] Ignoring audio in state {call_state.value}")
+                            continue
+                        
                         mulaw_chunk = base64.b64decode(media.get("payload", ""))
                         audio_buffer.extend(mulaw_chunk)
                         
@@ -1257,9 +1308,12 @@ async def handle_twilio_websocket(websocket: WebSocket):
                             audio_buffer = audio_buffer[BUFFER_SIZE:]
                             
                             # Convert μ-law to PCM and send to STT
-                            pcm_audio = mulaw_to_pcm(mulaw_to_convert)
-                            if stt_client.is_connected:
+                            # CRITICAL: Only send if STT is connected AND we're in LISTENING state
+                            if stt_client.is_connected and call_state == CallState.LISTENING:
+                                pcm_audio = mulaw_to_pcm(mulaw_to_convert)
                                 await stt_client.send_audio(pcm_audio)
+                            else:
+                                logger.debug(f"[CUSTOM_LLM_PIPELINE] Dropping audio: STT connected={stt_client.is_connected}, state={call_state.value}")
                 
                 elif event == "stop":
                     logger.info("[CUSTOM_LLM_PIPELINE] Stream stopped")
