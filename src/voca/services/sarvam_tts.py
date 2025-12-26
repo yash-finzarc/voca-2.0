@@ -59,16 +59,22 @@ class SarvamTTSClient:
             self.is_connected = True
             self._is_cancelled = False
             
-            # Send initial configuration
-            config = {
-                "language": self.language,
-                "voice": self.voice,
-                "sample_rate": self.sample_rate,
-                "encoding": "pcm",
-                "format": "raw"
-            }
-            await self.websocket.send(json.dumps(config))
-            logger.info("Connected to SarvamAI TTS and sent configuration")
+            # Note: SarvamAI may not require initial config message
+            # If config is needed, it might be sent as query params or first message
+            # Try sending config as first message (adjust format based on actual API)
+            try:
+                config = {
+                    "language": self.language,
+                    "voice": self.voice,
+                    "sample_rate": self.sample_rate,
+                    "encoding": "pcm",
+                    "format": "raw"
+                }
+                await self.websocket.send(json.dumps(config))
+                logger.info("Connected to SarvamAI TTS and sent configuration")
+            except Exception as e:
+                logger.warning(f"Could not send initial config (may not be required): {e}")
+                logger.info("Connected to SarvamAI TTS (no config sent)")
             
             # Start receiving audio
             self._receive_task = asyncio.create_task(self._receive_audio())
@@ -94,6 +100,9 @@ class SarvamTTSClient:
                     elif isinstance(message, str):
                         data = json.loads(message)
                         
+                        # Log full message for debugging
+                        logger.debug(f"TTS received message: {data}")
+                        
                         if data.get("type") == "audio":
                             # Base64-encoded audio
                             audio_b64 = data.get("data", "")
@@ -103,19 +112,24 @@ class SarvamTTSClient:
                                     await self.audio_callback(audio_bytes)
                                     
                         elif data.get("type") == "error":
-                            error_msg = data.get("error", "Unknown error")
-                            logger.error(f"SarvamAI TTS error: {error_msg}")
+                            error_msg = data.get("error", data.get("message", "Unknown error"))
+                            logger.error(f"SarvamAI TTS error: {error_msg}, full response: {data}")
+                            self.is_connected = False
+                            break
                             
                         elif data.get("type") == "done":
                             logger.debug("TTS generation completed")
+                        else:
+                            # Log unknown message types for debugging
+                            logger.debug(f"TTS unknown message type: {data.get('type')}, full: {data}")
                             
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse TTS message: {e}, message: {message[:100] if isinstance(message, str) else 'binary'}")
+                    logger.warning(f"Failed to parse TTS message: {e}, message: {message[:200] if isinstance(message, str) else 'binary'}")
                 except Exception as e:
                     logger.error(f"Error processing TTS message: {e}", exc_info=True)
                     
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("SarvamAI TTS WebSocket connection closed")
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.info(f"SarvamAI TTS WebSocket connection closed: {e.code} - {e.reason}")
             self.is_connected = False
         except Exception as e:
             logger.error(f"Error in TTS receive loop: {e}", exc_info=True)
@@ -138,6 +152,12 @@ class SarvamTTSClient:
             return
         
         try:
+            # Check if connection is still open
+            if self.websocket.closed:
+                logger.warning("TTS WebSocket is closed, cannot send text")
+                self.is_connected = False
+                return
+            
             message = {
                 "type": "text",
                 "text": text,
@@ -145,8 +165,12 @@ class SarvamTTSClient:
             }
             await self.websocket.send(json.dumps(message))
             logger.debug(f"Sent text to TTS (length: {len(text)}, final: {is_final})")
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.warning(f"TTS connection closed while sending: {e.code} - {e.reason}")
+            self.is_connected = False
         except Exception as e:
             logger.error(f"Error sending text to TTS: {e}", exc_info=True)
+            self.is_connected = False
     
     async def send_text_chunks(self, text: str, chunk_size: int = 50):
         """

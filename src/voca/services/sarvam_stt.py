@@ -42,8 +42,8 @@ class SarvamSTTClient:
         """Establish WebSocket connection to SarvamAI STT service."""
         try:
             # SarvamAI STT WebSocket endpoint
-            # NOTE: Adjust endpoint URL based on actual SarvamAI API documentation
-            uri = "wss://api.sarvam.ai/speech-to-text-translate/ws"
+            # Based on SarvamAI documentation: wss://api.sarvam.ai/speech-to-text/ws
+            uri = "wss://api.sarvam.ai/speech-to-text/ws"
             headers = {
                 "Api-Subscription-Key": self.api_key
             }
@@ -55,15 +55,21 @@ class SarvamSTTClient:
             self.websocket = await connect(uri, extra_headers=headers)
             self.is_connected = True
             
-            # Send initial configuration
-            config = {
-                "language": self.language,
-                "sample_rate": self.sample_rate,
-                "encoding": "pcm",
-                "format": "raw"
-            }
-            await self.websocket.send(json.dumps(config))
-            logger.info("Connected to SarvamAI STT and sent configuration")
+            # Note: SarvamAI may not require initial config message
+            # If config is needed, it might be sent as query params or first message
+            # Try sending config as first message (adjust format based on actual API)
+            try:
+                config = {
+                    "language": self.language,
+                    "sample_rate": self.sample_rate,
+                    "encoding": "pcm",
+                    "format": "raw"
+                }
+                await self.websocket.send(json.dumps(config))
+                logger.info("Connected to SarvamAI STT and sent configuration")
+            except Exception as e:
+                logger.warning(f"Could not send initial config (may not be required): {e}")
+                logger.info("Connected to SarvamAI STT (no config sent)")
             
             # Start receiving transcripts
             self._receive_task = asyncio.create_task(self._receive_transcripts())
@@ -81,6 +87,9 @@ class SarvamSTTClient:
                     if isinstance(message, str):
                         data = json.loads(message)
                         
+                        # Log full message for debugging
+                        logger.debug(f"STT received message: {data}")
+                        
                         # Handle different response types
                         if data.get("type") == "transcript":
                             transcript = data.get("transcript", "")
@@ -90,8 +99,10 @@ class SarvamSTTClient:
                                 await self.transcript_callback(transcript, is_final)
                                 
                         elif data.get("type") == "error":
-                            error_msg = data.get("error", "Unknown error")
-                            logger.error(f"SarvamAI STT error: {error_msg}")
+                            error_msg = data.get("error", data.get("message", "Unknown error"))
+                            logger.error(f"SarvamAI STT error: {error_msg}, full response: {data}")
+                            self.is_connected = False
+                            break
                             
                         elif data.get("type") == "partial":
                             # Partial transcript
@@ -104,14 +115,17 @@ class SarvamSTTClient:
                             transcript = data.get("transcript", "")
                             if transcript and self.transcript_callback:
                                 await self.transcript_callback(transcript, True)
+                        else:
+                            # Log unknown message types for debugging
+                            logger.debug(f"STT unknown message type: {data.get('type')}, full: {data}")
                                 
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse STT message: {e}, message: {message[:100]}")
+                    logger.warning(f"Failed to parse STT message: {e}, message: {message[:200]}")
                 except Exception as e:
                     logger.error(f"Error processing STT message: {e}", exc_info=True)
                     
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("SarvamAI STT WebSocket connection closed")
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.info(f"SarvamAI STT WebSocket connection closed: {e.code} - {e.reason}")
             self.is_connected = False
         except Exception as e:
             logger.error(f"Error in STT receive loop: {e}", exc_info=True)
@@ -124,28 +138,38 @@ class SarvamSTTClient:
         Args:
             pcm_audio: Raw PCM audio bytes (16-bit, little-endian)
         
-        Note: This implementation sends raw binary audio, which is common for streaming STT.
-        If SarvamAI requires JSON/base64 format, adjust the message format accordingly.
+        Note: SarvamAI may accept raw binary or JSON format. Trying both approaches.
         """
         if not self.is_connected or not self.websocket:
             logger.warning("STT not connected, cannot send audio")
             return
         
         try:
-            # Send raw binary PCM audio (most common for streaming STT)
-            # If SarvamAI requires JSON format, uncomment the alternative below:
-            # audio_b64 = base64.b64encode(pcm_audio).decode("ascii")
-            # message = {
-            #     "type": "audio",
-            #     "data": audio_b64,
-            #     "sample_rate": self.sample_rate,
-            #     "encoding": "pcm"
-            # }
-            # await self.websocket.send(json.dumps(message))
+            # Check if connection is still open
+            if self.websocket.closed:
+                logger.warning("STT WebSocket is closed, cannot send audio")
+                self.is_connected = False
+                return
             
-            await self.websocket.send(pcm_audio)
+            # Try sending as JSON with base64-encoded audio (common format)
+            audio_b64 = base64.b64encode(pcm_audio).decode("ascii")
+            message = {
+                "type": "audio",
+                "data": audio_b64,
+                "sample_rate": self.sample_rate,
+                "encoding": "pcm"
+            }
+            await self.websocket.send(json.dumps(message))
+            
+            # Alternative: If above doesn't work, try raw binary:
+            # await self.websocket.send(pcm_audio)
+            
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.warning(f"STT connection closed while sending: {e.code} - {e.reason}")
+            self.is_connected = False
         except Exception as e:
             logger.error(f"Error sending audio to STT: {e}", exc_info=True)
+            self.is_connected = False
     
     def set_transcript_callback(self, callback: Callable[[str, bool], None]):
         """
