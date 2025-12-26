@@ -52,12 +52,12 @@ class SarvamTTSClient:
                 raise ValueError("SarvamAI API key is empty or not set")
             
             # SarvamAI TTS WebSocket authentication
-            # Try api-key header format (as per original instructions)
-            # If this fails, may need to try: x-api-key or Authorization: Bearer
+            # According to SarvamAI official docs: WebSocket TTS requires "api-subscription-key" header (lowercase)
+            # Reference: https://docs.sarvam.ai/api-reference-docs/authentication
             api_key_clean = self.api_key.strip()
             
             headers = {
-                "api-key": api_key_clean
+                "api-subscription-key": api_key_clean
             }
             
             logger.info(f"Connecting to SarvamAI TTS: {uri}")
