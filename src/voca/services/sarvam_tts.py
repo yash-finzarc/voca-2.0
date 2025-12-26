@@ -68,6 +68,7 @@ class SarvamTTSClient:
         self._is_cancelled = False
         self._config_sent = False  # Track if config has been sent (must be sent exactly once)
         self._config_error_422 = False  # Track if we got a 422 error (config rejected)
+        self._config_acknowledged = False  # Track if config was acknowledged by Sarvam
         
     async def connect(self):
         """Establish WebSocket connection to SarvamAI TTS service."""
@@ -181,6 +182,9 @@ class SarvamTTSClient:
             await self.websocket.send(config_json)
             self._config_sent = True  # Mark as sent
             logger.info(f"✓ TTS config sent (requesting PCM): speaker={self.voice}, language={self.language}, output_audio_codec=pcm")
+            # Small delay to allow Sarvam to process and validate config before sending text
+            # Some WebSocket APIs need a moment to validate config
+            await asyncio.sleep(0.2)
         except Exception as e:
             logger.error(f"Error sending TTS config: {e}", exc_info=True)
             raise
@@ -303,6 +307,9 @@ class SarvamTTSClient:
                             
                         elif data.get("type") == "done":
                             logger.debug("TTS generation completed")
+                        elif data.get("type") in ("config_ack", "ready", "ack"):
+                            # Sarvam may send a config acknowledgment message
+                            logger.debug(f"TTS received {data.get('type')} message - config may be acknowledged")
                         else:
                             # Log unknown message types for debugging (but never log audio data)
                             msg_type = data.get("type", "unknown")
@@ -363,7 +370,8 @@ class SarvamTTSClient:
             }
             
             message_json = json.dumps(payload)
-            # Log payload structure but not full content (to avoid cluttering logs)
+            # Log the exact JSON being sent for debugging 422 errors
+            logger.debug(f"TTS text message JSON: {message_json}")
             logger.debug(f"TTS payload structure: type={payload.get('type')}, text_length={len(text)}")
             logger.info(f"TTS sending text (length: {len(text)} chars)")
             
