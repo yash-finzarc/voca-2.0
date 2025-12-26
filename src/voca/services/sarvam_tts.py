@@ -88,22 +88,10 @@ class SarvamTTSClient:
                         pass
                 raise
             
-            # Note: SarvamAI may not require initial config message
-            # If config is needed, it might be sent as query params or first message
-            # Try sending config as first message (adjust format based on actual API)
-            try:
-                config = {
-                    "language": self.language,
-                    "voice": self.voice,
-                    "sample_rate": self.sample_rate,
-                    "encoding": "pcm",
-                    "format": "raw"
-                }
-                await self.websocket.send(json.dumps(config))
-                logger.info("Connected to SarvamAI TTS and sent configuration")
-            except Exception as e:
-                logger.warning(f"Could not send initial config (may not be required): {e}")
-                logger.info("Connected to SarvamAI TTS (no config sent)")
+            # SarvamAI TTS WebSocket: Config may be sent as first message or may not be required
+            # If config is needed, send it as a simple dictionary (not nested in "type"/"data")
+            # For now, skip config - send it with first text message instead
+            logger.info("Connected to SarvamAI TTS (config will be sent with first text message)")
             
             # Start receiving audio
             self._receive_task = asyncio.create_task(self._receive_audio())
@@ -141,10 +129,19 @@ class SarvamTTSClient:
                                     await self.audio_callback(audio_bytes)
                                     
                         elif data.get("type") == "error":
-                            error_msg = data.get("error", data.get("message", "Unknown error"))
-                            logger.error(f"SarvamAI TTS error: {error_msg}, full response: {data}")
-                            self.is_connected = False
-                            break
+                            error_data = data.get("data", {})
+                            error_msg = error_data.get("message", data.get("error", "Unknown error"))
+                            error_code = error_data.get("code", "unknown")
+                            logger.error(f"SarvamAI TTS error (code {error_code}): {error_msg}, full response: {data}")
+                            # Don't disconnect on 422 errors (invalid parameters) - connection is still valid
+                            # The error is about message format, not authentication
+                            if error_code == 422:
+                                logger.warning("TTS parameter error (422) - connection remains open, check message format")
+                            else:
+                                # Only disconnect on critical errors (auth, server errors, etc.)
+                                logger.error(f"TTS critical error (code {error_code}) - disconnecting")
+                                self.is_connected = False
+                                break
                             
                         elif data.get("type") == "done":
                             logger.debug("TTS generation completed")
@@ -187,10 +184,12 @@ class SarvamTTSClient:
                 self.is_connected = False
                 return
             
+            # SarvamAI TTS message format: Simple dictionary with text, voice, language
+            # Format: {"text": "...", "voice": "...", "language": "..."}
             message = {
-                "type": "text",
                 "text": text,
-                "is_final": is_final
+                "voice": self.voice,
+                "language": self.language
             }
             await self.websocket.send(json.dumps(message))
             logger.debug(f"Sent text to TTS (length: {len(text)}, final: {is_final})")
