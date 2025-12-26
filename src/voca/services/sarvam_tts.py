@@ -377,6 +377,42 @@ class SarvamTTSClient:
             if not is_final:
                 await asyncio.sleep(0.05)
     
+    async def send_end(self):
+        """
+        Send end message to flush audio and signal completion.
+        This should be called after all text chunks are sent to ensure
+        all audio is flushed from Sarvam's pipeline.
+        """
+        if not self.is_connected or not self.websocket:
+            logger.warning("TTS not connected, cannot send end message")
+            return
+        
+        if self._is_cancelled:
+            logger.debug("TTS cancelled, ignoring end message")
+            return
+        
+        try:
+            # Check if connection is still open
+            if not self.websocket or self.websocket.closed:
+                logger.warning("TTS WebSocket is closed, cannot send end message")
+                self.is_connected = False
+                return
+            
+            # Sarvam TTS end message format: {"type": "end"}
+            payload = {
+                "type": "end"
+            }
+            
+            message_json = json.dumps(payload)
+            logger.debug("TTS sending end message to flush audio")
+            await self.websocket.send(message_json)
+            logger.debug("✓ TTS end message sent successfully")
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.warning(f"TTS connection closed while sending end: {e.code} - {e.reason}")
+            self.is_connected = False
+        except Exception as e:
+            logger.error(f"Error sending end message to TTS: {e}", exc_info=True)
+    
     def set_audio_callback(self, callback: Callable[[bytes], None]):
         """
         Set callback function for receiving audio.
