@@ -67,6 +67,7 @@ class SarvamTTSClient:
         self._receive_task: Optional[asyncio.Task] = None
         self._is_cancelled = False
         self._config_sent = False  # Track if config has been sent (must be sent exactly once)
+        self._config_error_422 = False  # Track if we got a 422 error (config rejected)
         
     async def connect(self):
         """Establish WebSocket connection to SarvamAI TTS service."""
@@ -101,6 +102,7 @@ class SarvamTTSClient:
                 self.is_connected = True
                 self._is_cancelled = False
                 self._config_sent = False  # Reset config flag on new connection
+                self._config_error_422 = False  # Reset 422 error flag on new connection
             except websockets.exceptions.InvalidStatusCode as e:
                 logger.error(f"TTS connection failed with HTTP {e.status_code}")
                 logger.error(f"API key length: {len(self.api_key) if self.api_key else 0}")
@@ -282,9 +284,17 @@ class SarvamTTSClient:
                             # Don't disconnect on 422 errors (invalid parameters) - connection is still valid
                             # The error is about message format, not authentication
                             if error_code == 422:
-                                logger.warning("TTS parameter error (422) - connection remains open, check message format")
-                                # Don't break the receive loop on 422 - connection is still valid
-                                # Continue receiving messages (might get audio or other messages)
+                                logger.error("TTS parameter error (422): Input parameters has to be a valid dictionary")
+                                logger.error("TTS config was rejected by Sarvam - connection will likely close")
+                                self._config_error_422 = True  # Mark that we got a 422
+                                # CRITICAL: Sarvam often closes the WebSocket after 422 errors
+                                # Check if connection is actually still open
+                                if self.websocket and hasattr(self.websocket, 'closed') and self.websocket.closed:
+                                    logger.error("TTS WebSocket already closed by Sarvam after 422 error - connection is dead")
+                                    self.is_connected = False
+                                    break
+                                # If connection appears open, continue receiving (but it may close soon)
+                                # Note: Sarvam typically closes the connection after 422, so text sends will fail
                             else:
                                 # Only disconnect on critical errors (auth, server errors, etc.)
                                 logger.error(f"TTS critical error (code {error_code}) - disconnecting")
@@ -308,8 +318,9 @@ class SarvamTTSClient:
                     logger.error(f"Error processing TTS message: {e}", exc_info=True)
                     
         except websockets.exceptions.ConnectionClosed as e:
-            logger.info(f"SarvamAI TTS WebSocket connection closed: {e.code} - {e.reason}")
+            logger.warning(f"SarvamAI TTS WebSocket connection closed: {e.code} - {e.reason}")
             self.is_connected = False
+            # Connection was closed by Sarvam (possibly due to 422 error or other issue)
         except Exception as e:
             logger.error(f"Error in TTS receive loop: {e}", exc_info=True)
             self.is_connected = False
@@ -325,6 +336,11 @@ class SarvamTTSClient:
         if not self.is_connected or not self.websocket:
             logger.warning("TTS not connected, cannot send text")
             return
+        
+        # Check if we got a 422 error (config rejected) - connection is likely dead
+        if self._config_error_422:
+            logger.error("TTS config was rejected (422 error) - connection is likely closed, cannot send text")
+            # Try anyway, but expect it to fail
         
         if self._is_cancelled:
             logger.debug("TTS cancelled, ignoring text")
