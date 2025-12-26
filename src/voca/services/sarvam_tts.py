@@ -160,8 +160,8 @@ class SarvamTTSClient:
             config_payload = {
                 "type": "config",
                 "data": {
-                    "speaker": self.voice,  # Voice name (e.g., "anushka" or "default")
-                    "language": self.language,  # Language code (e.g., "en-IN") - NOT target_language_code
+                    "speaker": "anushka",  # Voice name (e.g., "anushka" or "default")
+                    "language": "en-IN",  # Language code (e.g., "en-IN") - NOT target_language_code
                     "output_audio_codec": "pcm"  # CRITICAL: Must be "pcm" to avoid MP3 default
                 }
             }
