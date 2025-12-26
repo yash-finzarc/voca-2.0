@@ -47,14 +47,25 @@ class SarvamTTSClient:
             # SarvamAI TTS WebSocket endpoint
             # NOTE: SarvamAI TTS supports WebSocket (unlike STT which requires HTTP)
             uri = "wss://api.sarvam.ai/text-to-speech/ws"
-            # Use api-key header (NOT x-api-key, NOT Authorization: Bearer)
+            # CRITICAL: Verify API key is not empty
+            if not self.api_key or not self.api_key.strip():
+                raise ValueError("SarvamAI API key is empty or not set")
+            
+            # SarvamAI TTS WebSocket requires Authorization: Bearer format
+            # (Different from STT HTTP which uses api-key header)
+            api_key_clean = self.api_key.strip()
+            
             headers = {
-                "api-key": self.api_key
+                "Authorization": f"Bearer {api_key_clean}",
+                "Content-Type": "application/json"
             }
             
             logger.info(f"Connecting to SarvamAI TTS: {uri}")
+            logger.info(f"API key present: {bool(self.api_key)}, length: {len(self.api_key) if self.api_key else 0}")
+            logger.info(f"API key starts with: {self.api_key[:10] if self.api_key and len(self.api_key) >= 10 else 'N/A'}")
             logger.debug(f"Language: {self.language}, Voice: {self.voice}, Sample rate: {self.sample_rate}")
-            logger.debug(f"API key present: {bool(self.api_key)}, length: {len(self.api_key) if self.api_key else 0}")
+            logger.debug(f"Headers being sent: {list(headers.keys())}")
+            logger.debug(f"Authorization header present: {'Authorization' in headers}")
             
             # Use legacy client for websockets 15.0.1 compatibility
             try:
@@ -63,8 +74,17 @@ class SarvamTTSClient:
                 self._is_cancelled = False
             except websockets.exceptions.InvalidStatusCode as e:
                 logger.error(f"TTS connection failed with HTTP {e.status_code}")
+                logger.error(f"API key length: {len(self.api_key) if self.api_key else 0}")
+                logger.error(f"API key format check: starts with 'sk_' = {self.api_key.startswith('sk_') if self.api_key else False}")
                 if hasattr(e, 'headers'):
                     logger.error(f"Response headers: {e.headers}")
+                # Try to read response body if available
+                if hasattr(e, 'response') and hasattr(e.response, 'read'):
+                    try:
+                        error_body = e.response.read().decode('utf-8')
+                        logger.error(f"Error response body: {error_body}")
+                    except:
+                        pass
                 raise
             
             # Note: SarvamAI may not require initial config message

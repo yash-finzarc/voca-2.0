@@ -18,6 +18,15 @@ os.environ["GLOG_minloglevel"] = "2"
 
 load_dotenv()
 
+# Verify critical environment variables are loaded
+import os
+sarvam_key = os.getenv("SARVAM_API_KEY")
+if not sarvam_key:
+    print("⚠️  WARNING: SARVAM_API_KEY not found in environment!")
+    print("   Make sure .env file exists and contains SARVAM_API_KEY")
+else:
+    print(f"✓ SARVAM_API_KEY loaded (length: {len(sarvam_key)}, starts with: {sarvam_key[:10] if len(sarvam_key) >= 10 else 'N/A'})")
+
 # Setup comprehensive logging configuration
 logging.basicConfig(
     level=logging.INFO,
