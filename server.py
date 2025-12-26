@@ -28,7 +28,7 @@ import logging
 from src.voca.services.sarvam_stt import SarvamSTTClient
 from src.voca.services.sarvam_tts import SarvamTTSClient
 from src.voca.audio_utils import mulaw_to_pcm, pcm_to_mulaw
-from src.voca.langgraph_agent import FUNCTION_MAP
+# Removed FUNCTION_MAP import - not needed for SarvamAI STT/TTS pipeline
 from src.voca.llm_client import GeminiClient
 
 load_dotenv()
@@ -93,15 +93,7 @@ def get_system_prompt(prompt_name: str):
     return row["prompt"], row["welcome_message"]
 
 
-async def execute_function_call(func_name, arguments):
-    """Execute a function call from the FUNCTION_MAP."""
-    if func_name in FUNCTION_MAP:
-        result = await FUNCTION_MAP[func_name](**arguments)
-        logger.info(f"Function call result: {result}")
-        return result
-    else:
-        logger.error(f"Unknown function: {func_name}")
-        return {"error": f"Unknown function: {func_name}"}
+# Removed execute_function_call - function calling not used in SarvamAI pipeline
 
 
 def strip_markdown(text: str) -> str:

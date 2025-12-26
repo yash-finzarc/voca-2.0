@@ -16,21 +16,13 @@ from src.voca.api.state import app_state
 from src.voca.Twilio.twilio_config import get_twilio_config
 from src.voca.config import Config
 # Removed unused imports: deepgramtts, stream_tts_to_twilio, WebRTCSession, DeepgramSTTClient
-# These were used by the old STT-LLM-TTS pipeline which is now replaced by Deepgram Voice Agent
+# These were used by the old STT-LLM-TTS pipeline which is now replaced by custom LLM pipeline
 
-# Import Deepgram agent handler from server.py
-# Add project root to path to import server.py
-project_root = Path(__file__).parent.parent.parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-try:
-    import server
-    from server import twilio_handler
-except ImportError as e:
-    logger = logging.getLogger(__name__)
-    logger.error(f"Failed to import server.py: {e}")
-    twilio_handler = None
+# Import custom LLM pipeline components
+from src.voca.orchestrator import VocaOrchestrator
+from src.voca.services.sarvam_stt import SarvamSTTClient
+from src.voca.services.sarvam_tts import SarvamTTSClient
+from src.voca.audio_utils import mulaw_to_pcm, pcm_to_mulaw
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1083,55 +1075,7 @@ async def handle_incoming_call_webhook(request: Request):
 #         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-# Deepgram Voice Agent implementation using server.py
-class WebSocketAdapter:
-    """Adapter to make FastAPI WebSocket compatible with websockets library interface."""
-    
-    def __init__(self, websocket: WebSocket):
-        self.websocket = websocket
-        self._closed = False
-    
-    def __aiter__(self):
-        """Return self as the async iterator. Must be a regular method, not async."""
-        return self
-    
-    async def __anext__(self):
-        """Get the next message from the WebSocket. This is the async iterator method."""
-        if self._closed:
-            raise StopAsyncIteration
-        try:
-            # Receive message from FastAPI WebSocket
-            # Twilio Media Streams sends text messages (JSON strings), not JSON objects
-            # So we should receive as text first
-            try:
-                message = await self.websocket.receive_text()
-                return message
-            except Exception as e:
-                # If text fails, try JSON (for compatibility)
-                try:
-                    message = await self.websocket.receive_json()
-                    import json
-                    return json.dumps(message)
-                except:
-                    raise e
-        except Exception as e:
-            self._closed = True
-            raise StopAsyncIteration
-    
-    async def send(self, data):
-        """Send data through the WebSocket."""
-        if isinstance(data, str):
-            await self.websocket.send_text(data)
-        else:
-            await self.websocket.send_bytes(data)
-    
-    async def close(self):
-        """Close the WebSocket connection."""
-        self._closed = True
-        try:
-            await self.websocket.close()
-        except:
-            pass
+# Removed WebSocketAdapter - no longer needed without server.py dependency
 
 
 @router.get("/twilio")
@@ -1148,120 +1092,211 @@ async def twilio_websocket_info():
 @router.websocket("/twilio")
 async def handle_twilio_websocket(websocket: WebSocket):
     """
-    Handle Twilio Media Streams WebSocket connection using Deepgram Voice Agent.
-    This endpoint is used by TwiML Bin (static URL without call_sid in path).
+    Handle Twilio Media Streams WebSocket connection using custom LLM pipeline.
+    This endpoint uses SarvamAI STT/TTS with orchestrator-based Gemini LLM.
     """
     client_ip = websocket.client.host if websocket.client else "unknown"
-    logger.info(f"[DEEPGRAM_AGENT] ===== WebSocket connection attempt to /twilio from {client_ip} =====")
-    logger.info(f"[DEEPGRAM_AGENT] WebSocket URL: {websocket.url}")
-    logger.info(f"[DEEPGRAM_AGENT] WebSocket path: {websocket.url.path}")
-    logger.info(f"[DEEPGRAM_AGENT] WebSocket query: {websocket.url.query}")
-    logger.info(f"[DEEPGRAM_AGENT] WebSocket headers: {dict(websocket.headers)}")
-    # Get subprotocols from scope if available (FastAPI WebSocket doesn't expose subprotocols directly)
-    subprotocols = websocket.scope.get('subprotocols', []) if hasattr(websocket, 'scope') else []
-    logger.info(f"[DEEPGRAM_AGENT] WebSocket subprotocols: {subprotocols}")
+    logger.info(f"[CUSTOM_LLM_PIPELINE] ===== WebSocket connection attempt to /twilio from {client_ip} =====")
     
-    if twilio_handler is None:
-        logger.error("[DEEPGRAM_AGENT] server.py not available, cannot handle Deepgram agent")
+    # Get SarvamAI API key
+    sarvam_api_key = Config.sarvam_api_key
+    if not sarvam_api_key:
+        logger.error("[CUSTOM_LLM_PIPELINE] SARVAM_API_KEY not set")
         try:
             await websocket.accept()
-            await websocket.close(code=1008, reason="Deepgram agent not available")
-        except Exception as e:
-            logger.error(f"[DEEPGRAM_AGENT] Error accepting/closing WebSocket: {e}", exc_info=True)
+            await websocket.close(code=1008, reason="SarvamAI API key not configured")
+        except Exception:
+            pass
         return
     
+    # Initialize orchestrator for LLM pipeline
+    orchestrator = VocaOrchestrator(
+        on_log=lambda msg: app_state._log_callback(f"[CUSTOM_LLM_PIPELINE] {msg}"),
+        organization_id=Config.default_organization_id
+    )
+    
+    # Initialize STT and TTS clients
+    stt_client = SarvamSTTClient(api_key=sarvam_api_key, language=Config.sarvam_language, sample_rate=8000)
+    tts_client = SarvamTTSClient(api_key=sarvam_api_key, language=Config.sarvam_language, voice=Config.sarvam_voice, sample_rate=8000)
+    
+    # State management
+    call_sid = ""
+    streamsid = ""
+    conversation_history = []
+    current_tts_task = None
+    tts_active = False
+    audio_buffer = bytearray()
+    BUFFER_SIZE = 20 * 160  # 20ms of audio at 8kHz
+    
     try:
-        logger.info(f"[DEEPGRAM_AGENT] Accepting WebSocket connection...")
-        # Accept with subprotocols if provided (Twilio Media Streams may send specific subprotocols)
         await websocket.accept()
-        logger.info(f"[DEEPGRAM_AGENT] ✓ WebSocket accepted for /twilio endpoint from {client_ip}")
-        logger.info(f"[DEEPGRAM_AGENT] WebSocket state after accept: {websocket.client_state if hasattr(websocket, 'client_state') else 'unknown'}")
+        logger.info(f"[CUSTOM_LLM_PIPELINE] ✓ WebSocket accepted from {client_ip}")
         
-        # Create adapter to make FastAPI WebSocket compatible with server.py
-        ws_adapter = WebSocketAdapter(websocket)
-        logger.info(f"[DEEPGRAM_AGENT] WebSocket adapter created, calling twilio_handler")
+        # Connect to SarvamAI STT
+        logger.info("[CUSTOM_LLM_PIPELINE] Connecting to SarvamAI STT...")
+        await stt_client.connect()
         
-        # Use the twilio_handler from server.py with the adapter
-        await twilio_handler(ws_adapter)
-        logger.info(f"[DEEPGRAM_AGENT] twilio_handler completed")
+        # Connect to SarvamAI TTS
+        logger.info("[CUSTOM_LLM_PIPELINE] Connecting to SarvamAI TTS...")
+        await tts_client.connect()
+        
+        # Set up TTS audio callback
+        async def tts_audio_callback(pcm_audio: bytes):
+            """Callback for TTS audio output."""
+            if not tts_active or not streamsid:
+                return
+            # Convert PCM to μ-law and send to Twilio
+            mulaw_audio = pcm_to_mulaw(pcm_audio)
+            media_message = {
+                "event": "media",
+                "streamSid": streamsid,
+                "media": {"payload": base64.b64encode(mulaw_audio).decode("ascii")}
+            }
+            await websocket.send_json(media_message)
+        
+        tts_client.set_audio_callback(tts_audio_callback)
+        
+        # Set up STT transcript callback
+        async def stt_transcript_callback(transcript: str, is_final: bool):
+            """Callback for STT transcripts."""
+            nonlocal tts_active, current_tts_task, call_sid
+            
+            if not transcript.strip():
+                return
+            
+            logger.info(f"[CUSTOM_LLM_PIPELINE] STT transcript (final={is_final}): {transcript}")
+            
+            # Handle barge-in: cancel TTS if user speaks
+            if tts_active:
+                logger.info("[CUSTOM_LLM_PIPELINE] Barge-in detected: cancelling TTS")
+                tts_active = False
+                if current_tts_task:
+                    await tts_client.cancel()
+                    current_tts_task = None
+                
+                # Clear Twilio audio buffer
+                clear_message = {"event": "clear", "streamSid": streamsid}
+                try:
+                    await websocket.send_json(clear_message)
+                except Exception as e:
+                    logger.error(f"[CUSTOM_LLM_PIPELINE] Error clearing buffer: {e}")
+            
+            # Only process final transcripts
+            if is_final:
+                tts_active = False
+                
+                # Get organization ID (use default if not available)
+                org_id = Config.default_organization_id
+                
+                # Process through orchestrator
+                logger.info(f"[CUSTOM_LLM_PIPELINE] Processing transcript through orchestrator...")
+                assistant_response = await orchestrator.process_user_text(
+                    text=transcript,
+                    session_id=call_sid,
+                    organization_id=org_id
+                )
+                
+                logger.info(f"[CUSTOM_LLM_PIPELINE] Assistant response: {assistant_response}")
+                
+                # Send to TTS
+                tts_active = True
+                
+                async def send_tts():
+                    """Send text to TTS in chunks."""
+                    try:
+                        await tts_client.send_text_chunks(assistant_response)
+                    except Exception as e:
+                        logger.error(f"[CUSTOM_LLM_PIPELINE] Error in TTS: {e}", exc_info=True)
+                    finally:
+                        nonlocal tts_active
+                        tts_active = False
+                
+                current_tts_task = asyncio.create_task(send_tts())
+        
+        stt_client.set_transcript_callback(stt_transcript_callback)
+        
+        # Main message loop
+        welcome_sent = False
+        async for message in websocket.iter_text():
+            try:
+                data = json.loads(message)
+                event = data.get("event")
+                
+                if event == "start":
+                    start = data.get("start", {})
+                    streamsid = start.get("streamSid", "")
+                    call_sid = start.get("callSid", "")
+                    logger.info(f"[CUSTOM_LLM_PIPELINE] Stream started: SID={streamsid}, CallSid={call_sid}")
+                    
+                    # Send welcome message after we have call_sid
+                    if not welcome_sent:
+                        welcome_message = orchestrator.generate_greeting(
+                            conversation_id=call_sid,
+                            organization_id=Config.default_organization_id
+                        )
+                        if welcome_message:
+                            welcome_sent = True
+                            tts_active = True
+                            async def send_welcome():
+                                try:
+                                    await tts_client.send_text_chunks(welcome_message)
+                                finally:
+                                    nonlocal tts_active
+                                    tts_active = False
+                            asyncio.create_task(send_welcome())
+                    
+                elif event == "media":
+                    media = data.get("media", {})
+                    if media.get("track") == "inbound":
+                        mulaw_chunk = base64.b64decode(media.get("payload", ""))
+                        audio_buffer.extend(mulaw_chunk)
+                        
+                        # Process buffer in chunks
+                        while len(audio_buffer) >= BUFFER_SIZE:
+                            mulaw_to_convert = bytes(audio_buffer[:BUFFER_SIZE])
+                            audio_buffer = audio_buffer[BUFFER_SIZE:]
+                            
+                            # Convert μ-law to PCM and send to STT
+                            pcm_audio = mulaw_to_pcm(mulaw_to_convert)
+                            if stt_client.is_connected:
+                                await stt_client.send_audio(pcm_audio)
+                
+                elif event == "stop":
+                    logger.info("[CUSTOM_LLM_PIPELINE] Stream stopped")
+                    # Send remaining audio
+                    while len(audio_buffer) > 0:
+                        mulaw_to_convert = bytes(audio_buffer[:BUFFER_SIZE] if len(audio_buffer) >= BUFFER_SIZE else audio_buffer)
+                        audio_buffer = audio_buffer[len(mulaw_to_convert):]
+                        if mulaw_to_convert:
+                            pcm_audio = mulaw_to_pcm(mulaw_to_convert)
+                            if stt_client.is_connected:
+                                await stt_client.send_audio(pcm_audio)
+                    break
+                    
+            except json.JSONDecodeError as e:
+                logger.warning(f"[CUSTOM_LLM_PIPELINE] Failed to parse message: {e}")
+            except Exception as e:
+                logger.error(f"[CUSTOM_LLM_PIPELINE] Error processing message: {e}", exc_info=True)
         
     except WebSocketDisconnect:
-        logger.info(f"[DEEPGRAM_AGENT] WebSocket disconnected by client")
+        logger.info("[CUSTOM_LLM_PIPELINE] WebSocket disconnected by client")
     except Exception as e:
-        logger.error(f"[DEEPGRAM_AGENT] Error in Deepgram agent handler: {e}", exc_info=True)
+        logger.error(f"[CUSTOM_LLM_PIPELINE] Error in WebSocket handler: {e}", exc_info=True)
         import traceback
-        logger.error(f"[DEEPGRAM_AGENT] Traceback: {traceback.format_exc()}")
+        logger.error(f"[CUSTOM_LLM_PIPELINE] Traceback: {traceback.format_exc()}")
+    finally:
+        # Cleanup
+        logger.info("[CUSTOM_LLM_PIPELINE] Cleaning up connections...")
+        try:
+            await stt_client.stop()
+            await tts_client.stop()
+        except Exception as e:
+            logger.error(f"[CUSTOM_LLM_PIPELINE] Error stopping clients: {e}")
         try:
             await websocket.close()
-        except:
+        except Exception:
             pass
 
 
-@router.websocket("/deepgram-agent/{call_sid}")
-async def handle_deepgram_agent_websocket(websocket: WebSocket, call_sid: str):
-    """
-    Handle Twilio Media Streams WebSocket connection using Deepgram Voice Agent.
-    This endpoint uses the twilio_handler function from server.py directly.
-    Kept for backward compatibility if needed.
-    """
-    if twilio_handler is None:
-        logger.error("[DEEPGRAM_AGENT] server.py not available, cannot handle Deepgram agent")
-        try:
-            await websocket.close(code=1008, reason="Deepgram agent not available")
-        except:
-            pass
-        return
-    
-    logger.info(f"[DEEPGRAM_AGENT] ===== Deepgram Agent WebSocket handler for call {call_sid} =====")
-    
-    try:
-        await websocket.accept()
-        logger.info(f"[DEEPGRAM_AGENT] WebSocket accepted for call {call_sid}")
-        
-        # Create adapter to make FastAPI WebSocket compatible with server.py
-        ws_adapter = WebSocketAdapter(websocket)
-        
-        # Use the twilio_handler from server.py with the adapter
-        await twilio_handler(ws_adapter)
-        
-    except Exception as e:
-        logger.error(f"[DEEPGRAM_AGENT] Error in Deepgram agent handler: {e}", exc_info=True)
-        try:
-            await websocket.close()
-        except:
-            pass
-
-
-@router.post("/webhook/voice/deepgram-agent")
-async def handle_incoming_call_deepgram_agent(request: Request):
-    """
-    Handle incoming Twilio call webhook.
-    Note: Since TwiML Bin is used, this endpoint is kept for compatibility but returns minimal response.
-    Twilio should be configured to use the TwiML Bin URL directly.
-    """
-    form_data = await request.form()
-    call_sid = form_data.get("CallSid")
-    from_number = form_data.get("From")
-    
-    logger.info(f"[DEEPGRAM_AGENT] Incoming call from {from_number}, SID: {call_sid} (TwiML Bin should handle this)")
-    
-    # Return minimal response - TwiML Bin handles the actual TwiML
-    return PlainTextResponse(content="OK", status_code=200)
-
-
-@router.post("/outbound/deepgram-agent")
-async def handle_outbound_call_deepgram_agent(request: Request):
-    """
-    Handle outbound Twilio call webhook.
-    Note: Since TwiML Bin is used, this endpoint is kept for compatibility but returns minimal response.
-    Twilio should be configured to use the TwiML Bin URL directly.
-    """
-    form_data = await request.form()
-    call_sid = form_data.get("CallSid")
-    to_number = form_data.get("To")
-    
-    logger.info(f"[DEEPGRAM_AGENT] Outbound call to {to_number}, SID: {call_sid} (TwiML Bin should handle this)")
-    
-    # Return minimal response - TwiML Bin handles the actual TwiML
-    return PlainTextResponse(content="OK", status_code=200)
+# Removed Deepgram agent endpoints - using custom LLM pipeline instead
 

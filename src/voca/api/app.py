@@ -112,12 +112,12 @@ async def startup_event():
     os.environ["GLOG_minloglevel"] = "2"
 
     try:
-        # Verify Twilio is configured (Deepgram agent handles everything via server.py)
+        # Verify Twilio is configured (custom LLM pipeline handles everything via WebSocket)
         twilio_config = app_state.get_twilio_manager()
         if not twilio_config:
             logger.warning("Twilio not configured (check environment variables)")
         else:
-            logger.info("Twilio configuration verified - using Deepgram Voice Agent from server.py")
+            logger.info("Twilio configuration verified - using custom LLM pipeline")
     except Exception as e:
         logger.error(f"Error initializing components: {e}")
 

@@ -76,7 +76,7 @@ async def get_country_codes():
 async def start_twilio_server():
     """
     Start the Twilio webhook server.
-    Note: With Deepgram Voice Agent, calls are handled via webhooks, not a separate server.
+    Note: With custom LLM pipeline, calls are handled via WebSocket, not a separate server.
     This endpoint is kept for compatibility but is a no-op.
     """
     config = app_state.get_twilio_manager()
@@ -84,8 +84,8 @@ async def start_twilio_server():
         raise HTTPException(status_code=400, detail="Twilio not configured. Please set up environment variables.")
     
     app_state.is_twilio_server_running = True
-    app_state._log_callback("Twilio webhook server ready (using Deepgram Voice Agent)")
-    return StatusResponse(status="success", message="Twilio webhook server ready (using Deepgram Voice Agent)")
+    app_state._log_callback("Twilio webhook server ready (using custom LLM pipeline)")
+    return StatusResponse(status="success", message="Twilio webhook server ready (using custom LLM pipeline)")
 
 
 @router.post("/make-call", response_model=Dict[str, Any])
@@ -225,7 +225,7 @@ async def get_twilio_status():
         
         return CallStatusResponse(
             active_calls=len(active_calls),
-            models_ready=True,  # Deepgram agent is always ready
+            models_ready=True,  # Custom LLM pipeline is always ready
             calls=calls_dict
         )
     except Exception as e:

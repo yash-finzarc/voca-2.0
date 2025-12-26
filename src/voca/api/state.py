@@ -14,7 +14,7 @@ from src.voca.Twilio.twilio_config import get_twilio_config
 
 class AppState:
     def __init__(self):
-        # Orchestrator removed - using Deepgram Voice Agent from server.py instead
+        # Using custom LLM pipeline with orchestrator
         self.log_queue: Queue = Queue()
         self.is_twilio_server_running: bool = False
         self.is_continuous_call_running: bool = False
@@ -23,7 +23,7 @@ class AppState:
     def get_twilio_manager(self):
         """
         Get Twilio configuration.
-        Note: Twilio calls now use Deepgram Voice Agent from server.py via WebSocket endpoints.
+        Note: Twilio calls now use custom LLM pipeline via WebSocket endpoints.
         This method is kept for compatibility but returns None since TwilioCallManager is not needed.
         """
         # Verify Twilio is configured
@@ -31,7 +31,7 @@ class AppState:
         if not config.validate():
             return None
         
-        # Deepgram agent handles everything via server.py - just return config
+        # Custom LLM pipeline handles everything via WebSocket - just return config
         return config
 
     def _log_callback(self, message: str):
