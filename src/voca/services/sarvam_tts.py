@@ -160,15 +160,19 @@ class SarvamTTSClient:
             #   }
             # }
             # CRITICAL: ALL Sarvam messages must follow { "type": "<event>", "data": { ... } } structure
-            # Config accepted without output_audio_codec, but Sarvam defaults to MP3
-            # Try different variations to request PCM
-            # Option 1: Try "pcm" as value
+            # Recommended config format per Sarvam documentation
+            # Includes all required and optional fields for PCM output
             config_payload = {
                 "type": "config",
                 "data": {
                     "speaker": "anushka",
                     "target_language_code": "en-IN",
-                    "output_audio_codec": "pcm"
+                    "pitch": 0.8,
+                    "pace": 2,
+                    "min_buffer_size": 50,
+                    "max_chunk_length": 200,
+                    "output_audio_codec": "pcm",
+                    "output_audio_bitrate": "128k"
                 }
             }
 
