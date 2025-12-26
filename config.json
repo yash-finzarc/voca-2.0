@@ -48,14 +48,6 @@ settings_payload = {
                             "type": "string",
                             "description": "The name of the customer booking the appointment"
                         },
-                        "customer_phone": {
-                            "type": "string",
-                            "description": "The phone number of the customer (optional)"
-                        },
-                        "customer_email": {
-                            "type": "string",
-                            "description": "The email address of the customer (optional)"
-                        },
                         "appointment_date": {
                             "type": "string",
                             "description": "The date of the appointment in YYYY-MM-DD format"
@@ -85,14 +77,6 @@ settings_payload = {
                         "customer_name": {
                             "type": "string",
                             "description": "The name of the customer booking the room"
-                        },
-                        "customer_phone": {
-                            "type": "string",
-                            "description": "The phone number of the customer (optional)"
-                        },
-                        "customer_email": {
-                            "type": "string",
-                            "description": "The email address of the customer (optional)"
                         },
                         "check_in_date": {
                             "type": "string",

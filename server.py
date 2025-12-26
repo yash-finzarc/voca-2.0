@@ -52,12 +52,12 @@ def load_config():
             }
         },
         "agent": {
-            "language": "en",
+            "language": "hi",
             "listen": {
                 "provider": {
                     "type": "deepgram",
                     "model": "nova-3",
-                    "keyterms": ["hello", "goodbye"]
+                    "keyterms": ["नमस्ते", "अलविदा"]
                 }
             },
             "think": {
@@ -70,8 +70,16 @@ def load_config():
             },
             "speak": {
                 "provider": {
-                    "type": "deepgram",
-                    "model": "aura-2-thalia-en"
+                    "type": "sarvam",
+                    "model": "sarvam-tts",
+                    "voice": "hi-IN-female"
+                },
+                "endpoint": {
+                    "url": "https://api.sarvam.ai/tts",
+                    "headers": {
+                        "authorization": "Bearer {{SARVAM_API_KEY}}",
+                        "content-type": "application/json"
+                    }
                 }
             },
             "greeting": welcome_message
