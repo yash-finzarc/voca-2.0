@@ -169,7 +169,7 @@ class SarvamTTSClient:
                     "speaker": "anushka",
                     "output_audio_codec": "linear16",
                     "target_language_code": "hi-IN",
-                    "pace": 2,
+                    "pace": 1,
                     "pitch": 0.8,
                     "loudness": 1,
                     "speech_sample_rate": 8000,
