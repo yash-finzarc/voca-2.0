@@ -32,30 +32,41 @@ def create_stt_client(api_key: str, config: Dict[str, Any]) -> Dict[str, Any]:
 async def connect_stt(client: Dict[str, Any]):
     config = client["config"]
 
-    query_params = {
-        "language-code": config["language"],
-        "model": config["model"],
-        "input_audio_codec": config["input_audio_codec"],
-        "sample_rate": config["sample_rate"],
-        "high_vad_sensitivity": str(config["high_vad_sensitivity"]).lower(),
-        "vad_signals": str(config["vad_signals"]).lower(),
-        "flush_signal": str(config["flush_signal"]).lower(),
-    }
-
     uri = "wss://api.sarvam.ai/speech-to-text/ws"
 
+    # SarvamAI STT WebSocket authentication
+    # According to SarvamAI official docs: WebSocket requires "api-subscription-key" header (lowercase)
+    # Reference: https://docs.sarvam.ai/api-reference-docs/authentication
+    # CRITICAL: Verify API key is not empty
+    if not client["api_key"] or not client["api_key"].strip():
+        raise ValueError("SarvamAI API key is empty or not set")
+    
+    api_key_clean = client["api_key"].strip()
+    
     headers = {
-        "Api-Subscription-Key": client["api_key"]
+        "api-subscription-key": api_key_clean
     }
 
     logger.info(f"Connecting to Sarvam STT → {uri}")
+    logger.info(f"API key present: {bool(client['api_key'])}, length: {len(client['api_key']) if client['api_key'] else 0}")
+    logger.info(f"API key starts with: {client['api_key'][:10] if client['api_key'] and len(client['api_key']) >= 10 else 'N/A'}")
+    logger.info(f"Header keys: {list(headers.keys())}")
+    logger.debug(f"Language: {config['language']}, Model: {config['model']}, Sample rate: {config['sample_rate']}")
 
-    websocket = await connect(uri, extra_headers=headers)
-    client["websocket"] = websocket
-    client["is_connected"] = True
-    client["_stop_event"].clear()
+    try:
+        websocket = await connect(uri, extra_headers=headers)
+        client["websocket"] = websocket
+        client["is_connected"] = True
+        client["_stop_event"].clear()
 
-    client["_receive_task"] = asyncio.create_task(_receive_responses(client))
+        client["_receive_task"] = asyncio.create_task(_receive_responses(client))
+    except websockets.exceptions.InvalidStatusCode as e:
+        logger.error(f"STT connection failed with HTTP {e.status_code}")
+        logger.error(f"API key length: {len(client['api_key']) if client['api_key'] else 0}")
+        logger.error(f"API key format check: starts with 'sk_' = {client['api_key'].startswith('sk_') if client['api_key'] else False}")
+        if hasattr(e, 'headers'):
+            logger.error(f"Response headers: {e.headers}")
+        raise
 
 
 async def _receive_responses(client: Dict[str, Any]):
