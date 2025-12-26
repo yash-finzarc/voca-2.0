@@ -44,29 +44,15 @@ class SarvamTTSClient:
     async def connect(self):
         """Establish WebSocket connection to SarvamAI TTS service."""
         try:
-            # Validate API key before proceeding
-            if not self.api_key:
-                raise ValueError("SarvamAI API key is required but not provided")
-            
-            if not isinstance(self.api_key, str) or len(self.api_key.strip()) == 0:
-                raise ValueError("SarvamAI API key must be a non-empty string")
-            
             # SarvamAI TTS WebSocket endpoint
             # NOTE: SarvamAI TTS supports WebSocket (unlike STT which requires HTTP)
             uri = "wss://api.sarvam.ai/text-to-speech/ws"
+            # Use x-api-key header (same as STT)
+            headers = {
+                "x-api-key": self.api_key
+            }
             
-            # CRITICAL: Use ONLY x-api-key header for WebSocket authentication
-            # DO NOT use Authorization: Bearer or Content-Type headers
-            # SarvamAI WebSocket requires x-api-key in the handshake headers
-            # Use list of tuples format for websockets library (explicit, not mutated)
-            headers = [
-                ("x-api-key", self.api_key)
-            ]
-            
-            # TEMPORARY DEBUG: Log connection attempt
-            api_key_preview = self.api_key[:10] + "..." if len(self.api_key) > 10 else self.api_key[:len(self.api_key)]
             logger.info(f"Connecting to SarvamAI TTS: {uri}")
-            logger.info(f"Connecting to Sarvam TTS with x-api-key header present (key: {api_key_preview})")
             logger.debug(f"Language: {self.language}, Voice: {self.voice}, Sample rate: {self.sample_rate}")
             logger.debug(f"API key present: {bool(self.api_key)}, length: {len(self.api_key) if self.api_key else 0}")
             
@@ -75,16 +61,10 @@ class SarvamTTSClient:
                 self.websocket = await connect(uri, extra_headers=headers)
                 self.is_connected = True
                 self._is_cancelled = False
-                logger.info("Successfully connected to SarvamAI TTS WebSocket")
             except websockets.exceptions.InvalidStatusCode as e:
-                logger.error(f"TTS WebSocket connection failed with HTTP {e.status_code}")
-                logger.error(f"URI: {uri}")
-                logger.error(f"Headers used: x-api-key (present: {bool(self.api_key)})")
+                logger.error(f"TTS connection failed with HTTP {e.status_code}")
                 if hasattr(e, 'headers'):
                     logger.error(f"Response headers: {e.headers}")
-                if hasattr(e, 'reason'):
-                    logger.error(f"Response reason: {e.reason}")
-                self.is_connected = False
                 raise
             
             # Note: SarvamAI may not require initial config message

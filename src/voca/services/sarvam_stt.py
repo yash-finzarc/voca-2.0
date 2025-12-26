@@ -43,13 +43,6 @@ class SarvamSTTClient:
     async def connect(self):
         """Initialize HTTP client for SarvamAI STT streaming."""
         try:
-            # Validate API key before proceeding
-            if not self.api_key:
-                raise ValueError("SarvamAI API key is required but not provided")
-            
-            if not isinstance(self.api_key, str) or len(self.api_key.strip()) == 0:
-                raise ValueError("SarvamAI API key must be a non-empty string")
-            
             logger.info("Initializing SarvamAI STT HTTP streaming client")
             logger.debug(f"Language: {self.language}, Sample rate: {self.sample_rate}")
             logger.debug(f"API key present: {bool(self.api_key)}, length: {len(self.api_key) if self.api_key else 0}")
@@ -101,20 +94,14 @@ class SarvamSTTClient:
             # SarvamAI STT HTTP endpoint (NOT WebSocket)
             url = "https://api.sarvam.ai/speech-to-text"
             
-            # CRITICAL: Use x-api-key header (NOT Authorization: Bearer)
-            # SarvamAI requires x-api-key for all requests
-            # Transfer-Encoding is handled automatically by httpx for streaming
+            # Use x-api-key header (NOT Authorization: Bearer)
             headers = {
                 "x-api-key": self.api_key,
                 "Content-Type": "audio/raw",
-                "Accept": "application/json"
+                "Transfer-Encoding": "chunked"
             }
             
-            # TEMPORARY DEBUG: Log headers before request (excluding full API key)
-            api_key_preview = self.api_key[:10] + "..." if len(self.api_key) > 10 else self.api_key[:len(self.api_key)]
             logger.info(f"Starting HTTP streaming to SarvamAI STT: {url}")
-            logger.info(f"STT request headers: x-api-key={api_key_preview}, Content-Type=audio/raw, Accept=application/json")
-            logger.debug(f"Full API key length: {len(self.api_key) if self.api_key else 0}")
             
             # Stream audio chunks to SarvamAI
             async with self.client.stream(
@@ -126,15 +113,8 @@ class SarvamSTTClient:
                 logger.info(f"STT HTTP response status: {response.status_code}")
                 
                 if response.status_code != 200:
-                    # Read full error response for debugging
-                    try:
-                        error_text = await response.aread()
-                        error_message = error_text.decode('utf-8', errors='ignore')
-                        logger.error(f"STT HTTP error {response.status_code}")
-                        logger.error(f"Error response: {error_message}")
-                        logger.error(f"Response headers: {dict(response.headers)}")
-                    except Exception as e:
-                        logger.error(f"Failed to read error response: {e}")
+                    error_text = await response.aread()
+                    logger.error(f"STT HTTP error {response.status_code}: {error_text.decode('utf-8', errors='ignore')}")
                     self.is_connected = False
                     return
                 

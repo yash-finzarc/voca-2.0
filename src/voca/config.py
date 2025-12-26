@@ -34,4 +34,10 @@ class Config:
     sarvam_language: str = os.getenv("SARVAM_LANGUAGE", "en-IN")
     # SarvamAI TTS voice (default: anushka)
     sarvam_voice: str = os.getenv("SARVAM_VOICE", "anushka")
+    
+    # Gemini LLM
+    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
+    llm_temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+    llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "500"))
+    llm_retries: int = int(os.getenv("LLM_RETRIES", "3"))
 

@@ -4,7 +4,7 @@ Handles full-duplex audio streaming with barge-in support.
 
 AUDIO PIPELINE:
 Twilio (μ-law, 8kHz) → PCM conversion → SarvamAI STT (HTTP streaming) → Transcripts → 
-LLM (OpenAI) → Response text → SarvamAI TTS (WebSocket) → PCM audio → μ-law conversion → Twilio
+Gemini 2.5 Flash LLM → Response text → SarvamAI TTS (WebSocket) → PCM audio → μ-law conversion → Twilio
 
 IMPORTANT ARCHITECTURE NOTES:
 - SarvamAI STT uses HTTP POST with chunked transfer encoding (NOT WebSocket)
@@ -12,6 +12,7 @@ IMPORTANT ARCHITECTURE NOTES:
 - STT authentication: x-api-key header
 - TTS authentication: x-api-key header
 - Both use the same API key from SARVAM_API_KEY environment variable
+- LLM uses Gemini 2.5 Flash via GeminiClient (NOT OpenAI)
 """
 import os
 import base64
@@ -21,7 +22,6 @@ import websockets
 import asyncio
 from supabase import create_client
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
 import logging
 
 # Import SarvamAI services and audio utilities
@@ -29,6 +29,7 @@ from src.voca.services.sarvam_stt import SarvamSTTClient
 from src.voca.services.sarvam_tts import SarvamTTSClient
 from src.voca.audio_utils import mulaw_to_pcm, pcm_to_mulaw
 from src.voca.langgraph_agent import FUNCTION_MAP
+from src.voca.llm_client import GeminiClient
 
 load_dotenv()
 
@@ -36,13 +37,16 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client for LLM
-openai_client = None
-if os.getenv("OPENAI_API_KEY"):
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    logger.info("OpenAI client initialized")
-else:
-    logger.warning("OPENAI_API_KEY not set - LLM responses will fail")
+# Initialize Gemini LLM client
+gemini_client = None
+try:
+    gemini_client = GeminiClient()
+    if gemini_client.is_configured():
+        logger.info("Gemini 2.5 Flash LLM client initialized")
+    else:
+        logger.warning("GEMINI_API_KEY not set - LLM responses will fail")
+except Exception as e:
+    logger.error(f"Failed to initialize Gemini client: {e}")
 
 # Initialize Supabase client
 supabase = create_client(
@@ -118,7 +122,7 @@ def strip_markdown(text: str) -> str:
 
 async def generate_llm_response(user_message: str, system_prompt: str, conversation_history: list) -> str:
     """
-    Generate LLM response using OpenAI.
+    Generate LLM response using Gemini 2.5 Flash.
     
     Args:
         user_message: User's transcribed message
@@ -128,26 +132,24 @@ async def generate_llm_response(user_message: str, system_prompt: str, conversat
     Returns:
         Assistant's response text
     """
-    if not openai_client:
-        logger.error("OpenAI client not initialized")
+    if not gemini_client or not gemini_client.is_configured():
+        logger.error("Gemini client not initialized or configured")
         return "I'm sorry, I'm having trouble processing your request right now."
     
     try:
-        # Build messages list
+        # Build messages list in OpenAI-compatible format (GeminiClient handles conversion)
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(conversation_history)
         messages.append({"role": "user", "content": user_message})
         
-        # Call OpenAI API
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=500
+        # Call Gemini API (synchronous call wrapped in executor for async compatibility)
+        loop = asyncio.get_event_loop()
+        assistant_message = await loop.run_in_executor(
+            None,
+            lambda: gemini_client.complete_chat(messages)
         )
         
-        assistant_message = response.choices[0].message.content
-        logger.info(f"LLM response generated: {assistant_message[:100]}...")
+        logger.info(f"Gemini LLM response generated: {assistant_message[:100]}...")
         return assistant_message
         
     except Exception as e:
@@ -350,19 +352,26 @@ async def twilio_handler(twilio_ws):
                 except Exception as e:
                     logger.error(f"Error clearing Twilio buffer: {e}")
             
-            # Only process final transcripts
-            # TEMPORARY: Echo workflow (no LLM) - for validation only
+            # Only process final transcripts for LLM
             if is_final:
                 user_speaking = True
                 tts_active = False
                 
-                # TEMPORARY ECHO WORKFLOW: Echo user's speech back via TTS
-                # This is for validation only - will be replaced with LLM later
-                logger.info(f"Final transcript received: {transcript}")
+                # Generate LLM response
+                logger.info(f"Generating LLM response for: {transcript}")
+                assistant_response = await generate_llm_response(
+                    transcript,
+                    system_prompt,
+                    conversation_history
+                )
                 
-                # Create echo response: "You said: [transcript]"
-                echo_response = f"You said: {transcript}"
-                logger.info(f"Echo response: {echo_response}")
+                # Update conversation history
+                conversation_history.append({"role": "user", "content": transcript})
+                conversation_history.append({"role": "assistant", "content": assistant_response})
+                
+                # Clean response text
+                clean_response = strip_markdown(assistant_response)
+                logger.info(f"Assistant response: {clean_response}")
                 
                 # Send to TTS
                 tts_active = True
@@ -371,7 +380,7 @@ async def twilio_handler(twilio_ws):
                 async def send_tts():
                     """Send text to TTS in chunks."""
                     try:
-                        await tts_client.send_text_chunks(echo_response)
+                        await tts_client.send_text_chunks(clean_response)
                     except Exception as e:
                         logger.error(f"Error in TTS: {e}", exc_info=True)
                     finally:
