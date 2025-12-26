@@ -27,4 +27,5 @@ langchain-core>=0.3.0
 langgraph>=0.2.2
 langchain-google-genai>=1.0.5
 # deepgram-sdk>=3.0.0  # Removed - replaced with SarvamAI
+httpx>=0.25.0  # Required for SarvamAI STT HTTP streaming
 

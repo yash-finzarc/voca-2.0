@@ -3,12 +3,15 @@ Real-time voice AI system using SarvamAI STT/TTS with Twilio Media Streams.
 Handles full-duplex audio streaming with barge-in support.
 
 AUDIO PIPELINE:
-Twilio (μ-law, 8kHz) → PCM conversion → SarvamAI STT → Transcripts → 
-LLM (OpenAI) → Response text → SarvamAI TTS → PCM audio → μ-law conversion → Twilio
+Twilio (μ-law, 8kHz) → PCM conversion → SarvamAI STT (HTTP streaming) → Transcripts → 
+LLM (OpenAI) → Response text → SarvamAI TTS (WebSocket) → PCM audio → μ-law conversion → Twilio
 
-NOTE: SarvamAI API endpoints and message formats are based on common WebSocket
-streaming patterns. Adjust the endpoints in sarvam_stt.py and sarvam_tts.py based
-on actual SarvamAI API documentation if needed.
+IMPORTANT ARCHITECTURE NOTES:
+- SarvamAI STT uses HTTP POST with chunked transfer encoding (NOT WebSocket)
+- SarvamAI TTS uses WebSocket streaming (supports bidirectional WS)
+- STT authentication: x-api-key header
+- TTS authentication: x-api-key header
+- Both use the same API key from SARVAM_API_KEY environment variable
 """
 import os
 import base64

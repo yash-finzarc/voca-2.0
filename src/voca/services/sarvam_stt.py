@@ -1,24 +1,24 @@
 """
-SarvamAI Speech-to-Text (STT) service with WebSocket streaming support.
-Handles real-time audio transcription with partial and final transcript support.
+SarvamAI Speech-to-Text (STT) service with HTTP streaming support.
+SarvamAI STT uses HTTP streaming (NOT WebSocket) - this is a key difference from Deepgram.
+
+Handles real-time audio transcription with partial and final transcript support via HTTP chunked streaming.
 """
 import asyncio
 import json
 import logging
-import websockets
-from websockets.legacy.client import connect
-from typing import Callable, Optional
-import base64
+import httpx
+from typing import Callable, Optional, AsyncIterator
 
 logger = logging.getLogger(__name__)
 
 
 class SarvamSTTClient:
     """
-    SarvamAI STT client for streaming speech-to-text transcription.
+    SarvamAI STT client for streaming speech-to-text transcription via HTTP.
     
-    Handles WebSocket connection to SarvamAI STT service, sends PCM audio frames,
-    and receives partial and final transcripts.
+    IMPORTANT: SarvamAI STT does NOT support WebSocket connections.
+    It requires HTTP POST with chunked transfer encoding for streaming audio.
     """
     
     def __init__(self, api_key: str, language: str = "en-IN", sample_rate: int = 8000):
@@ -26,76 +26,105 @@ class SarvamSTTClient:
         Initialize SarvamAI STT client.
         
         Args:
-            api_key: SarvamAI API subscription key
+            api_key: SarvamAI API key
             language: Language code (default: en-IN)
             sample_rate: Audio sample rate in Hz (default: 8000 for Twilio)
         """
         self.api_key = api_key
         self.language = language
         self.sample_rate = sample_rate
-        self.websocket: Optional[websockets.WebSocketClientProtocol] = None
+        self.client: Optional[httpx.AsyncClient] = None
         self.is_connected = False
         self.transcript_callback: Optional[Callable[[str, bool], None]] = None
-        self._receive_task: Optional[asyncio.Task] = None
+        self._audio_queue: Optional[asyncio.Queue] = None
+        self._stream_task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
         
     async def connect(self):
-        """Establish WebSocket connection to SarvamAI STT service."""
+        """Initialize HTTP client for SarvamAI STT streaming."""
         try:
-            # SarvamAI STT WebSocket endpoint
-            # Based on SarvamAI documentation: wss://api.sarvam.ai/speech-to-text/ws
-            uri = "wss://api.sarvam.ai/speech-to-text/ws"
-            # Use lowercase header name as per SarvamAI documentation
-            headers = {
-                "api-subscription-key": self.api_key
-            }
-            
-            logger.info(f"Connecting to SarvamAI STT: {uri}")
+            logger.info("Initializing SarvamAI STT HTTP streaming client")
             logger.debug(f"Language: {self.language}, Sample rate: {self.sample_rate}")
             logger.debug(f"API key present: {bool(self.api_key)}, length: {len(self.api_key) if self.api_key else 0}")
             
-            # Use legacy client for websockets 15.0.1 compatibility
-            try:
-                self.websocket = await connect(uri, extra_headers=headers)
-                self.is_connected = True
-            except websockets.exceptions.InvalidStatusCode as e:
-                logger.error(f"STT connection failed with HTTP {e.status_code}")
-                if hasattr(e, 'headers'):
-                    logger.error(f"Response headers: {e.headers}")
-                raise
+            # Create HTTP client with no timeout for streaming
+            self.client = httpx.AsyncClient(timeout=None)
+            self._audio_queue = asyncio.Queue()
+            self._stop_event.clear()
+            self.is_connected = True
             
-            # Note: SarvamAI may not require initial config message
-            # If config is needed, it might be sent as query params or first message
-            # Try sending config as first message (adjust format based on actual API)
-            try:
-                config = {
-                    "language": self.language,
-                    "sample_rate": self.sample_rate,
-                    "encoding": "pcm",
-                    "format": "raw"
-                }
-                await self.websocket.send(json.dumps(config))
-                logger.info("Connected to SarvamAI STT and sent configuration")
-            except Exception as e:
-                logger.warning(f"Could not send initial config (may not be required): {e}")
-                logger.info("Connected to SarvamAI STT (no config sent)")
+            # Start streaming task
+            self._stream_task = asyncio.create_task(self._stream_transcription())
             
-            # Start receiving transcripts
-            self._receive_task = asyncio.create_task(self._receive_transcripts())
+            logger.info("SarvamAI STT HTTP streaming client initialized")
             
         except Exception as e:
-            logger.error(f"Error connecting to SarvamAI STT: {e}")
+            logger.error(f"Error initializing SarvamAI STT client: {e}")
             self.is_connected = False
             raise
     
-    async def _receive_transcripts(self):
-        """Receive and process transcript messages from SarvamAI STT."""
+    async def _audio_generator(self) -> AsyncIterator[bytes]:
+        """
+        Generator that yields PCM audio chunks from the queue.
+        Stops when None is received (sentinel value).
+        """
+        while True:
+            try:
+                # Wait for audio chunk with timeout to allow checking stop event
+                chunk = await asyncio.wait_for(self._audio_queue.get(), timeout=0.1)
+                if chunk is None:  # Sentinel value to stop
+                    break
+                yield chunk
+            except asyncio.TimeoutError:
+                # Check if we should stop
+                if self._stop_event.is_set():
+                    break
+                continue
+    
+    async def _stream_transcription(self):
+        """
+        Stream audio to SarvamAI STT via HTTP POST with chunked transfer encoding.
+        Receives transcription responses and calls the callback.
+        """
+        if not self.client or not self._audio_queue:
+            logger.error("STT client not properly initialized")
+            return
+        
         try:
-            async for message in self.websocket:
-                try:
-                    if isinstance(message, str):
-                        data = json.loads(message)
-                        
-                        # Log full message for debugging
+            # SarvamAI STT HTTP endpoint (NOT WebSocket)
+            url = "https://api.sarvam.ai/speech-to-text"
+            
+            # Use x-api-key header (NOT Authorization: Bearer)
+            headers = {
+                "x-api-key": self.api_key,
+                "Content-Type": "audio/raw",
+                "Transfer-Encoding": "chunked"
+            }
+            
+            logger.info(f"Starting HTTP streaming to SarvamAI STT: {url}")
+            
+            # Stream audio chunks to SarvamAI
+            async with self.client.stream(
+                "POST",
+                url,
+                headers=headers,
+                content=self._audio_generator()
+            ) as response:
+                logger.info(f"STT HTTP response status: {response.status_code}")
+                
+                if response.status_code != 200:
+                    error_text = await response.aread()
+                    logger.error(f"STT HTTP error {response.status_code}: {error_text.decode('utf-8', errors='ignore')}")
+                    self.is_connected = False
+                    return
+                
+                # Read transcription responses line by line
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    
+                    try:
+                        data = json.loads(line)
                         logger.debug(f"STT received message: {data}")
                         
                         # Handle different response types
@@ -126,57 +155,32 @@ class SarvamSTTClient:
                         else:
                             # Log unknown message types for debugging
                             logger.debug(f"STT unknown message type: {data.get('type')}, full: {data}")
-                                
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse STT message: {e}, message: {message[:200]}")
-                except Exception as e:
-                    logger.error(f"Error processing STT message: {e}", exc_info=True)
-                    
-        except websockets.exceptions.ConnectionClosed as e:
-            logger.info(f"SarvamAI STT WebSocket connection closed: {e.code} - {e.reason}")
-            self.is_connected = False
+                            
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse STT message: {e}, line: {line[:200]}")
+                    except Exception as e:
+                        logger.error(f"Error processing STT message: {e}", exc_info=True)
+                        
         except Exception as e:
-            logger.error(f"Error in STT receive loop: {e}", exc_info=True)
+            logger.error(f"Error in STT HTTP streaming: {e}", exc_info=True)
             self.is_connected = False
     
     async def send_audio(self, pcm_audio: bytes):
         """
-        Send PCM audio frame to SarvamAI STT.
+        Send PCM audio frame to SarvamAI STT via HTTP streaming.
         
         Args:
             pcm_audio: Raw PCM audio bytes (16-bit, little-endian)
-        
-        Note: SarvamAI may accept raw binary or JSON format. Trying both approaches.
         """
-        if not self.is_connected or not self.websocket:
+        if not self.is_connected or not self._audio_queue:
             logger.warning("STT not connected, cannot send audio")
             return
         
         try:
-            # Check if connection is still open
-            if self.websocket.closed:
-                logger.warning("STT WebSocket is closed, cannot send audio")
-                self.is_connected = False
-                return
-            
-            # Try sending as JSON with base64-encoded audio (common format)
-            audio_b64 = base64.b64encode(pcm_audio).decode("ascii")
-            message = {
-                "type": "audio",
-                "data": audio_b64,
-                "sample_rate": self.sample_rate,
-                "encoding": "pcm"
-            }
-            await self.websocket.send(json.dumps(message))
-            
-            # Alternative: If above doesn't work, try raw binary:
-            # await self.websocket.send(pcm_audio)
-            
-        except websockets.exceptions.ConnectionClosed as e:
-            logger.warning(f"STT connection closed while sending: {e.code} - {e.reason}")
-            self.is_connected = False
+            # Queue audio chunk for streaming
+            await self._audio_queue.put(pcm_audio)
         except Exception as e:
-            logger.error(f"Error sending audio to STT: {e}", exc_info=True)
+            logger.error(f"Error queuing audio for STT: {e}", exc_info=True)
             self.is_connected = False
     
     def set_transcript_callback(self, callback: Callable[[str, bool], None]):
@@ -189,19 +193,33 @@ class SarvamSTTClient:
         self.transcript_callback = callback
     
     async def stop(self):
-        """Close WebSocket connection and cleanup."""
+        """Close HTTP connection and cleanup."""
         try:
-            if self._receive_task:
-                self._receive_task.cancel()
-                try:
-                    await self._receive_task
-                except asyncio.CancelledError:
-                    pass
+            self._stop_event.set()
             
-            if self.websocket:
-                await self.websocket.close()
-                self.is_connected = False
-                logger.info("SarvamAI STT connection closed")
+            # Send sentinel value to stop audio generator
+            if self._audio_queue:
+                await self._audio_queue.put(None)
+            
+            # Wait for stream task to complete
+            if self._stream_task:
+                try:
+                    await asyncio.wait_for(self._stream_task, timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("STT stream task did not complete in time, cancelling")
+                    self._stream_task.cancel()
+                    try:
+                        await self._stream_task
+                    except asyncio.CancelledError:
+                        pass
+            
+            # Close HTTP client
+            if self.client:
+                await self.client.aclose()
+                self.client = None
+            
+            self.is_connected = False
+            logger.info("SarvamAI STT HTTP streaming client closed")
         except Exception as e:
             logger.error(f"Error stopping STT client: {e}")
 

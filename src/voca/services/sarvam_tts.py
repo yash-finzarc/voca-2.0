@@ -45,11 +45,11 @@ class SarvamTTSClient:
         """Establish WebSocket connection to SarvamAI TTS service."""
         try:
             # SarvamAI TTS WebSocket endpoint
-            # NOTE: Adjust endpoint URL based on actual SarvamAI API documentation
+            # NOTE: SarvamAI TTS supports WebSocket (unlike STT which requires HTTP)
             uri = "wss://api.sarvam.ai/text-to-speech/ws"
-            # Use lowercase header name as per SarvamAI documentation
+            # Use x-api-key header (same as STT)
             headers = {
-                "api-subscription-key": self.api_key
+                "x-api-key": self.api_key
             }
             
             logger.info(f"Connecting to SarvamAI TTS: {uri}")
