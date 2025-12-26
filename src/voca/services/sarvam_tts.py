@@ -66,6 +66,7 @@ class SarvamTTSClient:
         self.audio_callback: Optional[Callable[[bytes], None]] = None
         self._receive_task: Optional[asyncio.Task] = None
         self._is_cancelled = False
+        self._config_sent = False  # Track if config has been sent (must be sent exactly once)
         
     async def connect(self):
         """Establish WebSocket connection to SarvamAI TTS service."""
@@ -99,6 +100,7 @@ class SarvamTTSClient:
                 self.websocket = await connect(uri, extra_headers=headers)
                 self.is_connected = True
                 self._is_cancelled = False
+                self._config_sent = False  # Reset config flag on new connection
             except websockets.exceptions.InvalidStatusCode as e:
                 logger.error(f"TTS connection failed with HTTP {e.status_code}")
                 logger.error(f"API key length: {len(self.api_key) if self.api_key else 0}")
@@ -131,27 +133,48 @@ class SarvamTTSClient:
         """
         Send configuration message to SarvamAI TTS.
         This MUST be sent immediately after WebSocket connection, before any text messages.
+        CRITICAL: Config must be sent exactly once, with the correct wrapper structure.
         """
         if not self.websocket or not self.is_connected:
             logger.warning("Cannot send TTS config: WebSocket not connected")
             return
         
+        # Ensure config is sent exactly once
+        if self._config_sent:
+            logger.warning("TTS config already sent, skipping duplicate")
+            return
+        
         try:
             # CRITICAL: According to Sarvam documentation, output_audio_codec MUST be set to "pcm"
             # If not specified, Sarvam defaults to MP3 (audio/mpeg), which cannot be converted to μ-law
-            # EXACT format per Sarvam docs (hardcoded values):
+            # Official format per Sarvam docs (EXACT format - no extra fields):
+            # {
+            #   "type": "config",
+            #   "data": {
+            #     "speaker": "anushka",
+            #     "language": "en-IN",
+            #     "output_audio_codec": "pcm"
+            #   }
+            # }
+            # CRITICAL: ALL Sarvam messages must follow { "type": "<event>", "data": { ... } } structure
             config_payload = {
                 "type": "config",
                 "data": {
-                    "speaker": "anushka",
-                    "language": "en-IN",
-                    "output_audio_codec": "pcm"
+                    "speaker": self.voice,  # Voice name (e.g., "anushka" or "default")
+                    "language": self.language,  # Language code (e.g., "en-IN") - NOT target_language_code
+                    "output_audio_codec": "pcm"  # CRITICAL: Must be "pcm" to avoid MP3 default
                 }
             }
             
+            # Verify structure before sending
+            if not isinstance(config_payload, dict) or "type" not in config_payload or "data" not in config_payload:
+                raise ValueError(f"Invalid config payload structure: {config_payload}")
+            
             config_json = json.dumps(config_payload)
+            logger.debug(f"TTS config JSON being sent: {config_json}")
             await self.websocket.send(config_json)
-            logger.info(f"✓ TTS config sent (requesting PCM): speaker=anushka, language=en-IN, output_audio_codec=pcm")
+            self._config_sent = True  # Mark as sent
+            logger.info(f"✓ TTS config sent (requesting PCM): speaker={self.voice}, language={self.language}, output_audio_codec=pcm")
         except Exception as e:
             logger.error(f"Error sending TTS config: {e}", exc_info=True)
             raise
