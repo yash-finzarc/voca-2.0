@@ -19,6 +19,10 @@ if env_loaded:
 else:
     logger.warning("No .env file found - using system environment variables only")
 
+
+class Config:
+    """Configuration class for VOCA application."""
+    
     # Supabase
     supabase_url: str = os.getenv("SUPABASE_URL", "")
     supabase_key: str = os.getenv("SUPABASE_KEY", "")
@@ -29,5 +33,4 @@ else:
     # Deepgram keyterms for better accuracy (comma-separated list)
     # Example: "Yash Verma,vermayash849,John Doe,johndoe@example.com"
     deepgram_keyterms: str = os.getenv("DEEPGRAM_KEYTERMS", "")
-    
 
