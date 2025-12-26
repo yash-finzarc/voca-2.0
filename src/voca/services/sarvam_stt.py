@@ -94,11 +94,12 @@ class SarvamSTTClient:
             # SarvamAI STT HTTP endpoint (NOT WebSocket)
             url = "https://api.sarvam.ai/speech-to-text"
             
-            # Use x-api-key header (NOT Authorization: Bearer)
+            # CRITICAL: Use x-api-key header (NOT Authorization: Bearer)
+            # SarvamAI requires x-api-key for all requests
+            # Transfer-Encoding is handled automatically by httpx for streaming
             headers = {
                 "x-api-key": self.api_key,
-                "Content-Type": "audio/raw",
-                "Transfer-Encoding": "chunked"
+                "Content-Type": "audio/raw"
             }
             
             logger.info(f"Starting HTTP streaming to SarvamAI STT: {url}")
@@ -113,8 +114,15 @@ class SarvamSTTClient:
                 logger.info(f"STT HTTP response status: {response.status_code}")
                 
                 if response.status_code != 200:
-                    error_text = await response.aread()
-                    logger.error(f"STT HTTP error {response.status_code}: {error_text.decode('utf-8', errors='ignore')}")
+                    # Read full error response for debugging
+                    try:
+                        error_text = await response.aread()
+                        error_message = error_text.decode('utf-8', errors='ignore')
+                        logger.error(f"STT HTTP error {response.status_code}")
+                        logger.error(f"Error response: {error_message}")
+                        logger.error(f"Response headers: {dict(response.headers)}")
+                    except Exception as e:
+                        logger.error(f"Failed to read error response: {e}")
                     self.is_connected = False
                     return
                 

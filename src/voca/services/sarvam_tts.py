@@ -47,7 +47,10 @@ class SarvamTTSClient:
             # SarvamAI TTS WebSocket endpoint
             # NOTE: SarvamAI TTS supports WebSocket (unlike STT which requires HTTP)
             uri = "wss://api.sarvam.ai/text-to-speech/ws"
-            # Use x-api-key header (same as STT)
+            
+            # CRITICAL: Use ONLY x-api-key header for WebSocket authentication
+            # DO NOT use Authorization: Bearer or Content-Type headers
+            # SarvamAI WebSocket requires x-api-key in the handshake headers
             headers = {
                 "x-api-key": self.api_key
             }
@@ -61,10 +64,16 @@ class SarvamTTSClient:
                 self.websocket = await connect(uri, extra_headers=headers)
                 self.is_connected = True
                 self._is_cancelled = False
+                logger.info("Successfully connected to SarvamAI TTS WebSocket")
             except websockets.exceptions.InvalidStatusCode as e:
-                logger.error(f"TTS connection failed with HTTP {e.status_code}")
+                logger.error(f"TTS WebSocket connection failed with HTTP {e.status_code}")
+                logger.error(f"URI: {uri}")
+                logger.error(f"Headers used: x-api-key (present: {bool(self.api_key)})")
                 if hasattr(e, 'headers'):
                     logger.error(f"Response headers: {e.headers}")
+                if hasattr(e, 'reason'):
+                    logger.error(f"Response reason: {e.reason}")
+                self.is_connected = False
                 raise
             
             # Note: SarvamAI may not require initial config message

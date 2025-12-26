@@ -350,26 +350,19 @@ async def twilio_handler(twilio_ws):
                 except Exception as e:
                     logger.error(f"Error clearing Twilio buffer: {e}")
             
-            # Only process final transcripts for LLM
+            # Only process final transcripts
+            # TEMPORARY: Echo workflow (no LLM) - for validation only
             if is_final:
                 user_speaking = True
                 tts_active = False
                 
-                # Generate LLM response
-                logger.info(f"Generating LLM response for: {transcript}")
-                assistant_response = await generate_llm_response(
-                    transcript,
-                    system_prompt,
-                    conversation_history
-                )
+                # TEMPORARY ECHO WORKFLOW: Echo user's speech back via TTS
+                # This is for validation only - will be replaced with LLM later
+                logger.info(f"Final transcript received: {transcript}")
                 
-                # Update conversation history
-                conversation_history.append({"role": "user", "content": transcript})
-                conversation_history.append({"role": "assistant", "content": assistant_response})
-                
-                # Clean response text
-                clean_response = strip_markdown(assistant_response)
-                logger.info(f"Assistant response: {clean_response}")
+                # Create echo response: "You said: [transcript]"
+                echo_response = f"You said: {transcript}"
+                logger.info(f"Echo response: {echo_response}")
                 
                 # Send to TTS
                 tts_active = True
@@ -378,7 +371,7 @@ async def twilio_handler(twilio_ws):
                 async def send_tts():
                     """Send text to TTS in chunks."""
                     try:
-                        await tts_client.send_text_chunks(clean_response)
+                        await tts_client.send_text_chunks(echo_response)
                     except Exception as e:
                         logger.error(f"Error in TTS: {e}", exc_info=True)
                     finally:
