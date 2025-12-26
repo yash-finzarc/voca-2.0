@@ -160,12 +160,16 @@ class SarvamTTSClient:
             config_payload = {
                 "type": "config",
                 "data": {
-                    "speaker": "anushka",  # Voice name (e.g., "anushka" or "default")
-                    "language": "en-IN",  # Language code (e.g., "en-IN") - NOT target_language_code
-                    "output_audio_codec": "pcm"  # CRITICAL: Must be "pcm" to avoid MP3 default
+                    "speaker": "anushka",
+                    "target_language_code": "en-IN",
+                    "pitch": 0.8,
+                    "pace": 2,
+                    "min_buffer_size": 50,
+                    "max_chunk_length": 200,
+                    "output_audio_codec": "pcm"
                 }
             }
-            
+
             # Verify structure before sending
             if not isinstance(config_payload, dict) or "type" not in config_payload or "data" not in config_payload:
                 raise ValueError(f"Invalid config payload structure: {config_payload}")
