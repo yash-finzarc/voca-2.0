@@ -37,9 +37,6 @@ def load_config():
     # Get system prompt and welcome message from Supabase
     system_prompt, welcome_message = get_system_prompt("customer_service")
     
-    # Get Sarvam API key from environment variables
-    sarvam_api_key = os.getenv("SARVAM_API_KEY", "")
-    
     # Build the config payload
     config = {
         "type": "Settings",
@@ -55,12 +52,12 @@ def load_config():
             }
         },
         "agent": {
-            "language": "hi",
+            "language": "en",
             "listen": {
                 "provider": {
                     "type": "deepgram",
                     "model": "nova-3",
-                    "keyterms": ["नमस्ते", "अलविदा"]
+                    "keyterms": ["hello", "goodbye"]
                 }
             },
             "think": {
@@ -73,16 +70,8 @@ def load_config():
             },
             "speak": {
                 "provider": {
-                    "type": "sarvam",
-                    "model": "sarvam-tts",
-                    "voice": "hi-IN-female"
-                },
-                "endpoint": {
-                    "url": "https://api.sarvam.ai/tts",
-                    "headers": {
-                        "authorization": f"Bearer {sarvam_api_key}",
-                        "content-type": "application/json"
-                    }
+                    "type": "deepgram",
+                    "model": "aura-2-thalia-en"
                 }
             },
             "greeting": welcome_message
