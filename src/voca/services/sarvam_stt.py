@@ -5,6 +5,7 @@ import base64
 import websockets
 from websockets.legacy.client import connect
 from typing import Callable, Dict, Any
+from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,22 @@ def create_stt_client(api_key: str, config: Dict[str, Any]) -> Dict[str, Any]:
 async def connect_stt(client: Dict[str, Any]):
     config = client["config"]
 
-    uri = "wss://api.sarvam.ai/speech-to-text/ws"
+    # CRITICAL: Sarvam STT requires ALL parameters in the query string at handshake time
+    # Unlike TTS which sends config after connection, STT validates parameters during WebSocket upgrade
+    query_params = {
+        "language-code": config["language"],
+        "model": config["model"],
+        "input_audio_codec": config["input_audio_codec"],
+        "sample_rate": str(config["sample_rate"]),
+        "high_vad_sensitivity": str(config["high_vad_sensitivity"]).lower(),
+        "vad_signals": str(config["vad_signals"]).lower(),
+        "flush_signal": str(config["flush_signal"]).lower(),
+    }
+
+    # Build URI with query parameters
+    base_uri = "wss://api.sarvam.ai/speech-to-text/ws"
+    query_string = urlencode(query_params)
+    uri = f"{base_uri}?{query_string}"
 
     # SarvamAI STT WebSocket authentication
     # According to SarvamAI official docs: WebSocket requires "api-subscription-key" header (lowercase)
@@ -47,11 +63,12 @@ async def connect_stt(client: Dict[str, Any]):
         "api-subscription-key": api_key_clean
     }
 
-    logger.info(f"Connecting to Sarvam STT → {uri}")
+    logger.info(f"Connecting to Sarvam STT → {base_uri}")
+    logger.critical(f"[STT FINAL URI] {uri}")
     logger.info(f"API key present: {bool(client['api_key'])}, length: {len(client['api_key']) if client['api_key'] else 0}")
     logger.info(f"API key starts with: {client['api_key'][:10] if client['api_key'] and len(client['api_key']) >= 10 else 'N/A'}")
     logger.info(f"Header keys: {list(headers.keys())}")
-    logger.debug(f"Language: {config['language']}, Model: {config['model']}, Sample rate: {config['sample_rate']}")
+    logger.debug(f"Query params: {query_params}")
 
     try:
         websocket = await connect(uri, extra_headers=headers)
@@ -64,6 +81,7 @@ async def connect_stt(client: Dict[str, Any]):
         logger.error(f"STT connection failed with HTTP {e.status_code}")
         logger.error(f"API key length: {len(client['api_key']) if client['api_key'] else 0}")
         logger.error(f"API key format check: starts with 'sk_' = {client['api_key'].startswith('sk_') if client['api_key'] else False}")
+        logger.error(f"URI used: {uri}")
         if hasattr(e, 'headers'):
             logger.error(f"Response headers: {e.headers}")
         raise
