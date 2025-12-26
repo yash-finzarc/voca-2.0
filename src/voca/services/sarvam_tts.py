@@ -161,7 +161,8 @@ class SarvamTTSClient:
             # }
             # CRITICAL: ALL Sarvam messages must follow { "type": "<event>", "data": { ... } } structure
             # Recommended config format per Sarvam documentation
-            # Includes all required and optional fields for PCM output
+            # Note: output_audio_bitrate is only for compressed formats (MP3), not PCM
+            # PCM is raw audio, so bitrate doesn't apply
             config_payload = {
                 "type": "config",
                 "data": {
@@ -171,8 +172,7 @@ class SarvamTTSClient:
                     "pace": 2,
                     "min_buffer_size": 50,
                     "max_chunk_length": 200,
-                    "output_audio_codec": "pcm",
-                    "output_audio_bitrate": "128k"
+                    "output_audio_codec": "pcm"
                 }
             }
 
