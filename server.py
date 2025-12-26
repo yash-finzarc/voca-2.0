@@ -37,6 +37,9 @@ def load_config():
     # Get system prompt and welcome message from Supabase
     system_prompt, welcome_message = get_system_prompt("customer_service")
     
+    # Get Sarvam API key from environment variables
+    sarvam_api_key = os.getenv("SARVAM_API_KEY", "")
+    
     # Build the config payload
     config = {
         "type": "Settings",
@@ -77,7 +80,7 @@ def load_config():
                 "endpoint": {
                     "url": "https://api.sarvam.ai/tts",
                     "headers": {
-                        "authorization": "Bearer {{SARVAM_API_KEY}}",
+                        "authorization": f"Bearer {sarvam_api_key}",
                         "content-type": "application/json"
                     }
                 }
