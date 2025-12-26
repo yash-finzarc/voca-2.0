@@ -1,6 +1,18 @@
 """
 SarvamAI Text-to-Speech (TTS) service with WebSocket streaming support.
 Handles real-time text-to-speech conversion with streaming audio output.
+
+CRITICAL: Twilio Media Streams requires μ-law encoded audio at 8000Hz, mono.
+This service requests raw PCM from Sarvam and converts it to μ-law.
+
+IMPORTANT: If Sarvam returns MP3 instead of PCM (despite config), the system
+will raise RuntimeError to prevent white noise/distortion. MP3 bytes cannot
+be directly converted to μ-law - they must be decoded to PCM first.
+
+Alternative Solution (if Sarvam cannot provide PCM):
+- Install: pip install pydub
+- Decode MP3 → PCM → μ-law using pydub.AudioSegment
+- See code comments for implementation details
 """
 import asyncio
 import json
@@ -111,11 +123,16 @@ class SarvamTTSClient:
             return
         
         try:
+            # CRITICAL: Explicitly request raw PCM format for Twilio compatibility
+            # Twilio REQUIRES μ-law, which must be converted from PCM (not MP3)
             config_payload = {
                 "type": "config",
                 "data": {
                     "audio_format": "pcm",
-                    "sample_rate": self.sample_rate,
+                    "container": "raw",  # Request raw PCM, not containerized format
+                    "sample_rate": self.sample_rate,  # Must be 8000 for Twilio
+                    "encoding": "linear16",  # 16-bit linear PCM
+                    "channels": 1,  # Mono (required for Twilio)
                     "language": self.language,
                     "voice": "default"
                 }
@@ -123,7 +140,7 @@ class SarvamTTSClient:
             
             config_json = json.dumps(config_payload)
             await self.websocket.send(config_json)
-            logger.info(f"✓ TTS config sent: {config_payload}")
+            logger.info(f"✓ TTS config sent (requesting raw PCM): audio_format=pcm, container=raw, sample_rate={self.sample_rate}, encoding=linear16, channels=1")
         except Exception as e:
             logger.error(f"Error sending TTS config: {e}", exc_info=True)
             raise
@@ -172,9 +189,21 @@ class SarvamTTSClient:
                                 audio_b64 = payload["audio"]
                                 content_type = payload.get("content_type", "unknown")
                                 
-                                # Verify content type (should be "audio/pcm" for PCM audio)
-                                if content_type not in ("audio/pcm", "audio/pcm;rate=8000", "unknown"):
-                                    logger.warning(f"Unexpected audio content_type from Sarvam: {content_type}, expected audio/pcm")
+                                # CRITICAL: Twilio REQUIRES PCM, not MP3
+                                # If Sarvam sends MP3, we cannot convert it to μ-law correctly
+                                # MP3 bytes ≠ PCM samples, converting MP3 to μ-law produces white noise
+                                valid_pcm_types = ("audio/pcm", "audio/pcm;rate=8000", "audio/raw", "audio/x-raw")
+                                if content_type not in valid_pcm_types:
+                                    error_msg = (
+                                        f"Sarvam TTS returned {content_type} instead of PCM. "
+                                        f"Cannot stream to Twilio (requires PCM → μ-law conversion). "
+                                        f"Expected one of: {valid_pcm_types}. "
+                                        f"This will cause white noise/distortion. "
+                                        f"Check TTS config: audio_format=pcm, container=raw, encoding=linear16"
+                                    )
+                                    logger.error(error_msg)
+                                    # Hard fail: MP3 cannot be converted to μ-law for Twilio
+                                    raise RuntimeError(error_msg)
                                 
                                 try:
                                     audio_bytes = base64.b64decode(audio_b64)
@@ -187,6 +216,9 @@ class SarvamTTSClient:
                                     if self.audio_callback and not self._is_cancelled:
                                         await self.audio_callback(audio_bytes)
                                     logger.debug(f"TTS audio decoded: {len(audio_bytes)} bytes PCM (content_type: {content_type})")
+                                except RuntimeError:
+                                    # Re-raise our hard failure for MP3
+                                    raise
                                 except Exception as e:
                                     logger.error(f"Error decoding TTS audio: {e}", exc_info=True)
                             elif isinstance(payload, str) and payload:
