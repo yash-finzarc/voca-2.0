@@ -2,12 +2,35 @@ import asyncio
 import json
 import logging
 import base64
+import io
+import wave
 import websockets
 from websockets.legacy.client import connect
 from typing import Callable, Dict, Any
 from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
+
+
+def pcm_to_wav_bytes(pcm_bytes: bytes, sample_rate: int = 8000, channels: int = 1) -> bytes:
+    """
+    Convert PCM audio bytes to WAV format.
+    
+    Args:
+        pcm_bytes: Raw PCM audio data (16-bit, little-endian)
+        sample_rate: Sample rate in Hz (default: 8000)
+        channels: Number of audio channels (default: 1 for mono)
+    
+    Returns:
+        WAV-formatted audio bytes
+    """
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)  # 16-bit PCM = 2 bytes per sample
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_bytes)
+    return buffer.getvalue()
 
 
 def create_stt_client(api_key: str, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -131,13 +154,18 @@ async def send_audio(client: Dict[str, Any], pcm_audio: bytes):
         return
 
     try:
-        audio_base64 = base64.b64encode(pcm_audio).decode("ascii")
+        # CRITICAL: Sarvam STT requires audio to be wrapped in WAV container
+        # Even though the codec is PCM, the encoding field must be "audio/wav"
+        sample_rate = client["config"]["sample_rate"]
+        wav_bytes = pcm_to_wav_bytes(pcm_audio, sample_rate=sample_rate, channels=1)
+        audio_base64 = base64.b64encode(wav_bytes).decode("ascii")
 
         payload = {
             "audio": {
                 "data": audio_base64,
-                "encoding": "pcm_s16le",
-                "sample_rate": client["config"]["sample_rate"]
+                "encoding": "audio/wav",  # Must be "audio/wav", not "pcm_s16le"
+                "sample_rate": sample_rate,
+                "input_audio_codec": "pcm_s16le"  # Codec inside the WAV container
             }
         }
 
