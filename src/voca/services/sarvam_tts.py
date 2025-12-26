@@ -137,7 +137,7 @@ class SarvamTTSClient:
                 "type": "config",
                 "data": {
                     "speaker": "anushka",
-                    "output_audio_codec": "mulaw",
+                    "output_audio_codec": "linear16",
                     "target_language_code": "hi-IN",
                     "pace": 1,
                     "pitch": 0.8,
