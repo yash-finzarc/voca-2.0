@@ -1,33 +1,3 @@
-"""
-SarvamAI Text-to-Speech (TTS) service with WebSocket streaming support.
-Handles real-time text-to-speech conversion with streaming audio output.
-
-CRITICAL: Twilio Media Streams requires μ-law encoded audio at 8000Hz, mono.
-This service requests raw PCM from Sarvam and converts it to μ-law.
-
-IMPORTANT: According to Sarvam documentation, output_audio_codec MUST be set
-to "pcm" in the config message. If not specified, Sarvam defaults to MP3
-(audio/mpeg), which cannot be converted to μ-law and will cause white noise.
-
-Config format (per Sarvam docs - EXACT format, no extra fields):
-{
-  "type": "config",
-  "data": {
-    "speaker": "anushka",
-    "language": "en-IN",
-    "output_audio_codec": "pcm"  # CRITICAL: Prevents MP3 default
-  }
-}
-
-If Sarvam returns MP3 instead of PCM (despite config), the system will raise
-RuntimeError to prevent white noise/distortion. MP3 bytes cannot be directly
-converted to μ-law - they must be decoded to PCM first.
-
-Alternative Solution (if Sarvam cannot provide PCM):
-- Install: pip install pydub
-- Decode MP3 → PCM → μ-law using pydub.AudioSegment
-- See code comments for implementation details
-"""
 import asyncio
 import json
 import logging
@@ -167,7 +137,7 @@ class SarvamTTSClient:
                 "type": "config",
                 "data": {
                     "speaker": "anushka",
-                    "output_audio_codec": "linear16",
+                    "output_audio_codec": "mulaw",
                     "target_language_code": "hi-IN",
                     "pace": 1,
                     "pitch": 0.8,
