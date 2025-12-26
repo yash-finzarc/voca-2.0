@@ -144,8 +144,16 @@ class SarvamTTSClient:
                     elif isinstance(message, str):
                         data = json.loads(message)
                         
-                        # Log full message for debugging
-                        logger.debug(f"TTS received message: {data}")
+                        # Log message type only (NEVER log audio data - it's too large and not human-readable)
+                        msg_type = data.get("type", "unknown")
+                        if msg_type == "audio":
+                            # For audio messages, only log metadata, never the actual audio data
+                            audio_data = data.get("data", "")
+                            audio_size = len(audio_data) if isinstance(audio_data, str) else 0
+                            logger.debug(f"TTS received audio message (size: {audio_size} base64 chars)")
+                        else:
+                            # For non-audio messages, log structure but not full content
+                            logger.debug(f"TTS received message type: {msg_type}")
                         
                         if data.get("type") == "audio":
                             # Base64-encoded audio
@@ -160,7 +168,8 @@ class SarvamTTSClient:
                                     logger.error(f"Error decoding TTS audio: {e}")
                             elif isinstance(audio_data, dict):
                                 # If data["data"] is a dict, it might be an error or different format
-                                logger.warning(f"TTS audio message has dict data instead of base64 string: {audio_data}")
+                                # Log structure only, never full content (could be large)
+                                logger.warning(f"TTS audio message has dict data instead of base64 string (keys: {list(audio_data.keys())})")
                             else:
                                 logger.debug(f"TTS audio message with empty or invalid data: {type(audio_data)}")
                                     
@@ -168,7 +177,8 @@ class SarvamTTSClient:
                             error_data = data.get("data", {})
                             error_msg = error_data.get("message", data.get("error", "Unknown error"))
                             error_code = error_data.get("code", "unknown")
-                            logger.error(f"SarvamAI TTS error (code {error_code}): {error_msg}, full response: {data}")
+                            # Log error details but NEVER log audio data
+                            logger.error(f"SarvamAI TTS error (code {error_code}): {error_msg}")
                             # Don't disconnect on 422 errors (invalid parameters) - connection is still valid
                             # The error is about message format, not authentication
                             if error_code == 422:
@@ -182,8 +192,13 @@ class SarvamTTSClient:
                         elif data.get("type") == "done":
                             logger.debug("TTS generation completed")
                         else:
-                            # Log unknown message types for debugging
-                            logger.debug(f"TTS unknown message type: {data.get('type')}, full: {data}")
+                            # Log unknown message types for debugging (but never log audio data)
+                            msg_type = data.get("type", "unknown")
+                            if msg_type == "audio":
+                                logger.debug(f"TTS unknown audio message format")
+                            else:
+                                # For non-audio, log structure only
+                                logger.debug(f"TTS unknown message type: {msg_type}, keys: {list(data.keys())}")
                             
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse TTS message: {e}, message: {message[:200] if isinstance(message, str) else 'binary'}")
