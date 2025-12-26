@@ -1160,10 +1160,20 @@ async def handle_twilio_websocket(websocket: WebSocket):
             nonlocal call_state, welcome_audio_received
             if not tts_active or not streamsid:
                 return
-            # Convert PCM to μ-law and send to Twilio
-            mulaw_audio = pcm_to_mulaw(pcm_audio)
-            # Encode to base64 (do NOT log the payload - it's too large)
+            
+            # CRITICAL: Convert PCM to μ-law (sample width = 2 bytes for 16-bit PCM)
+            # Twilio REQUIRES μ-law encoding, NOT raw PCM
+            mulaw_audio = pcm_to_mulaw(pcm_audio, sample_width=2)
+            
+            # Diagnostic logging (first few chunks only to avoid spam)
+            if not hasattr(tts_audio_callback, '_logged_diag'):
+                logger.info(f"[AUDIO_CONVERSION] PCM len={len(pcm_audio)} bytes → μ-law len={len(mulaw_audio)} bytes (ratio: {len(mulaw_audio)/len(pcm_audio):.2f})")
+                tts_audio_callback._logged_diag = True
+            
+            # Encode μ-law to base64 (do NOT log the payload - it's too large)
             audio_payload = base64.b64encode(mulaw_audio).decode("ascii")
+            
+            # Twilio Media Stream format: {"event": "media", "media": {"payload": "<base64_mulaw>"}}
             media_message = {
                 "event": "media",
                 "streamSid": streamsid,

@@ -170,13 +170,25 @@ class SarvamTTSClient:
                             if isinstance(payload, dict) and "audio" in payload:
                                 # Correct format: nested dict with "audio" key
                                 audio_b64 = payload["audio"]
+                                content_type = payload.get("content_type", "unknown")
+                                
+                                # Verify content type (should be "audio/pcm" for PCM audio)
+                                if content_type not in ("audio/pcm", "audio/pcm;rate=8000", "unknown"):
+                                    logger.warning(f"Unexpected audio content_type from Sarvam: {content_type}, expected audio/pcm")
+                                
                                 try:
                                     audio_bytes = base64.b64decode(audio_b64)
+                                    
+                                    # Verify PCM length is even (16-bit = 2 bytes per sample)
+                                    if len(audio_bytes) % 2 != 0:
+                                        logger.warning(f"PCM audio length ({len(audio_bytes)}) is not even (not 16-bit aligned), truncating")
+                                        audio_bytes = audio_bytes[:-1]
+                                    
                                     if self.audio_callback and not self._is_cancelled:
                                         await self.audio_callback(audio_bytes)
-                                    logger.debug(f"TTS audio decoded and sent to callback ({len(audio_bytes)} bytes PCM)")
+                                    logger.debug(f"TTS audio decoded: {len(audio_bytes)} bytes PCM (content_type: {content_type})")
                                 except Exception as e:
-                                    logger.error(f"Error decoding TTS audio: {e}")
+                                    logger.error(f"Error decoding TTS audio: {e}", exc_info=True)
                             elif isinstance(payload, str) and payload:
                                 # Fallback: if data["data"] is directly a base64 string (legacy format)
                                 try:
