@@ -167,12 +167,8 @@ class SarvamTTSClient:
                 "type": "config",
                 "data": {
                     "speaker": "anushka",
-                    "target_language_code": "en-IN",
-                    "pitch": 0.8,
-                    "pace": 2,
-                    "min_buffer_size": 50,
-                    "max_chunk_length": 200,
-                    "output_audio_codec": "pcm"
+                    "output_audio_codec": "linear16",
+                    "target_language_code": "hi-IN"
                 }
             }
 
