@@ -5,9 +5,23 @@ Handles real-time text-to-speech conversion with streaming audio output.
 CRITICAL: Twilio Media Streams requires μ-law encoded audio at 8000Hz, mono.
 This service requests raw PCM from Sarvam and converts it to μ-law.
 
-IMPORTANT: If Sarvam returns MP3 instead of PCM (despite config), the system
-will raise RuntimeError to prevent white noise/distortion. MP3 bytes cannot
-be directly converted to μ-law - they must be decoded to PCM first.
+IMPORTANT: According to Sarvam documentation, output_audio_codec MUST be set
+to "pcm" in the config message. If not specified, Sarvam defaults to MP3
+(audio/mpeg), which cannot be converted to μ-law and will cause white noise.
+
+Config format (per Sarvam docs):
+{
+  "type": "config",
+  "data": {
+    "speaker": "anushka",
+    "target_language_code": "en-IN",
+    "output_audio_codec": "pcm"  # CRITICAL: Prevents MP3 default
+  }
+}
+
+If Sarvam returns MP3 instead of PCM (despite config), the system will raise
+RuntimeError to prevent white noise/distortion. MP3 bytes cannot be directly
+converted to μ-law - they must be decoded to PCM first.
 
 Alternative Solution (if Sarvam cannot provide PCM):
 - Install: pip install pydub
@@ -123,24 +137,29 @@ class SarvamTTSClient:
             return
         
         try:
-            # CRITICAL: Explicitly request raw PCM format for Twilio compatibility
-            # Twilio REQUIRES μ-law, which must be converted from PCM (not MP3)
+            # CRITICAL: According to Sarvam documentation, output_audio_codec MUST be set to "pcm"
+            # If not specified, Sarvam defaults to MP3 (audio/mpeg), which cannot be converted to μ-law
+            # Official format per Sarvam docs:
+            # {
+            #   "type": "config",
+            #   "data": {
+            #     "speaker": "anushka",
+            #     "target_language_code": "en-IN",
+            #     "output_audio_codec": "pcm"
+            #   }
+            # }
             config_payload = {
                 "type": "config",
                 "data": {
-                    "audio_format": "pcm",
-                    "container": "raw",  # Request raw PCM, not containerized format
-                    "sample_rate": self.sample_rate,  # Must be 8000 for Twilio
-                    "encoding": "linear16",  # 16-bit linear PCM
-                    "channels": 1,  # Mono (required for Twilio)
-                    "language": self.language,
-                    "voice": "default"
+                    "speaker": self.voice,  # Voice name (e.g., "anushka" or "default")
+                    "target_language_code": self.language,  # Language code (e.g., "en-IN")
+                    "output_audio_codec": "pcm"  # CRITICAL: Must be "pcm" to avoid MP3 default
                 }
             }
             
             config_json = json.dumps(config_payload)
             await self.websocket.send(config_json)
-            logger.info(f"✓ TTS config sent (requesting raw PCM): audio_format=pcm, container=raw, sample_rate={self.sample_rate}, encoding=linear16, channels=1")
+            logger.info(f"✓ TTS config sent (requesting PCM): speaker={self.voice}, language={self.language}, output_audio_codec=pcm")
         except Exception as e:
             logger.error(f"Error sending TTS config: {e}", exc_info=True)
             raise
@@ -199,7 +218,8 @@ class SarvamTTSClient:
                                         f"Cannot stream to Twilio (requires PCM → μ-law conversion). "
                                         f"Expected one of: {valid_pcm_types}. "
                                         f"This will cause white noise/distortion. "
-                                        f"Check TTS config: audio_format=pcm, container=raw, encoding=linear16"
+                                        f"Check TTS config: output_audio_codec must be set to 'pcm' in config message. "
+                                        f"Without output_audio_codec='pcm', Sarvam defaults to MP3."
                                     )
                                     logger.error(error_msg)
                                     # Hard fail: MP3 cannot be converted to μ-law for Twilio
