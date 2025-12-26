@@ -43,6 +43,13 @@ class SarvamSTTClient:
     async def connect(self):
         """Initialize HTTP client for SarvamAI STT streaming."""
         try:
+            # Validate API key before proceeding
+            if not self.api_key:
+                raise ValueError("SarvamAI API key is required but not provided")
+            
+            if not isinstance(self.api_key, str) or len(self.api_key.strip()) == 0:
+                raise ValueError("SarvamAI API key must be a non-empty string")
+            
             logger.info("Initializing SarvamAI STT HTTP streaming client")
             logger.debug(f"Language: {self.language}, Sample rate: {self.sample_rate}")
             logger.debug(f"API key present: {bool(self.api_key)}, length: {len(self.api_key) if self.api_key else 0}")
@@ -99,10 +106,15 @@ class SarvamSTTClient:
             # Transfer-Encoding is handled automatically by httpx for streaming
             headers = {
                 "x-api-key": self.api_key,
-                "Content-Type": "audio/raw"
+                "Content-Type": "audio/raw",
+                "Accept": "application/json"
             }
             
+            # TEMPORARY DEBUG: Log headers before request (excluding full API key)
+            api_key_preview = self.api_key[:10] + "..." if len(self.api_key) > 10 else self.api_key[:len(self.api_key)]
             logger.info(f"Starting HTTP streaming to SarvamAI STT: {url}")
+            logger.info(f"STT request headers: x-api-key={api_key_preview}, Content-Type=audio/raw, Accept=application/json")
+            logger.debug(f"Full API key length: {len(self.api_key) if self.api_key else 0}")
             
             # Stream audio chunks to SarvamAI
             async with self.client.stream(

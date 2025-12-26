@@ -44,6 +44,13 @@ class SarvamTTSClient:
     async def connect(self):
         """Establish WebSocket connection to SarvamAI TTS service."""
         try:
+            # Validate API key before proceeding
+            if not self.api_key:
+                raise ValueError("SarvamAI API key is required but not provided")
+            
+            if not isinstance(self.api_key, str) or len(self.api_key.strip()) == 0:
+                raise ValueError("SarvamAI API key must be a non-empty string")
+            
             # SarvamAI TTS WebSocket endpoint
             # NOTE: SarvamAI TTS supports WebSocket (unlike STT which requires HTTP)
             uri = "wss://api.sarvam.ai/text-to-speech/ws"
@@ -51,11 +58,15 @@ class SarvamTTSClient:
             # CRITICAL: Use ONLY x-api-key header for WebSocket authentication
             # DO NOT use Authorization: Bearer or Content-Type headers
             # SarvamAI WebSocket requires x-api-key in the handshake headers
-            headers = {
-                "x-api-key": self.api_key
-            }
+            # Use list of tuples format for websockets library (explicit, not mutated)
+            headers = [
+                ("x-api-key", self.api_key)
+            ]
             
+            # TEMPORARY DEBUG: Log connection attempt
+            api_key_preview = self.api_key[:10] + "..." if len(self.api_key) > 10 else self.api_key[:len(self.api_key)]
             logger.info(f"Connecting to SarvamAI TTS: {uri}")
+            logger.info(f"Connecting to Sarvam TTS with x-api-key header present (key: {api_key_preview})")
             logger.debug(f"Language: {self.language}, Voice: {self.voice}, Sample rate: {self.sample_rate}")
             logger.debug(f"API key present: {bool(self.api_key)}, length: {len(self.api_key) if self.api_key else 0}")
             
