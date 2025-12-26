@@ -114,34 +114,54 @@ async def _receive_responses(client: Dict[str, Any]):
             elif msg_type == "events":
                 logger.debug(f"STT Event: {data}")
 
-    except websockets.exceptions.ConnectionClosed:
+    except websockets.exceptions.ConnectionClosed as e:
+        logger.warning(f"STT WebSocket connection closed: {e.code} - {e.reason}")
+        client["is_connected"] = False
+    except Exception as e:
+        logger.error(f"Error in STT receive loop: {e}", exc_info=True)
         client["is_connected"] = False
 
 
 async def send_audio(client: Dict[str, Any], pcm_audio: bytes):
-    if not client["is_connected"]:
+    if not client.get("is_connected") or not client.get("websocket"):
         return
 
     if not pcm_audio or len(pcm_audio) % 2 != 0:
         logger.warning("Invalid PCM frame dropped")
         return
 
-    audio_base64 = base64.b64encode(pcm_audio).decode("ascii")
+    try:
+        audio_base64 = base64.b64encode(pcm_audio).decode("ascii")
 
-    payload = {
-        "audio": {
-            "data": audio_base64,
-            "encoding": "pcm_s16le",
-            "sample_rate": client["config"]["sample_rate"]
+        payload = {
+            "audio": {
+                "data": audio_base64,
+                "encoding": "pcm_s16le",
+                "sample_rate": client["config"]["sample_rate"]
+            }
         }
-    }
 
-    await client["websocket"].send(json.dumps(payload))
+        await client["websocket"].send(json.dumps(payload))
+    except websockets.exceptions.ConnectionClosed as e:
+        logger.warning(f"STT connection closed while sending audio: {e.code} - {e.reason}")
+        client["is_connected"] = False
+    except Exception as e:
+        logger.error(f"Error sending audio to STT: {e}", exc_info=True)
+        client["is_connected"] = False
 
 
 async def send_flush(client: Dict[str, Any]):
-    if client["is_connected"]:
+    if not client.get("is_connected") or not client.get("websocket"):
+        return
+    
+    try:
         await client["websocket"].send(json.dumps({"type": "flush"}))
+    except websockets.exceptions.ConnectionClosed as e:
+        logger.warning(f"STT connection closed while sending flush: {e.code} - {e.reason}")
+        client["is_connected"] = False
+    except Exception as e:
+        logger.error(f"Error sending flush to STT: {e}", exc_info=True)
+        client["is_connected"] = False
 
 
 def set_transcript_callback(client: Dict[str, Any], callback: Callable[[str, bool], None]):
