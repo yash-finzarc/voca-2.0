@@ -156,22 +156,39 @@ class SarvamTTSClient:
                             logger.debug(f"TTS received message type: {msg_type}")
                         
                         if data.get("type") == "audio":
-                            # Base64-encoded audio
-                            # Defensive parsing: data["data"] must be a string (base64), not a dict
-                            audio_data = data.get("data", "")
-                            if isinstance(audio_data, str) and audio_data:
+                            # Sarvam TTS sends audio in nested structure:
+                            # {
+                            #   "type": "audio",
+                            #   "data": {
+                            #     "request_id": "...",
+                            #     "content_type": "audio/pcm",
+                            #     "audio": "<base64_string>"
+                            #   }
+                            # }
+                            payload = data.get("data", {})
+                            
+                            if isinstance(payload, dict) and "audio" in payload:
+                                # Correct format: nested dict with "audio" key
+                                audio_b64 = payload["audio"]
                                 try:
-                                    audio_bytes = base64.b64decode(audio_data)
+                                    audio_bytes = base64.b64decode(audio_b64)
                                     if self.audio_callback and not self._is_cancelled:
                                         await self.audio_callback(audio_bytes)
+                                    logger.debug(f"TTS audio decoded and sent to callback ({len(audio_bytes)} bytes PCM)")
                                 except Exception as e:
                                     logger.error(f"Error decoding TTS audio: {e}")
-                            elif isinstance(audio_data, dict):
-                                # If data["data"] is a dict, it might be an error or different format
-                                # Log structure only, never full content (could be large)
-                                logger.warning(f"TTS audio message has dict data instead of base64 string (keys: {list(audio_data.keys())})")
+                            elif isinstance(payload, str) and payload:
+                                # Fallback: if data["data"] is directly a base64 string (legacy format)
+                                try:
+                                    audio_bytes = base64.b64decode(payload)
+                                    if self.audio_callback and not self._is_cancelled:
+                                        await self.audio_callback(audio_bytes)
+                                    logger.debug(f"TTS audio decoded (legacy format) and sent to callback ({len(audio_bytes)} bytes PCM)")
+                                except Exception as e:
+                                    logger.error(f"Error decoding TTS audio (legacy format): {e}")
                             else:
-                                logger.debug(f"TTS audio message with empty or invalid data: {type(audio_data)}")
+                                # Unexpected format
+                                logger.warning(f"Unexpected audio payload format: keys={list(payload.keys()) if isinstance(payload, dict) else type(payload)}")
                                     
                         elif data.get("type") == "error":
                             error_data = data.get("data", {})
