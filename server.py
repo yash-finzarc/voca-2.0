@@ -1,92 +1,52 @@
+"""
+Real-time voice AI system using SarvamAI STT/TTS with Twilio Media Streams.
+Handles full-duplex audio streaming with barge-in support.
+
+AUDIO PIPELINE:
+Twilio (μ-law, 8kHz) → PCM conversion → SarvamAI STT → Transcripts → 
+LLM (OpenAI) → Response text → SarvamAI TTS → PCM audio → μ-law conversion → Twilio
+
+NOTE: SarvamAI API endpoints and message formats are based on common WebSocket
+streaming patterns. Adjust the endpoints in sarvam_stt.py and sarvam_tts.py based
+on actual SarvamAI API documentation if needed.
+"""
 import os
 import base64
 import json
 import re
 import websockets
-from websockets.legacy.client import connect
 import asyncio
 from supabase import create_client
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
+import logging
+
+# Import SarvamAI services and audio utilities
+from src.voca.services.sarvam_stt import SarvamSTTClient
+from src.voca.services.sarvam_tts import SarvamTTSClient
+from src.voca.audio_utils import mulaw_to_pcm, pcm_to_mulaw
 from src.voca.langgraph_agent import FUNCTION_MAP
 
 load_dotenv()
 
-def sts_connect():
-    api_key = os.getenv("DEEPGRAM_API_KEY")
-    if not api_key:
-        raise Exception("DEEPGRAM_API_KEY is not set in environment variables")
-    
-    # Log API key status (first 10 chars only for security)
-    api_key_preview = api_key[:10] + "..." if len(api_key) > 10 else api_key[:len(api_key)]
-    print(f"Using Deepgram API key: {api_key_preview} (length: {len(api_key)})")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    # Deepgram Agent STS requires Authorization header
-    # Use legacy client for websockets 15.0.1 compatibility
-    print(f"Connecting to Deepgram STS: wss://agent.deepgram.com/v1/agent/converse")
-    print(f"Using Authorization header (Token {api_key_preview}...)")
-    
-    sts_ws = connect(
-        "wss://agent.deepgram.com/v1/agent/converse",
-        extra_headers={
-            "Authorization": f"Token {api_key}"
-        }
-    )
-    return sts_ws
+# Initialize OpenAI client for LLM
+openai_client = None
+if os.getenv("OPENAI_API_KEY"):
+    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    logger.info("OpenAI client initialized")
+else:
+    logger.warning("OPENAI_API_KEY not set - LLM responses will fail")
 
-def load_config():
-    # Get system prompt and welcome message from Supabase
-    system_prompt, welcome_message = get_system_prompt("customer_service")
-    
-    # Build the config payload
-    config = {
-        "type": "Settings",
-        "audio": {
-            "input": {
-                "encoding": "mulaw",
-                "sample_rate": 8000
-            },
-            "output": {
-                "encoding": "mulaw",
-                "sample_rate": 8000,
-                "container": "none"
-            }
-        },
-        "agent": {
-            "language": "en",
-            "listen": {
-                "provider": {
-                    "type": "deepgram",
-                    "model": "nova-3",
-                    "keyterms": ["hello", "goodbye"]
-                }
-            },
-            "think": {
-                "provider": {
-                    "type": "open_ai",
-                    "model": "gpt-4o-mini",
-                    "temperature": 0.7
-                },
-                "prompt": system_prompt
-            },
-            "speak": {
-                "provider": {
-                    "type": "deepgram",
-                    "model": "aura-2-thalia-en"
-                }
-            },
-            "greeting": welcome_message
-            # Functions temporarily removed - Deepgram rejecting format
-            # Will add back once correct format is confirmed
-            # "functions": [...]
-        }
-    }
-    
-    return config
-
+# Initialize Supabase client
 supabase = create_client(
     os.getenv("SUPABASE_URL"),
     os.getenv("SUPABASE_KEY")
 )
+
 
 def get_system_prompt(prompt_name: str):
     """
@@ -125,54 +85,17 @@ def get_system_prompt(prompt_name: str):
     row = response.data[0]
     return row["prompt"], row["welcome_message"]
 
+
 async def execute_function_call(func_name, arguments):
     """Execute a function call from the FUNCTION_MAP."""
     if func_name in FUNCTION_MAP:
         result = await FUNCTION_MAP[func_name](**arguments)
-        print(f"Function call result: {result}")
+        logger.info(f"Function call result: {result}")
         return result
     else:
-        print(f"error: Unknown function: {func_name}")
+        logger.error(f"Unknown function: {func_name}")
         return {"error": f"Unknown function: {func_name}"}
 
-async def handle_barge_in(decoded,twilio_ws, streamsid):
-    if decoded["type"] == "UserStartedSpeaking":
-        clear_message = {
-            "event": "clear",
-            "streamSid": streamsid
-        }
-        await twilio_ws.send(json.dumps(clear_message))
-
-def create_function_call_response(func_id, func_name, result):
-    return {
-        "type": "FunctionCallResponse",
-        "functionId": func_id,
-        "functionName": func_name,
-        "content": json.dumps(result)
-    }
-async def handle_function_call_request(decoded, sts_ws):
-    try:
-        for function_call in decoded["functions"]:
-            func_name = function_call["name"]
-            func_id = function_call["id"]
-            arguments = json.loads(function_call["arguments"])
-
-            print(f"Function call: {func_name} with id {func_id} and arguments {arguments}")
-
-            result = await execute_function_call(func_name, arguments)
-
-            function_result = create_function_call_response(func_id, func_name, result)
-            await sts_ws.send(json.dumps(function_result))
-            print(f"Function call response sent: {function_result}")
-
-    except Exception as e:
-            print(f"Error handling function call: {e}")
-            error_result = create_function_call_response(
-                func_id if func_id in locals() else "unknown",
-                func_name if "func_name" in locals() else "unknown",
-                {"error": f"Function call failed with: {str(e)}"}
-            )
-            await sts_ws.send(json.dumps(error_result))
 
 def strip_markdown(text: str) -> str:
     """Remove markdown formatting from text to prevent TTS from reading formatting characters."""
@@ -189,115 +112,334 @@ def strip_markdown(text: str) -> str:
     text = re.sub(r'\n\s*\n', '\n', text)
     return text.strip()
 
-async def handle_text_message(decoded,twilio_ws, sts_ws, streamsid):
-    await handle_barge_in(decoded,twilio_ws, streamsid)
 
-    if decoded["type"] == "FunctionCallRequest":
-        await handle_function_call_request(decoded, sts_ws)
-
-async def sts_sender(sts_ws, audio_queue):
-    print("STS sender started")
-    while True:
-        chunk = await audio_queue.get()
-        await sts_ws.send(chunk)
-
-async def sts_receiver(sts_ws, twilio_ws, streamsid_queue):
-    print("STS receiver started")
-    streamsid = await streamsid_queue.get()
+async def generate_llm_response(user_message: str, system_prompt: str, conversation_history: list) -> str:
+    """
+    Generate LLM response using OpenAI.
     
-    async for message in sts_ws:
-        if type(message) is str:
-            print(message)
-            decoded = json.loads(message)
-            await handle_text_message(decoded,twilio_ws, sts_ws, streamsid)
-            continue
-        raw_mulaw = message
+    Args:
+        user_message: User's transcribed message
+        system_prompt: System prompt for the conversation
+        conversation_history: List of previous messages in format [{"role": "user/assistant", "content": "..."}]
+    
+    Returns:
+        Assistant's response text
+    """
+    if not openai_client:
+        logger.error("OpenAI client not initialized")
+        return "I'm sorry, I'm having trouble processing your request right now."
+    
+    try:
+        # Build messages list
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(conversation_history)
+        messages.append({"role": "user", "content": user_message})
+        
+        # Call OpenAI API
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=500
+        )
+        
+        assistant_message = response.choices[0].message.content
+        logger.info(f"LLM response generated: {assistant_message[:100]}...")
+        return assistant_message
+        
+    except Exception as e:
+        logger.error(f"Error generating LLM response: {e}", exc_info=True)
+        return "I'm sorry, I encountered an error processing your request."
 
+
+async def twilio_receiver(
+    twilio_ws,
+    stt_client: SarvamSTTClient,
+    streamsid_queue: asyncio.Queue,
+    audio_queue: asyncio.Queue
+):
+    """
+    Receive audio from Twilio Media Streams, convert μ-law to PCM, and send to STT.
+    
+    Args:
+        twilio_ws: WebSocket connection to Twilio
+        stt_client: SarvamAI STT client
+        streamsid_queue: Queue to send stream SID when received
+        audio_queue: Queue for buffered audio chunks (unused, kept for compatibility)
+    """
+    BUFFER_SIZE = 20 * 160  # 20ms of audio at 8kHz (160 samples * 1 byte per μ-law sample)
+    inbuffer = bytearray(b"")
+    
+    logger.info("Twilio receiver started")
+    
+    async for message in twilio_ws:
+        try:
+            # Parse JSON message from Twilio
+            data = json.loads(message)
+            event = data.get("event")
+            
+            if event == "start":
+                logger.info("Twilio stream started")
+                start = data.get("start", {})
+                streamsid = start.get("streamSid", "")
+                logger.info(f"Stream SID: {streamsid}")
+                if streamsid:
+                    await streamsid_queue.put(streamsid)
+                
+            elif event == "connected":
+                logger.info("Twilio stream connected")
+                continue
+                
+            elif event == "media":
+                # Receive μ-law audio from Twilio
+                media = data.get("media", {})
+                mulaw_chunk = base64.b64decode(media.get("payload", ""))
+                
+                if media.get("track") == "inbound":
+                    inbuffer.extend(mulaw_chunk)
+                    
+                    # Process buffer and convert to PCM in chunks
+                    while len(inbuffer) >= BUFFER_SIZE:
+                        mulaw_to_convert = bytes(inbuffer[:BUFFER_SIZE])
+                        inbuffer = inbuffer[BUFFER_SIZE:]
+                        
+                        # Convert μ-law to PCM
+                        pcm_audio = mulaw_to_pcm(mulaw_to_convert)
+                        
+                        # Send PCM to STT
+                        if stt_client.is_connected:
+                            await stt_client.send_audio(pcm_audio)
+                            
+            elif event == "stop":
+                logger.info("Twilio stream stopped")
+                # Send any remaining audio in buffer
+                while len(inbuffer) > 0:
+                    mulaw_to_convert = bytes(inbuffer[:BUFFER_SIZE] if len(inbuffer) >= BUFFER_SIZE else inbuffer)
+                    inbuffer = inbuffer[len(mulaw_to_convert):]
+                    
+                    if mulaw_to_convert:
+                        pcm_audio = mulaw_to_pcm(mulaw_to_convert)
+                        if stt_client.is_connected:
+                            await stt_client.send_audio(pcm_audio)
+                break
+                
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse Twilio message: {e}")
+        except Exception as e:
+            logger.error(f"Error in twilio_receiver: {e}", exc_info=True)
+            break
+
+
+async def handle_tts_audio(
+    pcm_audio: bytes,
+    twilio_ws,
+    streamsid: str
+):
+    """
+    Convert PCM audio to μ-law and send to Twilio Media Streams.
+    
+    Args:
+        pcm_audio: PCM audio bytes (16-bit, little-endian)
+        twilio_ws: WebSocket connection to Twilio
+        streamsid: Twilio stream SID
+    """
+    try:
+        # Convert PCM to μ-law
+        mulaw_audio = pcm_to_mulaw(pcm_audio)
+        
+        # Send to Twilio
         media_message = {
             "event": "media",
             "streamSid": streamsid,
-            "media": {"payload": base64.b64encode(raw_mulaw).decode("ascii")}
+            "media": {"payload": base64.b64encode(mulaw_audio).decode("ascii")}
         }
         await twilio_ws.send(json.dumps(media_message))
+        
+    except Exception as e:
+        logger.error(f"Error sending TTS audio to Twilio: {e}", exc_info=True)
 
-async def twilio_receiver(twilio_ws, audio_queue, streamsid_queue):
-    BUFFER_SIZE = 20*160
-    inbuffer = bytearray(b"")
-
-    async for message in twilio_ws:
-        try:
-            # message is a string, use json.loads() instead of json.load()
-            data = json.loads(message)
-            event = data["event"]
-
-            if event == "start":
-                print("get our streamsid")
-                start = data["start"]
-                streamsid = start["streamSid"]
-                streamsid_queue.put_nowait(streamsid)
-            elif event == "connected":
-                continue
-            elif event == "media":
-                media = data["media"]
-                chunk = base64.b64decode(media["payload"])
-                if media["track"] == "inbound":
-                    inbuffer.extend(chunk)
-                    # Process buffer and send chunks to Deepgram continuously
-                    while len(inbuffer) >= BUFFER_SIZE:
-                        chunk_to_send = inbuffer[:BUFFER_SIZE]
-                        audio_queue.put_nowait(chunk_to_send)
-                        inbuffer = inbuffer[BUFFER_SIZE:]
-            elif event == "stop":
-                # Send any remaining audio in buffer before stopping
-                while len(inbuffer) > 0:
-                    chunk = inbuffer[:BUFFER_SIZE] if len(inbuffer) > BUFFER_SIZE else inbuffer
-                    audio_queue.put_nowait(chunk)
-                    inbuffer = inbuffer[len(chunk):]
-                break
-        except:
-            break
 
 async def twilio_handler(twilio_ws):
-    print("twilio_handler started")
-    audio_queue = asyncio.Queue()
-    streamsid_queue = asyncio.Queue()
-
+    """
+    Main handler for Twilio Media Streams WebSocket connection.
+    Manages STT, LLM, and TTS pipeline with barge-in support.
+    """
+    logger.info("Twilio handler started")
+    
+    # Get SarvamAI API key
+    sarvam_api_key = os.getenv("SARVAM_API_KEY")
+    if not sarvam_api_key:
+        logger.error("SARVAM_API_KEY not set in environment variables")
+        await twilio_ws.close()
+        return
+    
+    # Get system prompt and welcome message
     try:
-        print("Connecting to Deepgram STS...")
-        async with sts_connect() as sts_ws:
-            print("Connected to Deepgram STS")
-            print("Loading config...")
-            config_message = load_config()
-            config_json = json.dumps(config_message)
-            print(f"Sending config to Deepgram (full): {config_json}")
-            await sts_ws.send(config_json)
-            print("Config sent to Deepgram")
-
-            print("Starting async tasks...")
-            await asyncio.wait(
-                [
-                    asyncio.ensure_future(sts_sender(sts_ws, audio_queue)),
-                    asyncio.ensure_future(sts_receiver(sts_ws, twilio_ws, streamsid_queue)),
-                    asyncio.ensure_future(twilio_receiver(twilio_ws, audio_queue, streamsid_queue)),
-                ]
-            )
-            print("Async tasks completed")
+        system_prompt, welcome_message = get_system_prompt("customer_service")
     except Exception as e:
-        print(f"Error in twilio_handler: {e}")
+        logger.error(f"Error loading system prompt: {e}")
+        system_prompt = "You are a helpful assistant."
+        welcome_message = "Hello, how can I help you today?"
+    
+    # Initialize STT and TTS clients
+    stt_client = SarvamSTTClient(api_key=sarvam_api_key, language="en-IN", sample_rate=8000)
+    tts_client = SarvamTTSClient(api_key=sarvam_api_key, language="en-IN", voice="anushka", sample_rate=8000)
+    
+    # State management
+    streamsid = ""
+    conversation_history = []
+    current_tts_task = None
+    user_speaking = False
+    tts_active = False
+    
+    # Queue for audio chunks
+    audio_queue = asyncio.Queue()
+    
+    try:
+        # Connect to SarvamAI STT
+        logger.info("Connecting to SarvamAI STT...")
+        await stt_client.connect()
+        
+        # Connect to SarvamAI TTS
+        logger.info("Connecting to SarvamAI TTS...")
+        await tts_client.connect()
+        
+        # Set up TTS audio callback (will be updated with streamsid once received)
+        async def tts_audio_callback(pcm_audio: bytes):
+            """Callback for TTS audio output."""
+            nonlocal streamsid
+            if not tts_active or not streamsid:
+                return
+            await handle_tts_audio(pcm_audio, twilio_ws, streamsid)
+        
+        tts_client.set_audio_callback(tts_audio_callback)
+        
+        # Set up STT transcript callback
+        async def stt_transcript_callback(transcript: str, is_final: bool):
+            """Callback for STT transcripts."""
+            nonlocal user_speaking, current_tts_task, tts_active
+            
+            if not transcript.strip():
+                return
+            
+            logger.info(f"STT transcript (final={is_final}): {transcript}")
+            
+            # Handle barge-in: if user starts speaking (any transcript) while TTS is active, cancel TTS
+            if tts_active:
+                logger.info("Barge-in detected: cancelling TTS")
+                user_speaking = True
+                tts_active = False
+                if current_tts_task:
+                    await tts_client.cancel()
+                    current_tts_task = None
+                
+                # Clear Twilio audio buffer
+                clear_message = {
+                    "event": "clear",
+                    "streamSid": streamsid
+                }
+                try:
+                    await twilio_ws.send(json.dumps(clear_message))
+                except Exception as e:
+                    logger.error(f"Error clearing Twilio buffer: {e}")
+            
+            # Only process final transcripts for LLM
+            if is_final:
+                user_speaking = True
+                tts_active = False
+                
+                # Generate LLM response
+                logger.info(f"Generating LLM response for: {transcript}")
+                assistant_response = await generate_llm_response(
+                    transcript,
+                    system_prompt,
+                    conversation_history
+                )
+                
+                # Update conversation history
+                conversation_history.append({"role": "user", "content": transcript})
+                conversation_history.append({"role": "assistant", "content": assistant_response})
+                
+                # Clean response text
+                clean_response = strip_markdown(assistant_response)
+                logger.info(f"Assistant response: {clean_response}")
+                
+                # Send to TTS
+                tts_active = True
+                user_speaking = False
+                
+                async def send_tts():
+                    """Send text to TTS in chunks."""
+                    try:
+                        await tts_client.send_text_chunks(clean_response)
+                    except Exception as e:
+                        logger.error(f"Error in TTS: {e}", exc_info=True)
+                    finally:
+                        nonlocal tts_active
+                        tts_active = False
+                
+                current_tts_task = asyncio.create_task(send_tts())
+        
+        stt_client.set_transcript_callback(stt_transcript_callback)
+        
+        # Wait for stream SID from Twilio
+        streamsid_queue = asyncio.Queue()
+        
+        # Start Twilio receiver task (this will handle all Twilio messages)
+        receiver_task = asyncio.create_task(
+            twilio_receiver(twilio_ws, stt_client, streamsid_queue, audio_queue)
+        )
+        
+        # Wait for stream SID
+        try:
+            streamsid = await asyncio.wait_for(streamsid_queue.get(), timeout=10.0)
+            logger.info(f"Received stream SID: {streamsid}")
+            
+            # Send welcome message
+            if welcome_message:
+                tts_active = True
+                async def send_welcome():
+                    try:
+                        await tts_client.send_text_chunks(welcome_message)
+                    finally:
+                        nonlocal tts_active
+                        tts_active = False
+                asyncio.create_task(send_welcome())
+            
+            # Wait for receiver task to complete
+            await receiver_task
+            
+        except asyncio.TimeoutError:
+            logger.error("Timeout waiting for stream SID")
+            receiver_task.cancel()
+            raise
+        
+    except Exception as e:
+        logger.error(f"Error in twilio_handler: {e}", exc_info=True)
         import traceback
         traceback.print_exc()
     finally:
+        # Cleanup
+        logger.info("Cleaning up connections...")
+        try:
+            await stt_client.stop()
+            await tts_client.stop()
+        except Exception as e:
+            logger.error(f"Error stopping clients: {e}")
+        
         try:
             await twilio_ws.close()
-            print("WebSocket closed")
-        except:
-            pass
+            logger.info("WebSocket closed")
+        except Exception as e:
+            logger.error(f"Error closing WebSocket: {e}")
 
 
 async def server():
-    await websockets.serve(twilio_handler, host="0.0.0.0", port=5000)
-    print("Twilio server started")
-    await asyncio.Future()
+    """Start WebSocket server for Twilio Media Streams."""
+    server = await websockets.serve(twilio_handler, host="0.0.0.0", port=5000)
+    logger.info("Twilio server started on 0.0.0.0:5000")
+    await asyncio.Future()  # Run forever
+
 
 if __name__ == "__main__":
     asyncio.run(server())

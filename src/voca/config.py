@@ -28,9 +28,10 @@ class Config:
     supabase_key: str = os.getenv("SUPABASE_KEY", "")
     default_organization_id: str = os.getenv("VOCA_DEFAULT_ORGANIZATION_ID", "")
     
-    # Deepgram
-    deepgram_api_key: str = os.getenv("DEEPGRAM_API_KEY", "")
-    # Deepgram keyterms for better accuracy (comma-separated list)
-    # Example: "Yash Verma,vermayash849,John Doe,johndoe@example.com"
-    deepgram_keyterms: str = os.getenv("DEEPGRAM_KEYTERMS", "")
+    # SarvamAI
+    sarvam_api_key: str = os.getenv("SARVAM_API_KEY", "")
+    # SarvamAI language code (default: en-IN)
+    sarvam_language: str = os.getenv("SARVAM_LANGUAGE", "en-IN")
+    # SarvamAI TTS voice (default: anushka)
+    sarvam_voice: str = os.getenv("SARVAM_VOICE", "anushka")
 
