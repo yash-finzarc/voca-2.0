@@ -9,12 +9,12 @@ IMPORTANT: According to Sarvam documentation, output_audio_codec MUST be set
 to "pcm" in the config message. If not specified, Sarvam defaults to MP3
 (audio/mpeg), which cannot be converted to μ-law and will cause white noise.
 
-Config format (per Sarvam docs):
+Config format (per Sarvam docs - EXACT format, no extra fields):
 {
   "type": "config",
   "data": {
     "speaker": "anushka",
-    "target_language_code": "en-IN",
+    "language": "en-IN",
     "output_audio_codec": "pcm"  # CRITICAL: Prevents MP3 default
   }
 }
@@ -139,12 +139,12 @@ class SarvamTTSClient:
         try:
             # CRITICAL: According to Sarvam documentation, output_audio_codec MUST be set to "pcm"
             # If not specified, Sarvam defaults to MP3 (audio/mpeg), which cannot be converted to μ-law
-            # Official format per Sarvam docs:
+            # Official format per Sarvam docs (EXACT format - no extra fields):
             # {
             #   "type": "config",
             #   "data": {
             #     "speaker": "anushka",
-            #     "target_language_code": "en-IN",
+            #     "language": "en-IN",
             #     "output_audio_codec": "pcm"
             #   }
             # }
@@ -152,7 +152,7 @@ class SarvamTTSClient:
                 "type": "config",
                 "data": {
                     "speaker": self.voice,  # Voice name (e.g., "anushka" or "default")
-                    "target_language_code": self.language,  # Language code (e.g., "en-IN")
+                    "language": self.language,  # Language code (e.g., "en-IN") - NOT target_language_code
                     "output_audio_codec": "pcm"  # CRITICAL: Must be "pcm" to avoid MP3 default
                 }
             }
@@ -316,21 +316,21 @@ class SarvamTTSClient:
                 self.is_connected = False
                 return
             
-            # SarvamAI TTS WebSocket message format: {"type": "text", "data": {...}}
-            # Format per SarvamAI documentation
+            # CRITICAL: Sarvam TTS text message format - ONLY "text" field allowed
+            # Voice and language are bound from config, NOT per message
+            # Valid format: {"type": "text", "data": {"text": "..."}}
+            # Invalid: {"type": "text", "data": {"text": "...", "voice": "...", "language": "..."}}
             payload = {
                 "type": "text",
                 "data": {
-                    "text": text,
-                    "voice": "default",
-                    "language": self.language
+                    "text": text
                 }
             }
             
             message_json = json.dumps(payload)
             # Log payload structure but not full content (to avoid cluttering logs)
-            logger.debug(f"TTS payload structure: type={payload.get('type')}, text_length={len(text)}, voice={payload.get('data', {}).get('voice')}, language={payload.get('data', {}).get('language')}")
-            logger.info(f"TTS sending text (length: {len(text)} chars, voice: default, language: {self.language})")
+            logger.debug(f"TTS payload structure: type={payload.get('type')}, text_length={len(text)}")
+            logger.info(f"TTS sending text (length: {len(text)} chars)")
             
             await self.websocket.send(message_json)
             logger.debug(f"✓ TTS message sent successfully")
