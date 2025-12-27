@@ -1138,7 +1138,6 @@ async def handle_twilio_websocket(websocket: WebSocket):
     welcome_complete_event = asyncio.Event()  # Signals when welcome TTS completes
     welcome_audio_received = False  # Track if we've received any audio for welcome
     welcome_audio_timeout = 10.0  # Timeout for welcome audio (10 seconds)
-    response_audio_received = False  # Track if we've received audio for assistant responses
     tts_active = False
     audio_buffer = bytearray()
     BUFFER_SIZE = 20 * 160  # 20ms of audio at 8kHz
@@ -1159,12 +1158,9 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # Set up TTS audio callback
         async def tts_audio_callback(pcm_audio: bytes):
             """Callback for TTS audio output."""
-            nonlocal call_state, welcome_audio_received, response_audio_received
+            nonlocal call_state, welcome_audio_received
             if not tts_active or not streamsid:
-                logger.debug(f"[TTS_CALLBACK] Skipping audio: tts_active={tts_active}, streamsid={bool(streamsid)}")
                 return
-            
-            logger.debug(f"[TTS_CALLBACK] Received {len(pcm_audio)} bytes of PCM audio")
             
             # CRITICAL: Convert PCM to μ-law (sample width = 2 bytes for 16-bit PCM)
             # Twilio REQUIRES μ-law encoding, NOT raw PCM
@@ -1174,10 +1170,6 @@ async def handle_twilio_websocket(websocket: WebSocket):
             if not hasattr(tts_audio_callback, '_logged_diag'):
                 logger.info(f"[AUDIO_CONVERSION] PCM len={len(pcm_audio)} bytes → μ-law len={len(mulaw_audio)} bytes (ratio: {len(mulaw_audio)/len(pcm_audio):.2f})")
                 tts_audio_callback._logged_diag = True
-            
-            # Track audio receipt for responses
-            if call_state == CallState.SPEAKING:
-                response_audio_received = True
             
             # Encode μ-law to base64 (do NOT log the payload - it's too large)
             audio_payload = base64.b64encode(mulaw_audio).decode("ascii")
@@ -1267,36 +1259,14 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                 logger.error(f"[CUSTOM_LLM_PIPELINE] Failed to reconnect TTS: {reconnect_err}", exc_info=True)
                                 return
                         
-                        # Reset audio receipt flag
-                        nonlocal response_audio_received
-                        response_audio_received = False
-                        
                         # Send text to persistent TTS connection
-                        logger.debug("[CUSTOM_LLM_PIPELINE] Sending text chunks to TTS...")
                         await tts_client.send_text_chunks(assistant_response)
-                        logger.debug("[CUSTOM_LLM_PIPELINE] Text chunks sent, waiting for audio...")
-                        
-                        # Wait for audio to start arriving (with timeout)
-                        timeout_elapsed = 0
-                        timeout_limit = 3.0  # 3 seconds to start receiving audio
-                        check_interval = 0.1
-                        
-                        while not response_audio_received and timeout_elapsed < timeout_limit:
-                            await asyncio.sleep(check_interval)
-                            timeout_elapsed += check_interval
-                        
-                        if not response_audio_received:
-                            logger.warning("[CUSTOM_LLM_PIPELINE] No audio received within timeout - TTS may not be generating audio")
-                        else:
-                            logger.info("[CUSTOM_LLM_PIPELINE] Audio started receiving")
                         
                         # Wait for audio to finish streaming (rough estimate)
-                        # TTS typically generates audio quickly after sending text
                         estimated_duration = len(assistant_response) / 10.0  # Rough estimate: 10 chars per second
                         wait_time = min(estimated_duration + 1.0, 10.0)  # Max 10 seconds
                         logger.info(f"[CUSTOM_LLM_PIPELINE] Waiting {wait_time:.1f}s for audio to complete...")
                         await asyncio.sleep(wait_time)
-                        logger.debug("[CUSTOM_LLM_PIPELINE] Audio wait period completed")
                         
                         # Send flush message to flush audio from Sarvam's pipeline
                         try:
