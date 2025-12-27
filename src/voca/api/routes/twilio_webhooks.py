@@ -1439,28 +1439,28 @@ async def handle_twilio_websocket(websocket: WebSocket):
                     
                     elif event == "media":
                         media = data.get("media", {})
-                    if media.get("track") == "inbound":
-                        # CRITICAL: Only process audio if we're in LISTENING state (STT connected, welcome complete)
-                        if call_state != CallState.LISTENING:
-                            # Drop audio if not in listening state (welcome still playing or processing)
-                            logger.debug(f"[CUSTOM_LLM_PIPELINE] Ignoring audio in state {call_state.value}")
-                            continue
-                        
-                        mulaw_chunk = base64.b64decode(media.get("payload", ""))
-                        audio_buffer.extend(mulaw_chunk)
-                        
-                        # Process buffer in chunks
-                        while len(audio_buffer) >= BUFFER_SIZE:
-                            mulaw_to_convert = bytes(audio_buffer[:BUFFER_SIZE])
-                            audio_buffer = audio_buffer[BUFFER_SIZE:]
+                        if media.get("track") == "inbound":
+                            # CRITICAL: Only process audio if we're in LISTENING state (STT connected, welcome complete)
+                            if call_state != CallState.LISTENING:
+                                # Drop audio if not in listening state (welcome still playing or processing)
+                                logger.debug(f"[CUSTOM_LLM_PIPELINE] Ignoring audio in state {call_state.value}")
+                                continue
                             
-                            # Convert μ-law to PCM and send to STT
-                            # CRITICAL: Only send if STT is connected AND we're in LISTENING state
-                            if stt_client.is_connected and call_state == CallState.LISTENING:
-                                pcm_audio = mulaw_to_pcm(mulaw_to_convert)
-                                await stt_client.send_audio(pcm_audio)
-                            else:
-                                logger.debug(f"[CUSTOM_LLM_PIPELINE] Dropping audio: STT connected={stt_client.is_connected}, state={call_state.value}")
+                            mulaw_chunk = base64.b64decode(media.get("payload", ""))
+                            audio_buffer.extend(mulaw_chunk)
+                            
+                            # Process buffer in chunks
+                            while len(audio_buffer) >= BUFFER_SIZE:
+                                mulaw_to_convert = bytes(audio_buffer[:BUFFER_SIZE])
+                                audio_buffer = audio_buffer[BUFFER_SIZE:]
+                                
+                                # Convert μ-law to PCM and send to STT
+                                # CRITICAL: Only send if STT is connected AND we're in LISTENING state
+                                if stt_client.is_connected and call_state == CallState.LISTENING:
+                                    pcm_audio = mulaw_to_pcm(mulaw_to_convert)
+                                    await stt_client.send_audio(pcm_audio)
+                                else:
+                                    logger.debug(f"[CUSTOM_LLM_PIPELINE] Dropping audio: STT connected={stt_client.is_connected}, state={call_state.value}")
                     
                     elif event == "stop":
                         logger.info("[CUSTOM_LLM_PIPELINE] Stream stopped")
