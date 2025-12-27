@@ -1136,6 +1136,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
     conversation_history = []
     current_tts_task = None
     welcome_complete_event = asyncio.Event()  # Signals when welcome TTS completes
+    welcome_audio_received = False  # Track if we've received any audio for welcome
     tts_active = False  # Flag to track if TTS is currently streaming audio
     pending_closing_message = False  # Flag to track if current TTS is a closing message
     audio_buffer = bytearray()
@@ -1338,8 +1339,11 @@ async def handle_twilio_websocket(websocket: WebSocket):
         
         end_call_task = asyncio.create_task(monitor_end_call())
         
+        # Persistent message loop - stays open until explicit stop or disconnect
+        logger.info("[CUSTOM_LLM_PIPELINE] Starting persistent message loop - waiting for Twilio events...")
+        loop_exit_reason = None
+        
         try:
-            logger.info("[CUSTOM_LLM_PIPELINE] Starting message loop - waiting for messages...")
             async for message in websocket.iter_text():
                 try:
                     logger.debug(f"[CUSTOM_LLM_PIPELINE] Received message: {message[:100] if len(message) > 100 else message}")
@@ -1347,6 +1351,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
                     event = data.get("event")
                     
                     if event == "start":
+                        logger.info("[TWILIO] event=start received")
                         start = data.get("start", {})
                         streamsid = start.get("streamSid", "")
                         call_sid = start.get("callSid", "")
@@ -1440,6 +1445,11 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                 asyncio.create_task(send_welcome())
                     
                     elif event == "media":
+                        # Log first media frame
+                        if not hasattr(stt_transcript_callback, '_first_media_logged'):
+                            logger.info("[TWILIO] first media frame received")
+                            stt_transcript_callback._first_media_logged = True
+                        
                         media = data.get("media", {})
                         if media.get("track") == "inbound":
                             # CRITICAL: Only process audio if we're in LISTENING state (STT connected, welcome complete)
@@ -1465,26 +1475,38 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                     logger.debug(f"[CUSTOM_LLM_PIPELINE] Dropping audio: STT connected={stt_client.is_connected}, state={call_state.value}")
                     
                     elif event == "stop":
-                        logger.info("[CUSTOM_LLM_PIPELINE] Stream stopped")
-                    # Send remaining audio
-                    while len(audio_buffer) > 0:
-                        mulaw_to_convert = bytes(audio_buffer[:BUFFER_SIZE] if len(audio_buffer) >= BUFFER_SIZE else audio_buffer)
-                        audio_buffer = audio_buffer[len(mulaw_to_convert):]
-                        if mulaw_to_convert:
-                            pcm_audio = mulaw_to_pcm(mulaw_to_convert)
-                            if stt_client.is_connected:
-                                await stt_client.send_audio(pcm_audio)
-                    break
+                        logger.info("[TWILIO] event=stop received")
+                        logger.info("[PIPELINE] WebSocket loop exiting due to STOP event")
+                        # Send remaining audio
+                        while len(audio_buffer) > 0:
+                            mulaw_to_convert = bytes(audio_buffer[:BUFFER_SIZE] if len(audio_buffer) >= BUFFER_SIZE else audio_buffer)
+                            audio_buffer = audio_buffer[len(mulaw_to_convert):]
+                            if mulaw_to_convert:
+                                pcm_audio = mulaw_to_pcm(mulaw_to_convert)
+                                if stt_client.is_connected:
+                                    await stt_client.send_audio(pcm_audio)
+                        loop_exit_reason = "STOP event"
+                        break
                     
                 except json.JSONDecodeError as e:
                     logger.warning(f"[CUSTOM_LLM_PIPELINE] Failed to parse message: {e}")
+                    # Continue loop - don't exit on JSON errors
+                    continue
                 except Exception as e:
                     logger.error(f"[CUSTOM_LLM_PIPELINE] Error processing message: {e}", exc_info=True)
                     # If WebSocket was closed (by monitor_end_call), break the loop
                     if "not connected" in str(e).lower() or "closed" in str(e).lower():
-                        logger.info("[CUSTOM_LLM_PIPELINE] WebSocket closed, exiting message loop")
+                        logger.info("[PIPELINE] WebSocket loop exiting due to connection closed")
+                        loop_exit_reason = "connection closed"
                         break
-            logger.info("[CUSTOM_LLM_PIPELINE] Message loop exited (websocket closed or no more messages)")
+                    # For other errors, continue the loop - don't exit
+                    continue
+            
+            # Log why the loop exited
+            if loop_exit_reason:
+                logger.info(f"[PIPELINE] WebSocket loop exited: {loop_exit_reason}")
+            else:
+                logger.info("[PIPELINE] WebSocket loop exited: iterator exhausted (normal disconnect)")
         finally:
             # Cancel the monitoring task if it's still running
             if not end_call_task.done():
@@ -1501,19 +1523,20 @@ async def handle_twilio_websocket(websocket: WebSocket):
         import traceback
         logger.error(f"[CUSTOM_LLM_PIPELINE] Traceback: {traceback.format_exc()}")
     finally:
-        # Cleanup - close persistent TTS connection
+        # Cleanup - close persistent TTS and STT connections
+        # This only runs after the message loop exits (on stop event or disconnect)
         logger.info("[CUSTOM_LLM_PIPELINE] Cleaning up connections...")
         try:
             await stt_client.stop()
+        except Exception as e:
+            logger.warning(f"[CUSTOM_LLM_PIPELINE] Error stopping STT: {e}")
+        try:
             if tts_client.is_connected:
                 await tts_client.stop()
                 logger.info("[CUSTOM_LLM_PIPELINE] TTS connection closed")
         except Exception as e:
-            logger.error(f"[CUSTOM_LLM_PIPELINE] Error stopping clients: {e}")
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+            logger.warning(f"[CUSTOM_LLM_PIPELINE] Error stopping TTS: {e}")
+        # Note: Don't close websocket here - FastAPI handles it automatically on handler exit
 
 
 # Removed Deepgram agent endpoints - using custom LLM pipeline instead
