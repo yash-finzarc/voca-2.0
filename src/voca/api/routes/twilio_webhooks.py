@@ -1339,8 +1339,10 @@ async def handle_twilio_websocket(websocket: WebSocket):
         end_call_task = asyncio.create_task(monitor_end_call())
         
         try:
+            logger.info("[CUSTOM_LLM_PIPELINE] Starting message loop - waiting for messages...")
             async for message in websocket.iter_text():
                 try:
+                    logger.debug(f"[CUSTOM_LLM_PIPELINE] Received message: {message[:100] if len(message) > 100 else message}")
                     data = json.loads(message)
                     event = data.get("event")
                     
@@ -1482,6 +1484,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
                     if "not connected" in str(e).lower() or "closed" in str(e).lower():
                         logger.info("[CUSTOM_LLM_PIPELINE] WebSocket closed, exiting message loop")
                         break
+            logger.info("[CUSTOM_LLM_PIPELINE] Message loop exited (websocket closed or no more messages)")
         finally:
             # Cancel the monitoring task if it's still running
             if not end_call_task.done():
