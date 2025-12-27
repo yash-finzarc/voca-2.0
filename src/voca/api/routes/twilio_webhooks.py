@@ -1155,7 +1155,15 @@ async def handle_twilio_websocket(websocket: WebSocket):
         await tts_client.connect()
         logger.info("[CUSTOM_LLM_PIPELINE] ✓ TTS connected")
         
-        # NOTE: STT will be connected AFTER welcome message completes (see "start" event handler)
+        # CRITICAL: Connect STT early for full-duplex operation
+        # STT must run continuously, independently of TTS, from the start of the call
+        logger.info("[CUSTOM_LLM_PIPELINE] Connecting to SarvamAI STT (full-duplex)...")
+        try:
+            await stt_client.connect()
+            logger.info("[CUSTOM_LLM_PIPELINE] ✓ STT connected (ready for continuous audio forwarding)")
+        except Exception as e:
+            logger.error(f"[CUSTOM_LLM_PIPELINE] Failed to connect STT: {e}", exc_info=True)
+            # Don't fail the entire call if STT connection fails - we can retry later
         
         # Set up TTS audio callback
         async def tts_audio_callback(pcm_audio: bytes):
@@ -1219,17 +1227,20 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # Set up STT transcript callback
         async def stt_transcript_callback(transcript: str, is_final: bool):
             """Callback for STT transcripts."""
-            nonlocal tts_active, current_tts_task, call_sid, call_state, should_end_call
+            nonlocal tts_active, current_tts_task, call_sid, call_state, should_end_call, pending_closing_message
             
             if not transcript.strip():
                 return
             
-            # CRITICAL: Ignore STT transcripts if we're not in LISTENING or PROCESSING state
-            if call_state not in [CallState.LISTENING, CallState.PROCESSING]:
-                logger.debug(f"[CUSTOM_LLM_PIPELINE] Ignoring STT transcript in state {call_state.value}")
-                return
+            # Log transcript receipt to prove STT continuity
+            logger.info(f"[STT] transcript received (final={is_final}, state={call_state.value}): {transcript}")
             
-            logger.info(f"[CUSTOM_LLM_PIPELINE] STT transcript (final={is_final}): {transcript}")
+            # CRITICAL: Ignore STT transcripts if we're not in LISTENING or PROCESSING state
+            # This prevents processing transcripts during TTS playback or initial welcome
+            # However, STT continues to receive audio (full-duplex), we just ignore transcripts
+            if call_state not in [CallState.LISTENING, CallState.PROCESSING]:
+                logger.debug(f"[STT] Ignoring transcript in state {call_state.value} (STT still receiving audio)")
+                return
             
             # Handle barge-in: cancel TTS if user speaks during TTS playback (SPEAKING state)
             if call_state == CallState.SPEAKING and tts_active:
@@ -1445,16 +1456,22 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                         # Signal welcome completion
                                         welcome_complete_event.set()
                                         
-                                        # CRITICAL: Connect STT ONLY AFTER welcome completes
-                                        logger.info("[CUSTOM_LLM_PIPELINE] Welcome complete, connecting STT...")
-                                        try:
-                                            await stt_client.connect()
-                                            logger.info("[CUSTOM_LLM_PIPELINE] ✓ STT connected")
+                                        # STT is already connected (connected early for full-duplex operation)
+                                        # Just transition to LISTENING state
+                                        if stt_client.is_connected:
                                             call_state = CallState.LISTENING
-                                            logger.info("[STATE] → LISTENING (ready for user input)")
-                                        except Exception as e:
-                                            logger.error(f"[CUSTOM_LLM_PIPELINE] Failed to connect STT: {e}", exc_info=True)
-                                            call_state = CallState.INIT
+                                            logger.info("[STATE] → LISTENING (ready for user input, STT already active)")
+                                        else:
+                                            # STT connection failed earlier, try to reconnect
+                                            logger.warning("[CUSTOM_LLM_PIPELINE] STT not connected, attempting to reconnect...")
+                                            try:
+                                                await stt_client.connect()
+                                                logger.info("[CUSTOM_LLM_PIPELINE] ✓ STT reconnected")
+                                                call_state = CallState.LISTENING
+                                                logger.info("[STATE] → LISTENING (ready for user input)")
+                                            except Exception as e:
+                                                logger.error(f"[CUSTOM_LLM_PIPELINE] Failed to reconnect STT: {e}", exc_info=True)
+                                                call_state = CallState.INIT
                                     except Exception as e:
                                         logger.error(f"[CUSTOM_LLM_PIPELINE] Error sending welcome: {e}", exc_info=True)
                                         tts_active = False
@@ -1480,10 +1497,11 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                 logger.info("[TWILIO] Media received after TTS playback (playback confirmed)")
                                 stt_transcript_callback._media_after_tts_logged = True
                             
-                            # CRITICAL: Only process audio if we're in LISTENING state (STT connected, welcome complete)
-                            if call_state != CallState.LISTENING:
-                                # Drop audio if not in listening state (welcome still playing or processing)
-                                logger.debug(f"[CUSTOM_LLM_PIPELINE] Ignoring audio in state {call_state.value}")
+                            # CRITICAL: Always forward audio to STT if connected (full-duplex operation)
+                            # STT runs continuously, independently of call_state or TTS
+                            # The STT VAD will handle speech detection internally
+                            if not stt_client.is_connected:
+                                logger.debug(f"[STT] Dropping audio: STT not connected (state={call_state.value})")
                                 continue
                             
                             mulaw_chunk = base64.b64decode(media.get("payload", ""))
@@ -1494,13 +1512,16 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                 mulaw_to_convert = bytes(audio_buffer[:BUFFER_SIZE])
                                 audio_buffer = audio_buffer[BUFFER_SIZE:]
                                 
-                                # Convert μ-law to PCM and send to STT
-                                # CRITICAL: Only send if STT is connected AND we're in LISTENING state
-                                if stt_client.is_connected and call_state == CallState.LISTENING:
+                                # Convert μ-law to PCM and forward to STT (always, if STT is connected)
+                                try:
                                     pcm_audio = mulaw_to_pcm(mulaw_to_convert)
                                     await stt_client.send_audio(pcm_audio)
-                                else:
-                                    logger.debug(f"[CUSTOM_LLM_PIPELINE] Dropping audio: STT connected={stt_client.is_connected}, state={call_state.value}")
+                                    # Log first few audio frames to prove STT continuity
+                                    if not hasattr(stt_transcript_callback, '_audio_forwarded_logged'):
+                                        logger.info(f"[STT] Audio frame forwarded to STT (bytes={len(pcm_audio)}, state={call_state.value})")
+                                        stt_transcript_callback._audio_forwarded_logged = True
+                                except Exception as e:
+                                    logger.error(f"[STT] Error forwarding audio to STT: {e}", exc_info=True)
                     
                     elif event == "stop":
                         logger.info("[TWILIO] event=stop received")
