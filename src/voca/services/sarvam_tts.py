@@ -270,7 +270,10 @@ class SarvamTTSClient:
                                         audio_bytes = audio_bytes[:-1]
                                     
                                     if self.audio_callback and not self._is_cancelled:
+                                        logger.debug(f"TTS calling audio callback with {len(audio_bytes)} bytes")
                                         await self.audio_callback(audio_bytes)
+                                    else:
+                                        logger.debug(f"TTS audio callback skipped: callback={bool(self.audio_callback)}, cancelled={self._is_cancelled}")
                                     logger.debug(f"TTS audio decoded: {len(audio_bytes)} bytes PCM (content_type: {content_type})")
                                 except RuntimeError:
                                     # Re-raise our hard failure for MP3
