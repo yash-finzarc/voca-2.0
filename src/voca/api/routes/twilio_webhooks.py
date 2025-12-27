@@ -1138,6 +1138,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
     welcome_complete_event = asyncio.Event()  # Signals when welcome TTS completes
     welcome_audio_received = False  # Track if we've received any audio for welcome
     tts_active = False  # Flag to track if TTS is currently streaming audio
+    tts_audio_sent = False  # Flag to track if any TTS audio has been sent to Twilio
     pending_closing_message = False  # Flag to track if current TTS is a closing message
     audio_buffer = bytearray()
     BUFFER_SIZE = 20 * 160  # 20ms of audio at 8kHz
@@ -1159,7 +1160,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # Set up TTS audio callback
         async def tts_audio_callback(pcm_audio: bytes):
             """Callback for TTS audio output."""
-            nonlocal call_state
+            nonlocal call_state, welcome_audio_received, tts_audio_sent
             if not tts_active or not streamsid:
                 return
             
@@ -1182,6 +1183,14 @@ async def handle_twilio_websocket(websocket: WebSocket):
                 "media": {"payload": audio_payload}
             }
             await websocket.send_json(media_message)
+            
+            # Log audio being sent to Twilio
+            logger.info(f"[AUDIO_OUT] Sent {len(audio_payload)} bytes (base64) to Twilio stream {streamsid}")
+            
+            # Log first outbound audio frame
+            if not tts_audio_sent:
+                logger.info("[AUDIO_OUT] First TTS audio frame sent to Twilio")
+                tts_audio_sent = True
             
             # Mark that we've received audio (for welcome message tracking)
             if call_state == CallState.WELCOME:
@@ -1452,6 +1461,11 @@ async def handle_twilio_websocket(websocket: WebSocket):
                         
                         media = data.get("media", {})
                         if media.get("track") == "inbound":
+                            # Log media received after TTS (implicit playback confirmation)
+                            if tts_audio_sent and not hasattr(stt_transcript_callback, '_media_after_tts_logged'):
+                                logger.info("[TWILIO] Media received after TTS playback (playback confirmed)")
+                                stt_transcript_callback._media_after_tts_logged = True
+                            
                             # CRITICAL: Only process audio if we're in LISTENING state (STT connected, welcome complete)
                             if call_state != CallState.LISTENING:
                                 # Drop audio if not in listening state (welcome still playing or processing)
