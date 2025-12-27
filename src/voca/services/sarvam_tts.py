@@ -418,6 +418,10 @@ class SarvamTTSClient:
             text: Full text to convert
             chunk_size: Approximate characters per chunk (default: 50)
         """
+        # CRITICAL: Reset cancellation flag before sending new text
+        # This allows sending new text after a previous barge-in cancellation
+        self._is_cancelled = False
+        
         # Split by sentences (period, exclamation, question mark)
         import re
         sentences = re.split(r'([.!?]\s+)', text)
@@ -443,8 +447,10 @@ class SarvamTTSClient:
             logger.warning(f"No valid chunks found in text: '{text[:50]}'")
             return
         
+        logger.info(f"[TTS] Sending {len(valid_chunks)} text chunks to TTS (persistent connection)")
         for i, chunk in enumerate(valid_chunks):
             if self._is_cancelled:
+                logger.warning(f"[TTS] Text sending cancelled at chunk {i+1}/{len(valid_chunks)}")
                 break
             is_final = (i == len(valid_chunks) - 1)
             await self.send_text(chunk, is_final=is_final)

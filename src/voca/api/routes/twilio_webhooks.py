@@ -1341,14 +1341,18 @@ async def handle_twilio_websocket(websocket: WebSocket):
                         # Send text to persistent TTS connection
                         # TTS will stream audio via audio_callback
                         # Completion will be signaled via completion_callback (when "done" message received)
+                        logger.info(f"[TTS] Sending text to persistent TTS connection: {assistant_response[:100]}...")
                         await tts_client.send_text_chunks(assistant_response)
+                        logger.debug("[TTS] Text chunks sent, sending flush message...")
                         
-                        # Send flush message to flush audio from Sarvam's pipeline
+                        # CRITICAL: Send flush message to flush audio from Sarvam's pipeline
+                        # This signals that all text has been sent and audio generation should start
                         try:
                             await tts_client.send_flush()
-                            logger.debug("[CUSTOM_LLM_PIPELINE] Sent flush message")
+                            logger.info("[TTS] Flush message sent - audio generation should start now")
                         except Exception as e:
-                            logger.warning(f"[CUSTOM_LLM_PIPELINE] Error sending flush: {e}")
+                            logger.warning(f"[TTS] Error sending flush: {e}")
+                            # Don't fail the whole operation if flush fails, but log it
                         
                         # Note: tts_active will be set to False by completion_callback when TTS sends "done" message
                         # State transition to LISTENING will happen via VAD (when STT detects silence AND tts_active == False)
