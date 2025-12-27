@@ -1243,10 +1243,21 @@ async def handle_twilio_websocket(websocket: WebSocket):
                 tts_active = True
                 
                 async def send_tts():
-                    """Send text to persistent TTS connection."""
+                    """Send text to persistent TTS connection with reconnection handling."""
                     try:
                         # Small delay to ensure previous TTS has finished (if any)
                         await asyncio.sleep(0.1)
+                        
+                        # Check if TTS is connected, reconnect if needed
+                        if not tts_client.is_connected:
+                            logger.warning("[CUSTOM_LLM_PIPELINE] TTS connection lost, reconnecting...")
+                            try:
+                                tts_client.set_audio_callback(tts_audio_callback)
+                                await tts_client.connect()
+                                logger.info("[CUSTOM_LLM_PIPELINE] ✓ TTS reconnected")
+                            except Exception as reconnect_err:
+                                logger.error(f"[CUSTOM_LLM_PIPELINE] Failed to reconnect TTS: {reconnect_err}", exc_info=True)
+                                return
                         
                         # Send text to persistent TTS connection
                         await tts_client.send_text_chunks(assistant_response)
@@ -1308,6 +1319,11 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                     logger.info(f"[CUSTOM_LLM_PIPELINE] Sending welcome message: {welcome_message}")
                                     tts_active = True
                                     welcome_audio_received = False
+                                    
+                                    # Ensure TTS is connected
+                                    if not tts_client.is_connected:
+                                        logger.error("[CUSTOM_LLM_PIPELINE] TTS not connected for welcome message")
+                                        return
                                     
                                     # Send text to persistent TTS connection
                                     await tts_client.send_text_chunks(welcome_message)

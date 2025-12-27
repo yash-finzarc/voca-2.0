@@ -9,6 +9,39 @@ import base64
 logger = logging.getLogger(__name__)
 
 
+def validate_tts_text(text: str) -> str | None:
+    """
+    Validate text before sending to TTS.
+    
+    Ensures text:
+    - Is not empty after stripping
+    - Contains at least one character from allowed languages (Hindi/English/numbers)
+    
+    Args:
+        text: Text to validate
+    
+    Returns:
+        Validated text (stripped) or None if invalid
+    """
+    if not text:
+        return None
+    
+    text = text.strip()
+    if not text:
+        return None
+    
+    # Check for at least one character from allowed languages
+    # Hindi Devanagari: \u0900-\u097F
+    # English (A-Z, a-z): \u0041-\u005A, \u0061-\u007A
+    # Numbers: \u0030-\u0039
+    import re
+    if not re.search(r'[\u0900-\u097F\u0041-\u005A\u0061-\u007A\u0030-\u0039]', text):
+        logger.warning(f"TTS text contains no valid characters from allowed languages: '{text[:50]}' (length: {len(text)})")
+        return None
+    
+    return text
+
+
 class SarvamTTSClient:
     """
     SarvamAI TTS client for streaming text-to-speech conversion.
@@ -263,20 +296,16 @@ class SarvamTTSClient:
                             error_code = error_data.get("code", "unknown")
                             # Log error details but NEVER log audio data
                             logger.error(f"SarvamAI TTS error (code {error_code}): {error_msg}")
-                            # Don't disconnect on 422 errors (invalid parameters) - connection is still valid
-                            # The error is about message format, not authentication
+                            # 422 errors indicate invalid input (e.g., empty/invalid text) - connection will close
                             if error_code == 422:
-                                logger.error("TTS parameter error (422): Input parameters has to be a valid dictionary")
-                                logger.error("TTS config was rejected by Sarvam - connection will likely close")
+                                logger.error("TTS parameter error (422): Invalid input - connection will close")
+                                logger.error(f"Error message: {error_msg}")
                                 self._config_error_422 = True  # Mark that we got a 422
-                                # CRITICAL: Sarvam often closes the WebSocket after 422 errors
-                                # Check if connection is actually still open
-                                if self.websocket and hasattr(self.websocket, 'closed') and self.websocket.closed:
-                                    logger.error("TTS WebSocket already closed by Sarvam after 422 error - connection is dead")
-                                    self.is_connected = False
-                                    break
-                                # If connection appears open, continue receiving (but it may close soon)
-                                # Note: Sarvam typically closes the connection after 422, so text sends will fail
+                                # CRITICAL: Sarvam closes the WebSocket after 422 errors
+                                # Mark connection as closed to allow reconnection
+                                self.is_connected = False
+                                logger.error("TTS connection marked as closed due to 422 error - reconnection will be attempted on next send")
+                                break
                             else:
                                 # Only disconnect on critical errors (auth, server errors, etc.)
                                 logger.error(f"TTS critical error (code {error_code}) - disconnecting")
@@ -318,6 +347,12 @@ class SarvamTTSClient:
             text: Text to convert to speech
             is_final: Whether this is the final chunk (default: True)
         """
+        # Validate text before sending
+        validated_text = validate_tts_text(text)
+        if not validated_text:
+            logger.warning(f"Skipping invalid TTS text: '{text[:50] if text else 'empty'}'")
+            return
+        
         if not self.is_connected or not self.websocket:
             logger.warning("TTS not connected, cannot send text")
             return
@@ -343,15 +378,15 @@ class SarvamTTSClient:
             payload = {
                 "type": "text",
                 "data": {
-                    "text": text
+                    "text": validated_text  # Use validated text
                 }
             }
             
             message_json = json.dumps(payload)
             # Log the exact JSON being sent for debugging 422 errors
             logger.debug(f"TTS text message JSON: {message_json}")
-            logger.debug(f"TTS payload structure: type={payload.get('type')}, text_length={len(text)}")
-            logger.info(f"TTS sending text (length: {len(text)} chars)")
+            logger.debug(f"TTS payload structure: type={payload.get('type')}, text_length={len(validated_text)}")
+            logger.info(f"TTS sending text (length: {len(validated_text)} chars)")
             
             # Attempt to send - if connection is truly closed, this will raise an exception
             # Don't pre-check websocket.closed as it can be unreliable
@@ -390,11 +425,17 @@ class SarvamTTSClient:
         if current_chunk.strip():
             chunks.append(current_chunk.strip())
         
-        # Send chunks sequentially
-        for i, chunk in enumerate(chunks):
+        # Send chunks sequentially, filtering out invalid chunks
+        valid_chunks = [chunk for chunk in chunks if validate_tts_text(chunk)]
+        
+        if not valid_chunks:
+            logger.warning(f"No valid chunks found in text: '{text[:50]}'")
+            return
+        
+        for i, chunk in enumerate(valid_chunks):
             if self._is_cancelled:
                 break
-            is_final = (i == len(chunks) - 1)
+            is_final = (i == len(valid_chunks) - 1)
             await self.send_text(chunk, is_final=is_final)
             # Small delay between chunks for better streaming
             if not is_final:
