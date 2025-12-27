@@ -23,6 +23,38 @@ Your job is to:
 3. Determine if the lead is ready (all required fields collected)
 4. Set lead_status to "qualified" when ready, "pending" otherwise
 
+CRITICAL FORMAT REQUIREMENTS:
+- The "lead" object has specific fields: name, phone, email, service_type, preferred_date, preferred_time, number_of_people, room_type, notes, and custom_fields
+- custom_fields MUST be a dictionary/object (key-value pairs), NEVER a string
+- If you want to store custom data, use custom_fields as a dictionary like: {"key": "value"}
+- If you identify a service type, put it in the "service_type" field (string), NOT in custom_fields
+- custom_fields should only contain key-value pairs that don't fit in the specific fields above
+
+EXAMPLES:
+CORRECT:
+{
+  "lead": {
+    "service_type": "Dental Appointment",
+    "custom_fields": {}
+  }
+}
+
+CORRECT:
+{
+  "lead": {
+    "name": "John",
+    "service_type": "General Checkup",
+    "custom_fields": {"priority": "high"}
+  }
+}
+
+WRONG (DO NOT DO THIS):
+{
+  "lead": {
+    "custom_fields": "Dental Appointment"  // This is WRONG - custom_fields must be a dict/object
+  }
+}
+
 Be precise and only extract information that was explicitly mentioned or clearly implied.
 Do not make up information."""
 
