@@ -1141,6 +1141,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
     tts_active = False
     audio_buffer = bytearray()
     BUFFER_SIZE = 20 * 160  # 20ms of audio at 8kHz
+    should_end_call = False  # Flag to indicate call should end after closing message
     
     try:
         await websocket.accept()
@@ -1192,7 +1193,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # Set up STT transcript callback
         async def stt_transcript_callback(transcript: str, is_final: bool):
             """Callback for STT transcripts."""
-            nonlocal tts_active, current_tts_task, call_sid, call_state
+            nonlocal tts_active, current_tts_task, call_sid, call_state, should_end_call
             
             if not transcript.strip():
                 return
@@ -1238,12 +1239,28 @@ async def handle_twilio_websocket(websocket: WebSocket):
                 
                 logger.info(f"[CUSTOM_LLM_PIPELINE] Assistant response: {assistant_response}")
                 
+                # Check if this is a closing message (call should end after this)
+                # Common closing phrases in Hindi/English
+                closing_phrases = [
+                    "कॉल करने के लिए धन्यवाद",
+                    "धन्यवाद.*दिन शुभ",
+                    "thank you.*good day",
+                    "thank you.*have a nice",
+                ]
+                import re
+                is_closing_message = any(re.search(phrase, assistant_response, re.IGNORECASE) for phrase in closing_phrases)
+                
+                if is_closing_message:
+                    logger.info("[CUSTOM_LLM_PIPELINE] Closing message detected - call will end after TTS completes")
+                    should_end_call = True
+                
                 # Send to persistent TTS connection
                 call_state = CallState.SPEAKING
                 tts_active = True
                 
                 async def send_tts():
                     """Send text to persistent TTS connection with reconnection handling."""
+                    nonlocal tts_active, call_state
                     try:
                         # Small delay to ensure previous TTS has finished (if any)
                         await asyncio.sleep(0.1)
@@ -1263,8 +1280,9 @@ async def handle_twilio_websocket(websocket: WebSocket):
                         await tts_client.send_text_chunks(assistant_response)
                         
                         # Wait for audio to finish streaming (rough estimate)
+                        # Add extra time for closing messages to ensure audio plays completely
                         estimated_duration = len(assistant_response) / 10.0  # Rough estimate: 10 chars per second
-                        wait_time = min(estimated_duration + 1.0, 10.0)  # Max 10 seconds
+                        wait_time = min(estimated_duration + 2.0 if is_closing_message else estimated_duration + 1.0, 15.0)  # Max 15 seconds for closing, 10 for others
                         logger.info(f"[CUSTOM_LLM_PIPELINE] Waiting {wait_time:.1f}s for audio to complete...")
                         await asyncio.sleep(wait_time)
                         
@@ -1276,15 +1294,35 @@ async def handle_twilio_websocket(websocket: WebSocket):
                             logger.warning(f"[CUSTOM_LLM_PIPELINE] Error sending flush: {e}")
                         
                         logger.info("[CUSTOM_LLM_PIPELINE] TTS completed")
+                        
+                        # If this is a closing message, give extra time for audio to play
+                        if is_closing_message:
+                            logger.info("[CUSTOM_LLM_PIPELINE] Closing message - giving extra time for audio to play")
+                            await asyncio.sleep(1.0)
                     except Exception as e:
                         logger.error(f"[CUSTOM_LLM_PIPELINE] Error in TTS: {e}", exc_info=True)
                     finally:
-                        nonlocal tts_active, call_state
                         tts_active = False
-                        call_state = CallState.LISTENING  # Return to listening after TTS completes
-                        logger.info("[CUSTOM_LLM_PIPELINE] TTS completed, returning to LISTENING state")
+                        if is_closing_message:
+                            logger.info("[CUSTOM_LLM_PIPELINE] Closing message TTS completed - call will end")
+                        else:
+                            call_state = CallState.LISTENING  # Return to listening after TTS completes
+                            logger.info("[CUSTOM_LLM_PIPELINE] TTS completed, returning to LISTENING state")
                 
                 current_tts_task = asyncio.create_task(send_tts())
+                # Wait for TTS task to complete
+                await current_tts_task
+                
+                # If closing message, close WebSocket to end the call
+                if should_end_call:
+                    logger.info("[CUSTOM_LLM_PIPELINE] Closing message completed - closing WebSocket to end call")
+                    # Close the WebSocket connection which will end the call
+                    try:
+                        await websocket.close(code=1000, reason="Call ended after closing message")
+                    except Exception as e:
+                        logger.warning(f"[CUSTOM_LLM_PIPELINE] Error closing WebSocket: {e}")
+                    # Exit the callback (the main loop will detect the closed connection)
+                    return
         
         stt_client.set_transcript_callback(stt_transcript_callback)
         
