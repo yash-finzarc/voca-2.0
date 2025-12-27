@@ -67,6 +67,7 @@ class SarvamTTSClient:
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
         self.is_connected = False
         self.audio_callback: Optional[Callable[[bytes], None]] = None
+        self.completion_callback: Optional[Callable[[], None]] = None  # Callback when TTS audio streaming completes
         self._receive_task: Optional[asyncio.Task] = None
         self._is_cancelled = False
         self._config_sent = False  # Track if config has been sent (must be sent exactly once)
@@ -314,6 +315,12 @@ class SarvamTTSClient:
                             
                         elif data.get("type") == "done":
                             logger.debug("TTS generation completed")
+                            # Notify completion callback that audio streaming is finished
+                            if self.completion_callback and not self._is_cancelled:
+                                try:
+                                    await self.completion_callback()
+                                except Exception as e:
+                                    logger.error(f"Error in TTS completion callback: {e}", exc_info=True)
                         elif data.get("type") in ("config_ack", "ready", "ack"):
                             # Sarvam may send a config acknowledgment message
                             logger.debug(f"TTS received {data.get('type')} message - config may be acknowledged")
@@ -489,6 +496,16 @@ class SarvamTTSClient:
             callback: Async function that receives PCM audio bytes
         """
         self.audio_callback = callback
+    
+    def set_completion_callback(self, callback: Callable[[], None]):
+        """
+        Set callback function for when TTS audio streaming completes.
+        This is called when Sarvam sends a "done" message.
+        
+        Args:
+            callback: Async function called when TTS completes
+        """
+        self.completion_callback = callback
     
     async def cancel(self):
         """Cancel current TTS generation (for barge-in)."""
