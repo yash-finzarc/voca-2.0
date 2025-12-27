@@ -1235,14 +1235,8 @@ async def handle_twilio_websocket(websocket: WebSocket):
             # Log transcript receipt to prove STT continuity
             logger.info(f"[STT] transcript received (final={is_final}, state={call_state.value}): {transcript}")
             
-            # CRITICAL: Ignore STT transcripts if we're not in LISTENING or PROCESSING state
-            # This prevents processing transcripts during TTS playback or initial welcome
-            # However, STT continues to receive audio (full-duplex), we just ignore transcripts
-            if call_state not in [CallState.LISTENING, CallState.PROCESSING]:
-                logger.debug(f"[STT] Ignoring transcript in state {call_state.value} (STT still receiving audio)")
-                return
-            
-            # Handle barge-in: cancel TTS if user speaks during TTS playback (SPEAKING state)
+            # Handle barge-in FIRST: cancel TTS if user speaks during TTS playback (SPEAKING state)
+            # This must happen before state filtering so barge-in can work
             if call_state == CallState.SPEAKING and tts_active:
                 logger.info("[BARGE-IN] User interrupted TTS - cancelling TTS and transitioning to LISTENING")
                 tts_active = False
@@ -1263,28 +1257,49 @@ async def handle_twilio_websocket(websocket: WebSocket):
                 call_state = CallState.LISTENING
                 logger.info("[STATE] SPEAKING → LISTENING (user barge-in)")
             
+            # CRITICAL: Ignore non-final transcripts if we're not in LISTENING or PROCESSING state
+            # This prevents processing transcripts during TTS playback or initial welcome
+            # However, STT continues to receive audio (full-duplex), we just ignore transcripts
+            # For final transcripts, we allow processing (barge-in may have just transitioned us to LISTENING)
+            if not is_final and call_state not in [CallState.LISTENING, CallState.PROCESSING]:
+                logger.debug(f"[STT] Ignoring non-final transcript in state {call_state.value} (STT still receiving audio)")
+                return
+            
             # Only process final transcripts (VAD detected end of speech/silence)
             if is_final:
+                # If we're in a non-listening state and this is final, log but still allow processing
+                # (barge-in may have just happened, or we need to handle the transcript)
+                if call_state not in [CallState.LISTENING, CallState.PROCESSING]:
+                    logger.debug(f"[STT] Processing final transcript in state {call_state.value} (allowing for barge-in handling)")
+                
                 # Transition to LISTENING only if TTS is not active (VAD-driven state transition)
                 if call_state == CallState.SPEAKING and not tts_active:
                     call_state = CallState.LISTENING
                     logger.info("[STATE] SPEAKING → LISTENING (VAD silence, TTS inactive)")
                 
-                # Process the transcript
+                # Process the transcript through LLM pipeline
                 call_state = CallState.PROCESSING
+                logger.info(f"[LLM] Received transcript: {transcript}")
                 
                 # Get organization ID (use default if not available)
                 org_id = Config.default_organization_id
                 
-                # Process through orchestrator
-                logger.info(f"[CUSTOM_LLM_PIPELINE] Processing transcript through orchestrator...")
-                assistant_response = await orchestrator.process_user_text(
-                    text=transcript,
-                    session_id=call_sid,
-                    organization_id=org_id
-                )
-                
-                logger.info(f"[CUSTOM_LLM_PIPELINE] Assistant response: {assistant_response}")
+                # Process through orchestrator (LLM pipeline)
+                logger.info(f"[LLM] Generating response...")
+                try:
+                    assistant_response = await orchestrator.process_user_text(
+                        text=transcript,
+                        session_id=call_sid,
+                        organization_id=org_id
+                    )
+                    
+                    logger.info(f"[LLM] Generated response: {assistant_response}")
+                    logger.info(f"[TTS] Sending LLM output to Twilio")
+                except Exception as e:
+                    logger.error(f"[LLM] Error processing transcript through orchestrator: {e}", exc_info=True)
+                    # On error, transition back to LISTENING to continue the call
+                    call_state = CallState.LISTENING
+                    return
                 
                 # Check if this is a closing message (call should end after this)
                 # Common closing phrases in Hindi/English
