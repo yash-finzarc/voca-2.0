@@ -1141,7 +1141,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
     tts_active = False
     audio_buffer = bytearray()
     BUFFER_SIZE = 20 * 160  # 20ms of audio at 8kHz
-    should_end_call = False  # Flag to indicate call should end after closing message
+    should_end_call = asyncio.Event()  # Event to signal call should end after closing message
     
     try:
         await websocket.accept()
@@ -1252,7 +1252,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
                 
                 if is_closing_message:
                     logger.info("[CUSTOM_LLM_PIPELINE] Closing message detected - call will end after TTS completes")
-                    should_end_call = True
+                    # We'll set the event after TTS completes, not here
                 
                 # Send to persistent TTS connection
                 call_state = CallState.SPEAKING
@@ -1313,111 +1313,120 @@ async def handle_twilio_websocket(websocket: WebSocket):
                 # Wait for TTS task to complete
                 await current_tts_task
                 
-                # If closing message, close WebSocket to end the call
-                if should_end_call:
-                    logger.info("[CUSTOM_LLM_PIPELINE] Closing message completed - closing WebSocket to end call")
-                    # Close the WebSocket connection which will end the call
-                    try:
-                        await websocket.close(code=1000, reason="Call ended after closing message")
-                    except Exception as e:
-                        logger.warning(f"[CUSTOM_LLM_PIPELINE] Error closing WebSocket: {e}")
-                    # Exit the callback (the main loop will detect the closed connection)
-                    return
+                # If closing message, set the event to signal main loop to end
+                if is_closing_message:
+                    logger.info("[CUSTOM_LLM_PIPELINE] Closing message completed - signaling main loop to end call")
+                    should_end_call.set()
         
         stt_client.set_transcript_callback(stt_transcript_callback)
         
         # Main message loop
         welcome_sent = False
-        async for message in websocket.iter_text():
+        
+        # Create a task to monitor should_end_call event
+        async def monitor_end_call():
+            await should_end_call.wait()
+            logger.info("[CUSTOM_LLM_PIPELINE] Closing message event set - will close WebSocket after current message")
+            # Close the WebSocket after a brief delay to ensure audio has time to play
+            await asyncio.sleep(0.5)
             try:
-                data = json.loads(message)
-                event = data.get("event")
-                
-                if event == "start":
-                    start = data.get("start", {})
-                    streamsid = start.get("streamSid", "")
-                    call_sid = start.get("callSid", "")
-                    logger.info(f"[CUSTOM_LLM_PIPELINE] Stream started: SID={streamsid}, CallSid={call_sid}")
+                await websocket.close(code=1000, reason="Call ended after closing message")
+            except Exception as e:
+                logger.debug(f"[CUSTOM_LLM_PIPELINE] WebSocket already closed: {e}")
+        
+        end_call_task = asyncio.create_task(monitor_end_call())
+        
+        try:
+            async for message in websocket.iter_text():
+                try:
+                    data = json.loads(message)
+                    event = data.get("event")
                     
-                    # CRITICAL: Send welcome message FIRST (state: WELCOME)
-                    if not welcome_sent:
-                        call_state = CallState.WELCOME
-                        welcome_message = orchestrator.generate_greeting(
-                            conversation_id=call_sid,
-                            organization_id=Config.default_organization_id
-                        )
-                        if welcome_message:
-                            welcome_sent = True
-                            tts_active = True
-                            
-                            async def send_welcome():
-                                """Send welcome message via persistent TTS connection."""
-                                nonlocal tts_active, call_state, welcome_complete_event, welcome_audio_received
-                                try:
-                                    logger.info(f"[CUSTOM_LLM_PIPELINE] Sending welcome message: {welcome_message}")
-                                    tts_active = True
-                                    welcome_audio_received = False
-                                    
-                                    # Ensure TTS is connected
-                                    if not tts_client.is_connected:
-                                        logger.error("[CUSTOM_LLM_PIPELINE] TTS not connected for welcome message")
-                                        return
-                                    
-                                    # Send text to persistent TTS connection
-                                    await tts_client.send_text_chunks(welcome_message)
-                                    
-                                    # Wait for audio to start arriving (with timeout)
-                                    timeout_elapsed = 0
-                                    timeout_limit = 5.0  # 5 seconds to start receiving audio
-                                    check_interval = 0.1
-                                    
-                                    while not welcome_audio_received and timeout_elapsed < timeout_limit:
-                                        await asyncio.sleep(check_interval)
-                                        timeout_elapsed += check_interval
-                                    
-                                    if not welcome_audio_received:
-                                        logger.warning("[CUSTOM_LLM_PIPELINE] No audio received for welcome message within timeout")
-                                    else:
-                                        logger.info("[CUSTOM_LLM_PIPELINE] Welcome message audio started")
-                                    
-                                    # Wait for audio to finish streaming (rough estimate)
-                                    # TTS typically takes ~1-2 seconds per sentence
-                                    estimated_duration = len(welcome_message) / 10.0  # Rough estimate: 10 chars per second
-                                    wait_time = min(estimated_duration + 1.0, 10.0)  # Max 10 seconds
-                                    logger.info(f"[CUSTOM_LLM_PIPELINE] Waiting {wait_time:.1f}s for welcome audio to complete...")
-                                    await asyncio.sleep(wait_time)
-                                    
-                                    # Send flush message to flush audio from Sarvam's pipeline
+                    if event == "start":
+                        start = data.get("start", {})
+                        streamsid = start.get("streamSid", "")
+                        call_sid = start.get("callSid", "")
+                        logger.info(f"[CUSTOM_LLM_PIPELINE] Stream started: SID={streamsid}, CallSid={call_sid}")
+                        
+                        # CRITICAL: Send welcome message FIRST (state: WELCOME)
+                        if not welcome_sent:
+                            call_state = CallState.WELCOME
+                            welcome_message = orchestrator.generate_greeting(
+                                conversation_id=call_sid,
+                                organization_id=Config.default_organization_id
+                            )
+                            if welcome_message:
+                                welcome_sent = True
+                                tts_active = True
+                                
+                                async def send_welcome():
+                                    """Send welcome message via persistent TTS connection."""
+                                    nonlocal tts_active, call_state, welcome_complete_event, welcome_audio_received
                                     try:
-                                        await tts_client.send_flush()
-                                        logger.debug("[CUSTOM_LLM_PIPELINE] Sent flush message to flush welcome audio")
+                                        logger.info(f"[CUSTOM_LLM_PIPELINE] Sending welcome message: {welcome_message}")
+                                        tts_active = True
+                                        welcome_audio_received = False
+                                        
+                                        # Ensure TTS is connected
+                                        if not tts_client.is_connected:
+                                            logger.error("[CUSTOM_LLM_PIPELINE] TTS not connected for welcome message")
+                                            return
+                                        
+                                        # Send text to persistent TTS connection
+                                        await tts_client.send_text_chunks(welcome_message)
+                                        
+                                        # Wait for audio to start arriving (with timeout)
+                                        timeout_elapsed = 0
+                                        timeout_limit = 5.0  # 5 seconds to start receiving audio
+                                        check_interval = 0.1
+                                        
+                                        while not welcome_audio_received and timeout_elapsed < timeout_limit:
+                                            await asyncio.sleep(check_interval)
+                                            timeout_elapsed += check_interval
+                                        
+                                        if not welcome_audio_received:
+                                            logger.warning("[CUSTOM_LLM_PIPELINE] No audio received for welcome message within timeout")
+                                        else:
+                                            logger.info("[CUSTOM_LLM_PIPELINE] Welcome message audio started")
+                                        
+                                        # Wait for audio to finish streaming (rough estimate)
+                                        # TTS typically takes ~1-2 seconds per sentence
+                                        estimated_duration = len(welcome_message) / 10.0  # Rough estimate: 10 chars per second
+                                        wait_time = min(estimated_duration + 1.0, 10.0)  # Max 10 seconds
+                                        logger.info(f"[CUSTOM_LLM_PIPELINE] Waiting {wait_time:.1f}s for welcome audio to complete...")
+                                        await asyncio.sleep(wait_time)
+                                        
+                                        # Send flush message to flush audio from Sarvam's pipeline
+                                        try:
+                                            await tts_client.send_flush()
+                                            logger.debug("[CUSTOM_LLM_PIPELINE] Sent flush message to flush welcome audio")
+                                        except Exception as e:
+                                            logger.warning(f"[CUSTOM_LLM_PIPELINE] Error sending flush: {e}")
+                                        
+                                        logger.info("[CUSTOM_LLM_PIPELINE] Welcome message TTS completed")
                                     except Exception as e:
-                                        logger.warning(f"[CUSTOM_LLM_PIPELINE] Error sending flush: {e}")
-                                    
-                                    logger.info("[CUSTOM_LLM_PIPELINE] Welcome message TTS completed")
-                                except Exception as e:
-                                    logger.error(f"[CUSTOM_LLM_PIPELINE] Error sending welcome: {e}", exc_info=True)
-                                finally:
-                                    tts_active = False
-                                    # Signal welcome completion
-                                    welcome_complete_event.set()
-                                    
-                                    # CRITICAL: Connect STT ONLY AFTER welcome completes
-                                    logger.info("[CUSTOM_LLM_PIPELINE] Welcome complete, connecting STT...")
-                                    try:
-                                        await stt_client.connect()
-                                        logger.info("[CUSTOM_LLM_PIPELINE] ✓ STT connected")
-                                        call_state = CallState.LISTENING
-                                        logger.info("[CUSTOM_LLM_PIPELINE] State: LISTENING (ready for user input)")
-                                    except Exception as e:
-                                        logger.error(f"[CUSTOM_LLM_PIPELINE] Failed to connect STT: {e}", exc_info=True)
-                                        call_state = CallState.INIT
-                            
-                            # Start welcome TTS (non-blocking)
-                            asyncio.create_task(send_welcome())
+                                        logger.error(f"[CUSTOM_LLM_PIPELINE] Error sending welcome: {e}", exc_info=True)
+                                    finally:
+                                        tts_active = False
+                                        # Signal welcome completion
+                                        welcome_complete_event.set()
+                                        
+                                        # CRITICAL: Connect STT ONLY AFTER welcome completes
+                                        logger.info("[CUSTOM_LLM_PIPELINE] Welcome complete, connecting STT...")
+                                        try:
+                                            await stt_client.connect()
+                                            logger.info("[CUSTOM_LLM_PIPELINE] ✓ STT connected")
+                                            call_state = CallState.LISTENING
+                                            logger.info("[CUSTOM_LLM_PIPELINE] State: LISTENING (ready for user input)")
+                                        except Exception as e:
+                                            logger.error(f"[CUSTOM_LLM_PIPELINE] Failed to connect STT: {e}", exc_info=True)
+                                            call_state = CallState.INIT
+                                
+                                # Start welcome TTS (non-blocking)
+                                asyncio.create_task(send_welcome())
                     
-                elif event == "media":
-                    media = data.get("media", {})
+                    elif event == "media":
+                        media = data.get("media", {})
                     if media.get("track") == "inbound":
                         # CRITICAL: Only process audio if we're in LISTENING state (STT connected, welcome complete)
                         if call_state != CallState.LISTENING:
@@ -1440,9 +1449,9 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                 await stt_client.send_audio(pcm_audio)
                             else:
                                 logger.debug(f"[CUSTOM_LLM_PIPELINE] Dropping audio: STT connected={stt_client.is_connected}, state={call_state.value}")
-                
-                elif event == "stop":
-                    logger.info("[CUSTOM_LLM_PIPELINE] Stream stopped")
+                    
+                    elif event == "stop":
+                        logger.info("[CUSTOM_LLM_PIPELINE] Stream stopped")
                     # Send remaining audio
                     while len(audio_buffer) > 0:
                         mulaw_to_convert = bytes(audio_buffer[:BUFFER_SIZE] if len(audio_buffer) >= BUFFER_SIZE else audio_buffer)
@@ -1453,10 +1462,22 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                 await stt_client.send_audio(pcm_audio)
                     break
                     
-            except json.JSONDecodeError as e:
-                logger.warning(f"[CUSTOM_LLM_PIPELINE] Failed to parse message: {e}")
-            except Exception as e:
-                logger.error(f"[CUSTOM_LLM_PIPELINE] Error processing message: {e}", exc_info=True)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"[CUSTOM_LLM_PIPELINE] Failed to parse message: {e}")
+                except Exception as e:
+                    logger.error(f"[CUSTOM_LLM_PIPELINE] Error processing message: {e}", exc_info=True)
+                    # If WebSocket was closed (by monitor_end_call), break the loop
+                    if "not connected" in str(e).lower() or "closed" in str(e).lower():
+                        logger.info("[CUSTOM_LLM_PIPELINE] WebSocket closed, exiting message loop")
+                        break
+        finally:
+            # Cancel the monitoring task if it's still running
+            if not end_call_task.done():
+                end_call_task.cancel()
+                try:
+                    await end_call_task
+                except asyncio.CancelledError:
+                    pass
         
     except WebSocketDisconnect:
         logger.info("[CUSTOM_LLM_PIPELINE] WebSocket disconnected by client")
