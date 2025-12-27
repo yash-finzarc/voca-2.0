@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langgraph.graph import END, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.voca.config import Config
 from src.voca.system_prompt import get_state_tracker_prompt
@@ -31,6 +31,27 @@ class LeadData(BaseModel):
     room_type: Optional[str] = None
     notes: Optional[str] = None
     custom_fields: Dict[str, Optional[str]] = Field(default_factory=dict)
+
+    @field_validator("custom_fields", mode="before")
+    @classmethod
+    def validate_custom_fields(cls, v):
+        """
+        Ensure custom_fields is always a dictionary, even if LLM returns a string.
+        This prevents validation errors when the LLM incorrectly formats the response.
+        """
+        if v is None:
+            return {}
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            # If LLM returns a string, return empty dict (string values should be in specific fields, not custom_fields)
+            # This prevents validation errors while maintaining data integrity
+            if v.strip():  # Only log if string is not empty
+                logger.warning(f"custom_fields received as string '{v}' instead of dict - ignoring (use service_type or other specific fields instead)")
+            return {}
+        # For any other type, return empty dict
+        logger.warning(f"custom_fields received as invalid type {type(v).__name__}, converting to empty dict")
+        return {}
 
 
 class LeadUpdate(BaseModel):
