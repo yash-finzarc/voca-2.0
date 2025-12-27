@@ -314,13 +314,17 @@ class SarvamTTSClient:
                                 break
                             
                         elif data.get("type") == "done":
-                            logger.debug("TTS generation completed")
+                            logger.info("TTS generation completed - received 'done' message from Sarvam")
                             # Notify completion callback that audio streaming is finished
                             if self.completion_callback and not self._is_cancelled:
+                                logger.debug(f"TTS completion callback present, calling it...")
                                 try:
                                     await self.completion_callback()
+                                    logger.debug("TTS completion callback executed successfully")
                                 except Exception as e:
                                     logger.error(f"Error in TTS completion callback: {e}", exc_info=True)
+                            else:
+                                logger.warning(f"TTS completion callback not called: callback={self.completion_callback is not None}, cancelled={self._is_cancelled}")
                         elif data.get("type") in ("config_ack", "ready", "ack"):
                             # Sarvam may send a config acknowledgment message
                             logger.debug(f"TTS received {data.get('type')} message - config may be acknowledged")

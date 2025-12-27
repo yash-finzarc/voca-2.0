@@ -1380,6 +1380,9 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                 async def send_welcome():
                                     """Send welcome message via persistent TTS connection."""
                                     nonlocal tts_active, call_state, welcome_complete_event
+                                    welcome_tts_complete = None
+                                    original_completion_callback = None
+                                    
                                     try:
                                         logger.info(f"[CUSTOM_LLM_PIPELINE] Sending welcome message: {welcome_message}")
                                         tts_active = True
@@ -1389,6 +1392,31 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                             logger.error("[CUSTOM_LLM_PIPELINE] TTS not connected for welcome message")
                                             tts_active = False
                                             return
+                                        
+                                        # CRITICAL: Set up completion callback BEFORE sending text
+                                        # This ensures we catch the "done" message even if it arrives quickly
+                                        welcome_tts_complete = asyncio.Event()
+                                        
+                                        # Store original completion callback
+                                        original_completion_callback = getattr(tts_client, 'completion_callback', None)
+                                        
+                                        # Temporary completion callback for welcome
+                                        async def welcome_completion():
+                                            nonlocal tts_active
+                                            logger.info("[STATE] Welcome TTS audio streaming completed")
+                                            tts_active = False
+                                            if welcome_tts_complete:
+                                                welcome_tts_complete.set()
+                                            # Also call original callback if it exists
+                                            if original_completion_callback:
+                                                try:
+                                                    await original_completion_callback()
+                                                except Exception as e:
+                                                    logger.warning(f"Error in original completion callback: {e}")
+                                        
+                                        # Set completion callback BEFORE sending text
+                                        tts_client.set_completion_callback(welcome_completion)
+                                        logger.debug("[CUSTOM_LLM_PIPELINE] Welcome completion callback set, sending text...")
                                         
                                         # Send text to persistent TTS connection
                                         # TTS will stream audio via audio_callback
@@ -1402,36 +1430,17 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                         except Exception as e:
                                             logger.warning(f"[CUSTOM_LLM_PIPELINE] Error sending flush: {e}")
                                         
-                                        # Note: tts_active will be set to False by completion_callback when TTS sends "done" message
-                                        # We need to wait for completion before connecting STT
-                                        # Use an event to wait for TTS completion (event-driven, not time-based)
-                                        welcome_tts_complete = asyncio.Event()
-                                        
-                                        # Store original completion callback
-                                        # Access the attribute directly (it's defined in the class)
-                                        original_completion_callback = getattr(tts_client, 'completion_callback', None)
-                                        
-                                        # Temporary completion callback for welcome
-                                        async def welcome_completion():
-                                            nonlocal tts_active
-                                            logger.info("[STATE] Welcome TTS audio streaming completed")
-                                            tts_active = False
-                                            welcome_tts_complete.set()
-                                            # Also call original callback if it exists
-                                            if original_completion_callback:
-                                                try:
-                                                    await original_completion_callback()
-                                                except Exception as e:
-                                                    logger.warning(f"Error in original completion callback: {e}")
-                                        
-                                        tts_client.set_completion_callback(welcome_completion)
-                                        
                                         # Wait for TTS completion (event-driven, not time-based)
+                                        logger.debug("[CUSTOM_LLM_PIPELINE] Waiting for TTS completion (done message)...")
                                         await welcome_tts_complete.wait()
+                                        logger.info("[CUSTOM_LLM_PIPELINE] Welcome TTS completion event received")
                                         
                                         # Restore original completion callback
                                         if original_completion_callback:
                                             tts_client.set_completion_callback(original_completion_callback)
+                                        else:
+                                            # Restore the main completion callback if there was no original
+                                            tts_client.set_completion_callback(tts_completion_callback)
                                         
                                         # Signal welcome completion
                                         welcome_complete_event.set()
@@ -1449,6 +1458,11 @@ async def handle_twilio_websocket(websocket: WebSocket):
                                     except Exception as e:
                                         logger.error(f"[CUSTOM_LLM_PIPELINE] Error sending welcome: {e}", exc_info=True)
                                         tts_active = False
+                                        # Restore callback on error
+                                        if original_completion_callback:
+                                            tts_client.set_completion_callback(original_completion_callback)
+                                        else:
+                                            tts_client.set_completion_callback(tts_completion_callback)
                                 
                                 # Start welcome TTS (non-blocking)
                                 asyncio.create_task(send_welcome())
