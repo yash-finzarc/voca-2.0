@@ -17,7 +17,7 @@ async def test_websocket_connection(url: str, use_ssl: bool = True):
     Test WebSocket connection to the /twilio endpoint.
     
     Args:
-        url: WebSocket URL (e.g., wss://voca2.duckdns.org/twilio)
+        url: WebSocket URL (e.g., wss://voca-2.duckdns.org/twilio)
         use_ssl: Whether to verify SSL certificate
     """
     print(f"\n{'='*60}")
@@ -168,7 +168,7 @@ async def test_websocket_connection(url: str, use_ssl: bool = True):
 async def main():
     """Main function to run WebSocket connection tests."""
     # Default URL - can be overridden via command line argument
-    default_url = "wss://voca2.duckdns.org/twilio"
+    default_url = "wss://voca-2.duckdns.org/twilio"
     
     if len(sys.argv) > 1:
         url = sys.argv[1]
@@ -190,7 +190,7 @@ async def main():
         print("\n✓ Test PASSED - WebSocket endpoint is accessible")
         print("\nNext steps:")
         print("  1. If Twilio still can't connect, check Twilio Console logs")
-        print("  2. Verify TwiML Bin URL is exactly: wss://voca2.duckdns.org/twilio")
+        print("  2. Verify TwiML Bin URL is exactly: wss://voca-2.duckdns.org/twilio")
         print("  3. Check nginx logs: sudo tail -f /var/log/nginx/error.log")
         sys.exit(0)
     else:
@@ -199,7 +199,7 @@ async def main():
         print("  1. Check if the server is running: python main.py")
         print("  2. Check nginx configuration: sudo nginx -t")
         print("  3. Check nginx logs: sudo tail -f /var/log/nginx/error.log")
-        print("  4. Verify SSL certificate: openssl s_client -connect voca2.duckdns.org:443")
+        print("  4. Verify SSL certificate: openssl s_client -connect voca-2.duckdns.org:443")
         sys.exit(1)
 
 

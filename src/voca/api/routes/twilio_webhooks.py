@@ -464,7 +464,7 @@ async def handle_incoming_call_webhook(request: Request):
 #         "status": "ok",
 #         "call_sid": call_sid,
 #         "message": "Media Streams endpoint is accessible",
-#         "websocket_url": f"wss://voca2.duckdns.org/media/{call_sid}",
+#         "websocket_url": f"wss://voca-2.duckdns.org/media/{call_sid}",
 #         "note": "WebSocket endpoint should be at /media/{call_sid}",
 #         "test_time": datetime.now(timezone.utc).isoformat()
 #     }
@@ -1085,7 +1085,7 @@ async def twilio_websocket_info():
     return JSONResponse({
         "status": "ok",
         "message": "WebSocket endpoint /twilio is registered",
-        "websocket_url": "wss://voca2.duckdns.org/twilio",
+        "websocket_url": "wss://voca-2.duckdns.org/twilio",
         "note": "Twilio should connect to this WebSocket URL from TwiML Bin"
     })
 
@@ -1096,14 +1096,16 @@ async def handle_twilio_websocket(websocket: WebSocket):
     Handle Twilio Media Streams WebSocket connection using custom LLM pipeline.
     This endpoint uses SarvamAI STT/TTS with orchestrator-based Gemini LLM.
     """
-    # Log immediately when handler is called (even before accessing websocket properties)
-    logger.info(f"[CUSTOM_LLM_PIPELINE] ===== WebSocket handler FUNCTION CALLED for /twilio =====")
+    # #region agent log
     try:
-        client_ip = websocket.client.host if websocket.client else "unknown"
-        logger.info(f"[CUSTOM_LLM_PIPELINE] ===== WebSocket connection attempt to /twilio from {client_ip} =====")
-    except Exception as e:
-        logger.error(f"[CUSTOM_LLM_PIPELINE] Error getting client IP: {e}", exc_info=True)
-        client_ip = "unknown"
+        with open(r"c:\Users\Yash\Desktop\voca-2.0\.cursor\debug.log", "a", encoding="utf-8") as f:
+            from datetime import datetime
+            entry = {"sessionId": "debug-session", "runId": "websocket-handler", "hypothesisId": "C", "location": "twilio_webhooks.py:handle_twilio_websocket:1", "message": "WebSocket handler called", "timestamp": int(datetime.now().timestamp() * 1000), "data": {"client": str(websocket.client) if websocket.client else None, "url": str(websocket.url) if hasattr(websocket, "url") else None}}
+            f.write(json.dumps(entry) + "\n")
+    except: pass
+    # #endregion
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    logger.info(f"[CUSTOM_LLM_PIPELINE] ===== WebSocket connection attempt to /twilio from {client_ip} =====")
     
     # Get SarvamAI API key
     sarvam_api_key = Config.sarvam_api_key

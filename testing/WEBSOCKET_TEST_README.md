@@ -24,12 +24,12 @@ python testing/test_websocket_connection.py
 
 ### Test with custom URL:
 ```bash
-python testing/test_websocket_connection.py wss://voca2.duckdns.org
+python testing/test_websocket_connection.py wss://voca-2.duckdns.org
 ```
 
 ### Test with custom URL and call SID:
 ```bash
-python testing/test_websocket_connection.py wss://voca2.duckdns.org CA1234567890abcdef
+python testing/test_websocket_connection.py wss://voca-2.duckdns.org CA1234567890abcdef
 ```
 
 ### Test against local server (for development):

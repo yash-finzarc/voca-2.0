@@ -39,6 +39,15 @@ app.add_middleware(
 async def log_websocket_attempts(request, call_next):
     """Log WebSocket upgrade attempts for debugging."""
     if request.url.path.startswith("/media/") or request.url.path.startswith("/webrtc/") or request.url.path == "/twilio":
+        # #region agent log
+        try:
+            with open(r"c:\Users\Yash\Desktop\voca-2.0\.cursor\debug.log", "a", encoding="utf-8") as f:
+                import json
+                from datetime import datetime
+                entry = {"sessionId": "debug-session", "runId": "websocket-middleware", "hypothesisId": "C", "location": "app.py:log_websocket_attempts:1", "message": "WebSocket upgrade attempt detected", "timestamp": int(datetime.now().timestamp() * 1000), "data": {"path": request.url.path, "method": request.method, "client": str(request.client) if request.client else None, "has_upgrade_header": "Upgrade" in request.headers, "upgrade_value": request.headers.get("Upgrade", ""), "connection_value": request.headers.get("Connection", "")}}
+                f.write(json.dumps(entry) + "\n")
+        except: pass
+        # #endregion
         logger.info(f"[WEBSOCKET_DEBUG] ===== WebSocket upgrade attempt =====")
         logger.info(f"[WEBSOCKET_DEBUG] Method: {request.method}")
         logger.info(f"[WEBSOCKET_DEBUG] Path: {request.url.path}")
@@ -46,6 +55,15 @@ async def log_websocket_attempts(request, call_next):
         logger.info(f"[WEBSOCKET_DEBUG] Headers: {dict(request.headers)}")
     response = await call_next(request)
     if request.url.path.startswith("/media/") or request.url.path.startswith("/webrtc/") or request.url.path == "/twilio":
+        # #region agent log
+        try:
+            with open(r"c:\Users\Yash\Desktop\voca-2.0\.cursor\debug.log", "a", encoding="utf-8") as f:
+                import json
+                from datetime import datetime
+                entry = {"sessionId": "debug-session", "runId": "websocket-middleware", "hypothesisId": "C", "location": "app.py:log_websocket_attempts:2", "message": "WebSocket upgrade response", "timestamp": int(datetime.now().timestamp() * 1000), "data": {"status_code": response.status_code, "has_upgrade_header": "Upgrade" in response.headers}}
+                f.write(json.dumps(entry) + "\n")
+        except: pass
+        # #endregion
         logger.info(f"[WEBSOCKET_DEBUG] Response status: {response.status_code}")
     return response
 

@@ -197,7 +197,7 @@ def main():
     if len(sys.argv) > 1:
         url = sys.argv[1]
     else:
-        url = "wss://voca2.duckdns.org"
+        url = "wss://voca-2.duckdns.org"
         print(f"ℹ️  No URL provided, using default: {url}")
         print(f"   Usage: python {sys.argv[0]} <wss://your-domain.com>")
         print()

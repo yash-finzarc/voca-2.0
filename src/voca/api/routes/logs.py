@@ -39,7 +39,7 @@ async def websocket_test_info():
     return {
         "status": "ok",
         "message": "WebSocket endpoint is registered. Use wscat or a WebSocket client to connect.",
-        "websocket_url": "wss://voca2.duckdns.org/ws/test",
+        "websocket_url": "wss://voca-2.duckdns.org/ws/test",
         "note": "If you see 405, Nginx may not be configured for WebSocket upgrades"
     }
 
