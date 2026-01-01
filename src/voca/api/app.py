@@ -38,14 +38,14 @@ app.add_middleware(
 @app.middleware("http")
 async def log_websocket_attempts(request, call_next):
     """Log WebSocket upgrade attempts for debugging."""
-    if request.url.path.startswith("/media/") or request.url.path.startswith("/webrtc/"):
+    if request.url.path.startswith("/media/") or request.url.path.startswith("/webrtc/") or request.url.path == "/twilio":
         logger.info(f"[WEBSOCKET_DEBUG] ===== WebSocket upgrade attempt =====")
         logger.info(f"[WEBSOCKET_DEBUG] Method: {request.method}")
         logger.info(f"[WEBSOCKET_DEBUG] Path: {request.url.path}")
         logger.info(f"[WEBSOCKET_DEBUG] Client: {request.client}")
         logger.info(f"[WEBSOCKET_DEBUG] Headers: {dict(request.headers)}")
     response = await call_next(request)
-    if request.url.path.startswith("/media/") or request.url.path.startswith("/webrtc/"):
+    if request.url.path.startswith("/media/") or request.url.path.startswith("/webrtc/") or request.url.path == "/twilio":
         logger.info(f"[WEBSOCKET_DEBUG] Response status: {response.status_code}")
     return response
 
@@ -95,7 +95,7 @@ async def startup_event():
     # Log Media Streams and WebRTC WebSocket routes for debugging
     logger.info("[ROUTE_DEBUG] Checking for Media Streams and WebRTC WebSocket routes:")
     for route in app.routes:
-        if hasattr(route, 'path') and ('/media/' in route.path or '/webrtc/' in route.path):
+        if hasattr(route, 'path') and ('/media/' in route.path or '/webrtc/' in route.path or route.path == '/twilio'):
             route_type = "WebSocket" if hasattr(route, 'endpoint') and 'websocket' in str(type(route)).lower() else "HTTP"
             logger.info(f"[ROUTE_DEBUG] Found route: {route.path} ({route_type})")
     
