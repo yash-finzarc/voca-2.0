@@ -1096,8 +1096,14 @@ async def handle_twilio_websocket(websocket: WebSocket):
     Handle Twilio Media Streams WebSocket connection using custom LLM pipeline.
     This endpoint uses SarvamAI STT/TTS with orchestrator-based Gemini LLM.
     """
-    client_ip = websocket.client.host if websocket.client else "unknown"
-    logger.info(f"[CUSTOM_LLM_PIPELINE] ===== WebSocket connection attempt to /twilio from {client_ip} =====")
+    # Log immediately when handler is called (even before accessing websocket properties)
+    logger.info(f"[CUSTOM_LLM_PIPELINE] ===== WebSocket handler FUNCTION CALLED for /twilio =====")
+    try:
+        client_ip = websocket.client.host if websocket.client else "unknown"
+        logger.info(f"[CUSTOM_LLM_PIPELINE] ===== WebSocket connection attempt to /twilio from {client_ip} =====")
+    except Exception as e:
+        logger.error(f"[CUSTOM_LLM_PIPELINE] Error getting client IP: {e}", exc_info=True)
+        client_ip = "unknown"
     
     # Get SarvamAI API key
     sarvam_api_key = Config.sarvam_api_key
