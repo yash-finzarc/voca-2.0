@@ -23,6 +23,26 @@ if sys.platform == 'win32':
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
 
 
+LOG_PATH = r"c:\Users\Yash\Desktop\voca-2.0\.cursor\debug.log"
+
+def log_debug(hypothesis_id, location, message, data=None):
+    """Write debug log entry."""
+    try:
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            import json
+            entry = {
+                "sessionId": "debug-session",
+                "runId": "websocket-test",
+                "hypothesisId": hypothesis_id,
+                "location": location,
+                "message": message,
+                "timestamp": int(datetime.now().timestamp() * 1000),
+                "data": data or {}
+            }
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        print(f"Failed to write log: {e}")
+
 async def test_websocket_connection(url: str, use_ssl: bool = True):
     """
     Test WebSocket connection to the /twilio endpoint.
@@ -31,6 +51,10 @@ async def test_websocket_connection(url: str, use_ssl: bool = True):
         url: WebSocket URL (e.g., wss://voca-2.duckdns.org/twilio)
         use_ssl: Whether to verify SSL certificate
     """
+    # #region agent log
+    log_debug("A", "test_websocket_connection:1", "Starting WebSocket connection test", {"url": url, "use_ssl": use_ssl})
+    # #endregion
+    
     print(f"\n{'='*60}")
     print(f"Testing WebSocket Connection")
     print(f"{'='*60}")
@@ -42,6 +66,38 @@ async def test_websocket_connection(url: str, use_ssl: bool = True):
     print(f"SSL Verification: {'Enabled' if (use_ssl and is_secure) else 'Disabled'}")
     print(f"Time: {datetime.now().isoformat()}")
     print(f"{'='*60}\n")
+    
+    # Extract host and port from URL
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if is_secure else 80)
+    
+    # #region agent log
+    log_debug("B", "test_websocket_connection:2", "Parsed URL components", {"host": host, "port": port, "path": parsed.path})
+    # #endregion
+    
+    # Test basic TCP connectivity to port 443 first (Hypothesis B, D)
+    # #region agent log
+    log_debug("B", "test_websocket_connection:3", "Testing TCP socket connection", {"host": host, "port": port})
+    # #endregion
+    try:
+        import socket
+        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_socket.settimeout(5)
+        result = test_socket.connect_ex((host, port))
+        test_socket.close()
+        # #region agent log
+        log_debug("B", "test_websocket_connection:4", "TCP socket test result", {"result": result, "success": result == 0, "error_code": result})
+        # #endregion
+        if result != 0:
+            print(f"[WARN] TCP connection to {host}:{port} failed (error code: {result})")
+            print(f"  -> Port may not be open or firewall is blocking")
+    except Exception as e:
+        # #region agent log
+        log_debug("B", "test_websocket_connection:5", "TCP socket test exception", {"error": str(e)})
+        # #endregion
+        print(f"[WARN] TCP socket test failed: {e}")
     
     # SSL context - only use for wss:// URLs
     ssl_context = None
@@ -58,6 +114,9 @@ async def test_websocket_connection(url: str, use_ssl: bool = True):
     
     try:
         print("1. Attempting to connect to WebSocket...")
+        # #region agent log
+        log_debug("C", "test_websocket_connection:6", "Attempting WebSocket connection", {"host": host, "port": port, "path": parsed.path})
+        # #endregion
         async with websockets.connect(
             url,
             ssl=ssl_context,
@@ -66,6 +125,9 @@ async def test_websocket_connection(url: str, use_ssl: bool = True):
             close_timeout=10,
             open_timeout=30  # Increased timeout for connection
         ) as websocket:
+            # #region agent log
+            log_debug("C", "test_websocket_connection:7", "WebSocket connection established", {"remote_address": str(websocket.remote_address) if hasattr(websocket, 'remote_address') else None})
+            # #endregion
             print("   [OK] WebSocket connection established!")
             print(f"   Connection state: {websocket.state}")
             print(f"   Remote address: {websocket.remote_address}")
@@ -165,6 +227,9 @@ async def test_websocket_connection(url: str, use_ssl: bool = True):
         print(f"  -> Try with --no-ssl-verify flag")
         return False
     except OSError as e:
+        # #region agent log
+        log_debug("D", "test_websocket_connection:8", "OSError during connection", {"error": str(e), "error_type": type(e).__name__, "errno": getattr(e, 'errno', None), "winerror": getattr(e, 'winerror', None)})
+        # #endregion
         print(f"\n[FAIL] Network error: {e}")
         print("  -> Cannot reach the server - check network/firewall/DNS")
         return False
