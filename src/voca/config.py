@@ -40,4 +40,8 @@ class Config:
     llm_temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
     llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "500"))
     llm_retries: int = int(os.getenv("LLM_RETRIES", "3"))
+    
+    # Ultravox
+    ultravox_api_key: str = os.getenv("ULTRAVOX_API_KEY", "")
+    ultravox_ws_endpoint: str = os.getenv("ULTRAVOX_WS_ENDPOINT", "wss://api.ultravox.ai/api/calls")
 
