@@ -308,15 +308,43 @@ class UltravoxSession:
             self._websocket = await connect(self._join_url)
             logger.info("Connected to Ultravox WebSocket")
             
+            # Wait a moment for connection to stabilize
+            await asyncio.sleep(0.1)
+            
             self._set_status(UltravoxSessionStatus.IDLE)
+            
+            # Log WebSocket state
+            logger.info(f"[ULTRAVOX] WebSocket state: open={self._websocket.open if hasattr(self._websocket, 'open') else 'unknown'}")
+            logger.info("[ULTRAVOX] Starting message receive loop...")
+            
+            # Start a heartbeat task to confirm loop is running
+            async def heartbeat():
+                heartbeat_count = 0
+                while not self._stop_event.is_set():
+                    await asyncio.sleep(5)
+                    heartbeat_count += 1
+                    if not self._stop_event.is_set():
+                        logger.info(f"[ULTRAVOX] Heartbeat #{heartbeat_count}: Receive loop is active, waiting for messages... (status: {self._status.value})")
+            
+            heartbeat_task = asyncio.create_task(heartbeat())
             
             # Receive messages
             message_count = 0
+            last_message_time = None
+            loop_start_time = asyncio.get_event_loop().time()
+            
             async for message in self._websocket:
                 if self._stop_event.is_set():
+                    logger.info("[ULTRAVOX] Stop event set, breaking receive loop")
                     break
                 
                 message_count += 1
+                last_message_time = asyncio.get_event_loop().time()
+                elapsed = last_message_time - loop_start_time
+                
+                # Log that we received something
+                if message_count <= 5 or message_count % 50 == 0:
+                    logger.info(f"[ULTRAVOX] ✓ Received message #{message_count} after {elapsed:.2f}s (type: {type(message).__name__}, len: {len(message) if hasattr(message, '__len__') else 'N/A'})")
                 
                 try:
                     # Handle binary audio data
@@ -329,13 +357,13 @@ class UltravoxSession:
                                 else:
                                     self._audio_output_callback(message)
                                 
-                                # Log first few audio messages
-                                if message_count <= 3:
+                                # Log first few audio messages and periodically
+                                if message_count <= 5 or message_count % 100 == 0:
                                     logger.info(f"[ULTRAVOX] ✓ Received binary audio message #{message_count}: {len(message)} bytes → sent to callback")
                             except Exception as e:
                                 logger.error(f"[ULTRAVOX] Error in audio output callback for binary: {e}", exc_info=True)
                         else:
-                            if message_count <= 3:
+                            if message_count <= 5:
                                 logger.warning(f"[ULTRAVOX] Received binary audio but callback not set or muted: callback={self._audio_output_callback is not None}, muted={self._speaker_muted}, bytes={len(message)}")
                         continue
                     
@@ -345,9 +373,9 @@ class UltravoxSession:
                     else:
                         data = json.loads(message.decode('utf-8'))
                     
-                    # Log first few messages for debugging
-                    if message_count <= 10:
-                        logger.info(f"[ULTRAVOX] Received message #{message_count}: {json.dumps(data)[:200]}")
+                    # Log first few messages and periodically for debugging
+                    if message_count <= 10 or message_count % 50 == 0:
+                        logger.info(f"[ULTRAVOX] Received JSON message #{message_count}: {json.dumps(data)[:300]}")
                     
                     await self._handle_message(data)
                 except json.JSONDecodeError as e:
@@ -356,11 +384,30 @@ class UltravoxSession:
                     logger.error(f"[ULTRAVOX] Error handling message #{message_count}: {e}", exc_info=True)
         
         except asyncio.CancelledError:
-            logger.info("WebSocket receive task cancelled")
+            elapsed = asyncio.get_event_loop().time() - loop_start_time if 'loop_start_time' in locals() else 0
+            logger.info(f"[ULTRAVOX] WebSocket receive task cancelled after {elapsed:.2f}s (processed {message_count} messages)")
         except Exception as e:
-            logger.error(f"Error in WebSocket connection: {e}", exc_info=True)
+            elapsed = asyncio.get_event_loop().time() - loop_start_time if 'loop_start_time' in locals() else 0
+            logger.error(f"[ULTRAVOX] Error in WebSocket connection after {elapsed:.2f}s: {e}", exc_info=True)
+            logger.error(f"[ULTRAVOX] Processed {message_count} messages before error")
             self._set_status(UltravoxSessionStatus.DISCONNECTED)
         finally:
+            # Cancel heartbeat task
+            if 'heartbeat_task' in locals():
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+            
+            elapsed = asyncio.get_event_loop().time() - loop_start_time if 'loop_start_time' in locals() else 0
+            logger.info(f"[ULTRAVOX] Receive loop ended after {elapsed:.2f}s (total messages: {message_count})")
+            if message_count == 0:
+                logger.warning("[ULTRAVOX] ⚠️  WARNING: No messages received from Ultravox WebSocket!")
+                logger.warning("[ULTRAVOX] This could indicate:")
+                logger.warning("[ULTRAVOX]   1. Ultravox is not sending messages")
+                logger.warning("[ULTRAVOX]   2. WebSocket protocol mismatch")
+                logger.warning("[ULTRAVOX]   3. Connection issue")
             if self._websocket:
                 try:
                     await self._websocket.close()
