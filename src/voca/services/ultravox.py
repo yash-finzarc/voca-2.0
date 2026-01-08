@@ -350,6 +350,9 @@ class UltravoxSession:
             self._websocket = await connect(self._join_url)
             logger.info("Connected to Ultravox WebSocket")
             
+            # CRITICAL: Send START event with audio config (required for telephony)
+            await self._send_start_event()
+            
             # Wait a moment for connection to stabilize
             await asyncio.sleep(0.1)
             
@@ -645,6 +648,36 @@ class UltravoxSession:
             await self._websocket.send(json.dumps(message))
         except Exception as e:
             logger.error(f"Error sending message: {e}")
+    
+    async def _send_start_event(self):
+        """
+        Send START event to Ultravox with audio configuration.
+        
+        This is REQUIRED for telephony mode - Ultravox needs to know:
+        - Audio encoding (PCM 16-bit little-endian)
+        - Sample rate (8000 Hz for Twilio)
+        - Channel count (mono = 1)
+        
+        Without this, Ultravox will not process incoming audio.
+        """
+        if not self._websocket:
+            logger.warning("[ULTRAVOX] Cannot send START event: WebSocket not connected")
+            return
+        
+        start_msg = {
+            "type": "start",
+            "audio": {
+                "encoding": "pcm_s16le",
+                "sample_rate": 8000,
+                "channels": 1
+            }
+        }
+        
+        try:
+            await self._websocket.send(json.dumps(start_msg))
+            logger.info("[ULTRAVOX] ✓ Sent START event (audio config: PCM 16-bit, 8kHz, mono)")
+        except Exception as e:
+            logger.error(f"[ULTRAVOX] ❌ Failed to send START event: {e}", exc_info=True)
     
     async def send_audio(self, audio_data: bytes):
         """
