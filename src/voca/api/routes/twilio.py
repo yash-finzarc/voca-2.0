@@ -315,7 +315,7 @@ async def get_twilio_call_status_summary(
                 duration_seconds = None
             
             record = CallRecord(
-                sid=call.sid,
+                call_sid=call.sid,
                 status=call.status,
                 from_number=from_number,
                 to_number=call.to if hasattr(call, 'to') else None,
@@ -341,7 +341,8 @@ async def get_twilio_call_status_summary(
             others=others,
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch call history: {exc}") from exc
+        logger.error(f"Failed to fetch call history: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch call history: {str(exc)}") from exc
 
 
 @router.get("/configured", response_model=Dict[str, bool])
