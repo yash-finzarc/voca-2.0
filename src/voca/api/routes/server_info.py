@@ -2,8 +2,6 @@ from typing import Dict, Any
 
 from fastapi import APIRouter
 
-from src.voca.api.state import app_state
-
 router = APIRouter()
 
 
