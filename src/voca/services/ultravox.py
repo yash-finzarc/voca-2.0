@@ -1,714 +1,645 @@
+"""
+Ultravox Client SDK implementation for Python.
+
+This module implements the complete Ultravox SDK according to the official documentation,
+including REST API client for creating calls and WebSocket client for joining calls.
+"""
 import asyncio
 import json
 import logging
 import base64
 import websockets
 from websockets.legacy.client import connect
-from typing import Callable, Dict, Any, Optional
-from urllib.parse import urlencode
-import re
-
-import os
+from typing import Callable, Dict, Any, Optional, List
+from enum import Enum
 import httpx
-from twilio.rest import Client
 from src.voca.config import Config
 from src.voca.system_prompt import get_prompt
-from src.voca.Twilio.twilio_config import get_twilio_config
 
 logger = logging.getLogger(__name__)
 
-# Ultravox configuration (hardcoded as per plan)
-ULTRAVOX_MODEL = "ultravox-v0.7"
-ULTRAVOX_VOICE = "Riya-Hindi-Urdu"
-ULTRAVOX_VOICE_ID = "c2c5cce4-72ec-4d8b-8cdb-f8a0f6610bd1"
-ULTRAVOX_TEMPERATURE = 0.3
-ULTRAVOX_LANGUAGE = "hi-IN"
-ULTRAVOX_MEDIUM = "twilio"
-
-# WebSocket endpoint for Ultravox Realtime API
-# You can override this by setting ULTRAVOX_WS_ENDPOINT environment variable
-ULTRAVOX_WS_ENDPOINT = os.getenv("ULTRAVOX_WS_ENDPOINT", "wss://api.ultravox.ai/api/calls")
-
-# HTTP endpoint for creating calls (used to obtain joinUrl for Twilio <Stream>)
+# Ultravox API endpoints
 ULTRAVOX_API_URL = "https://api.ultravox.ai/api/calls"
-
-# Default backend WebSocket URL for Twilio Media Streams
-DEFAULT_BACKEND_WEBSOCKET_URL = "wss://voca2.duckdns.org/twilio"
+ULTRAVOX_WS_ENDPOINT = Config.ultravox_ws_endpoint or "wss://api.ultravox.ai/api/calls"
 
 
-def validate_phone_number(phone_number: str) -> bool:
-    """
-    Validate phone number format (E.164).
+class UltravoxSessionStatus(Enum):
+    """Session status enum matching Ultravox SDK."""
+    DISCONNECTED = "disconnected"
+    DISCONNECTING = "disconnecting"
+    CONNECTING = "connecting"
+    IDLE = "idle"
+    LISTENING = "listening"
+    THINKING = "thinking"
+    SPEAKING = "speaking"
+
+
+class Medium(Enum):
+    """Output medium enum."""
+    TEXT = "text"
+    VOICE = "voice"
+
+
+class Role(Enum):
+    """Speaker role enum."""
+    USER = "user"
+    AGENT = "agent"
+
+
+class Transcript:
+    """Transcript object matching Ultravox SDK format."""
+    def __init__(self, text: str, is_final: bool, speaker: str, medium: str):
+        self.text = text
+        self.isFinal = is_final
+        self.speaker = speaker
+        self.medium = medium
     
-    Args:
-        phone_number: Phone number to validate
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "text": self.text,
+            "isFinal": self.isFinal,
+            "speaker": self.speaker,
+            "medium": self.medium
+        }
+
+
+class UltravoxSession:
+    """
+    Ultravox Session class implementing the complete SDK.
+    
+    This class provides all SDK methods as documented:
+    - joinCall, leaveCall
+    - sendText, setOutputMedium
+    - registerToolImplementation, registerToolImplementations
+    - muteMic, unmuteMic, muteSpeaker, unmuteSpeaker
+    - isMicMuted, isSpeakerMuted
+    - Status and transcript event listeners
+    """
+    
+    def __init__(self, api_key: str, organization_id: Optional[str] = None, 
+                 experimental_messages: Optional[List[str]] = None):
+        """
+        Initialize Ultravox session.
         
-    Returns:
-        True if valid E.164 format, False otherwise
-    """
-    pattern = r'^\+[1-9]\d{1,14}$'
-    return bool(re.match(pattern, phone_number))
-
-
-def validate_twilio_account_sid(account_sid: str) -> bool:
-    """
-    Validate Twilio Account SID format.
-    
-    Args:
-        account_sid: Account SID to validate
+        Args:
+            api_key: Ultravox API key
+            organization_id: Optional organization ID for fetching system prompt
+            experimental_messages: Optional list of experimental message types (e.g., ["debug"])
+        """
+        self.api_key = api_key
+        self.organization_id = organization_id
+        self.experimental_messages = experimental_messages or []
         
-    Returns:
-        True if valid format (starts with "AC", 34 chars), False otherwise
-    """
-    return bool(account_sid and account_sid.startswith("AC") and len(account_sid) == 34)
-
-
-def validate_twilio_auth_token(auth_token: str) -> bool:
-    """
-    Validate Twilio Auth Token format.
-    
-    Args:
-        auth_token: Auth token to validate
+        # Session state
+        self._status = UltravoxSessionStatus.DISCONNECTED
+        self._websocket: Optional[websockets.WebSocketClientProtocol] = None
+        self._join_url: Optional[str] = None
+        self._client_version: Optional[str] = None
+        self._receive_task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
         
-    Returns:
-        True if valid format (32 chars), False otherwise
-    """
-    return bool(auth_token and len(auth_token) == 32)
-
-
-def validate_ultravox_api_key(api_key: str) -> bool:
-    """
-    Validate Ultravox API key format (basic check).
-    
-    Args:
-        api_key: API key to validate
+        # Mute state
+        self._mic_muted = False
+        self._speaker_muted = False
         
-    Returns:
-        True if not empty, False otherwise
-    """
-    return bool(api_key and api_key.strip() and len(api_key.strip()) > 0)
-
-
-def create_ultravox_client(api_key: str, organization_id: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Initialize Ultravox client with configuration.
+        # Output medium
+        self._output_medium = Medium.VOICE
+        
+        # Tool implementations
+        self._tool_implementations: Dict[str, Callable] = {}
+        
+        # Transcripts
+        self._transcripts: List[Transcript] = []
+        
+        # Event listeners
+        self._status_listeners: List[Callable] = []
+        self._transcript_listeners: List[Callable] = []
+        self._experimental_message_listeners: List[Callable] = []
+        
+        # Audio callbacks
+        self._audio_output_callback: Optional[Callable[[bytes], None]] = None
+        self._transcript_callback: Optional[Callable[[str, bool], None]] = None
     
-    Args:
-        api_key: Ultravox API key
-        organization_id: Optional organization ID for fetching system prompt
+    @property
+    def status(self) -> str:
+        """Get current session status."""
+        return self._status.value
     
-    Returns:
-        Client dictionary with configuration and state
-    """
-    # Fetch system prompt from Supabase
-    try:
-        system_prompt = get_prompt(organization_id=organization_id)
-        logger.info("System prompt fetched from Supabase successfully")
-    except Exception as e:
-        logger.warning(f"Failed to fetch system prompt from Supabase: {e}, using default")
-        system_prompt = "You are a helpful assistant."
+    @property
+    def transcripts(self) -> List[Dict[str, Any]]:
+        """Get transcripts array."""
+        return [t.to_dict() for t in self._transcripts]
     
-    return {
-        "api_key": api_key,
-        "organization_id": organization_id,
-        "system_prompt": system_prompt,
-        "config": {
-            "model": ULTRAVOX_MODEL,
-            "voice": ULTRAVOX_VOICE,
-            "voice_id": ULTRAVOX_VOICE_ID,
-            "temperature": ULTRAVOX_TEMPERATURE,
-            "language": ULTRAVOX_LANGUAGE,
-            "medium": ULTRAVOX_MEDIUM,
-            "first_speaker": {
-                "user": {}
+    def _set_status(self, new_status: UltravoxSessionStatus):
+        """Set status and emit status event."""
+        if self._status != new_status:
+            old_status = self._status
+            self._status = new_status
+            logger.debug(f"Status changed: {old_status.value} -> {new_status.value}")
+            # Emit status event
+            for listener in self._status_listeners:
+                try:
+                    if asyncio.iscoroutinefunction(listener):
+                        asyncio.create_task(listener(None))
+                    else:
+                        listener(None)
+                except Exception as e:
+                    logger.error(f"Error in status listener: {e}")
+    
+    def addEventListener(self, event_type: str, callback: Callable):
+        """
+        Add event listener.
+        
+        Args:
+            event_type: Event type ('status', 'transcripts', 'experimental_message')
+            callback: Callback function
+        """
+        if event_type == 'status':
+            self._status_listeners.append(callback)
+        elif event_type == 'transcripts':
+            self._transcript_listeners.append(callback)
+        elif event_type == 'experimental_message':
+            self._experimental_message_listeners.append(callback)
+        else:
+            logger.warning(f"Unknown event type: {event_type}")
+    
+    def joinCall(self, join_url: str, client_version: Optional[str] = None):
+        """
+        Join a call via WebSocket.
+        
+        Args:
+            join_url: The joinUrl returned from Create Call request
+            client_version: Optional string for application version tracking
+        """
+        if self._status != UltravoxSessionStatus.DISCONNECTED:
+            logger.warning(f"Cannot join call: already in status {self._status.value}")
+            return
+        
+        self._join_url = join_url
+        self._client_version = client_version
+        self._set_status(UltravoxSessionStatus.CONNECTING)
+        
+        # Start connection task
+        self._receive_task = asyncio.create_task(self._connect_and_receive())
+    
+    async def leaveCall(self):
+        """Leave the current call."""
+        if self._status == UltravoxSessionStatus.DISCONNECTED:
+            return
+        
+        self._set_status(UltravoxSessionStatus.DISCONNECTING)
+        self._stop_event.set()
+        
+        # Close WebSocket
+        if self._websocket:
+            try:
+                await self._websocket.close()
+            except Exception as e:
+                logger.error(f"Error closing WebSocket: {e}")
+        
+        # Cancel receive task
+        if self._receive_task and not self._receive_task.done():
+            self._receive_task.cancel()
+            try:
+                await self._receive_task
+            except asyncio.CancelledError:
+                pass
+        
+        self._websocket = None
+        self._set_status(UltravoxSessionStatus.DISCONNECTED)
+        logger.info("Left call successfully")
+    
+    def sendText(self, text: str, defer_response: Optional[bool] = False):
+        """
+        Send a text message to the agent.
+        
+        Args:
+            text: The message to send to the agent
+            defer_response: Set to True to skip LLM generation (agent won't reply)
+        """
+        if not self._websocket or self._status == UltravoxSessionStatus.DISCONNECTED:
+            logger.warning("Cannot send text: not connected")
+            return
+        
+        message = {
+            "type": "text",
+            "text": text,
+            "deferResponse": defer_response
+        }
+        
+        asyncio.create_task(self._send_message(message))
+    
+    def setOutputMedium(self, medium: str):
+        """
+        Set the agent's output medium for future utterances.
+        
+        Args:
+            medium: How replies are communicated. Must be either 'text' or 'voice'
+        """
+        if medium not in ["text", "voice"]:
+            raise ValueError(f"Invalid medium: {medium}. Must be 'text' or 'voice'")
+        
+        self._output_medium = Medium.TEXT if medium == "text" else Medium.VOICE
+        
+        if not self._websocket or self._status == UltravoxSessionStatus.DISCONNECTED:
+            return
+        
+        message = {
+            "type": "set_output_medium",
+            "medium": medium
+        }
+        
+        asyncio.create_task(self._send_message(message))
+    
+    def registerToolImplementation(self, name: str, implementation: Callable):
+        """
+        Register a client tool implementation.
+        
+        Args:
+            name: The name of the tool (must match selectedTools during Create Call)
+            implementation: Function that implements the tool's logic
+        """
+        self._tool_implementations[name] = implementation
+        logger.debug(f"Registered tool implementation: {name}")
+    
+    def registerToolImplementations(self, implementation_map: Dict[str, Callable]):
+        """
+        Convenience batch wrapper for registerToolImplementation.
+        
+        Args:
+            implementation_map: Object where keys are tool names and values are implementations
+        """
+        for name, implementation in implementation_map.items():
+            self.registerToolImplementation(name, implementation)
+    
+    def isMicMuted(self) -> bool:
+        """Returns a boolean indicating if the end user's microphone is muted."""
+        return self._mic_muted
+    
+    def isSpeakerMuted(self) -> bool:
+        """Returns a boolean indicating if the speaker (the agent's voice output) is muted."""
+        return self._speaker_muted
+    
+    def muteMic(self):
+        """Mutes the end user's microphone."""
+        self._mic_muted = True
+        logger.debug("Microphone muted")
+    
+    def unmuteMic(self):
+        """Unmutes the end user's microphone."""
+        self._mic_muted = False
+        logger.debug("Microphone unmuted")
+    
+    def muteSpeaker(self):
+        """Mutes the end user's speaker (the agent's voice output)."""
+        self._speaker_muted = True
+        logger.debug("Speaker muted")
+    
+    def unmuteSpeaker(self):
+        """Unmutes the end user's speaker (the agent's voice output)."""
+        self._speaker_muted = False
+        logger.debug("Speaker unmuted")
+    
+    async def _connect_and_receive(self):
+        """Connect to WebSocket and receive messages."""
+        try:
+            # Connect to WebSocket
+            logger.info(f"Connecting to Ultravox WebSocket: {self._join_url}")
+            self._websocket = await connect(self._join_url)
+            logger.info("Connected to Ultravox WebSocket")
+            
+            self._set_status(UltravoxSessionStatus.IDLE)
+            
+            # Receive messages
+            async for message in self._websocket:
+                if self._stop_event.is_set():
+                    break
+                
+                try:
+                    if isinstance(message, str):
+                        data = json.loads(message)
+                    else:
+                        data = json.loads(message.decode('utf-8'))
+                    
+                    await self._handle_message(data)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse message: {e}")
+                except Exception as e:
+                    logger.error(f"Error handling message: {e}", exc_info=True)
+        
+        except asyncio.CancelledError:
+            logger.info("WebSocket receive task cancelled")
+        except Exception as e:
+            logger.error(f"Error in WebSocket connection: {e}", exc_info=True)
+            self._set_status(UltravoxSessionStatus.DISCONNECTED)
+        finally:
+            if self._websocket:
+                try:
+                    await self._websocket.close()
+                except Exception:
+                    pass
+            self._websocket = None
+    
+    async def _handle_message(self, data: Dict[str, Any]):
+        """Handle incoming WebSocket message."""
+        msg_type = data.get("type")
+        
+        if msg_type == "status":
+            status_str = data.get("status", "").lower()
+            status_map = {
+                "disconnected": UltravoxSessionStatus.DISCONNECTED,
+                "disconnecting": UltravoxSessionStatus.DISCONNECTING,
+                "connecting": UltravoxSessionStatus.CONNECTING,
+                "idle": UltravoxSessionStatus.IDLE,
+                "listening": UltravoxSessionStatus.LISTENING,
+                "thinking": UltravoxSessionStatus.THINKING,
+                "speaking": UltravoxSessionStatus.SPEAKING,
             }
-        },
-        "websocket": None,
-        "is_connected": False,
-        "audio_input_callback": None,
-        "audio_output_callback": None,
-        "transcript_callback": None,
-        "_receive_task": None,
-        "_stop_event": asyncio.Event()
-    }
+            if status_str in status_map:
+                self._set_status(status_map[status_str])
+        
+        elif msg_type == "transcript":
+            text = data.get("text", "")
+            is_final = data.get("isFinal", False)
+            speaker = data.get("speaker", "user")
+            medium = data.get("medium", "voice")
+            
+            transcript = Transcript(text, is_final, speaker, medium)
+            self._transcripts.append(transcript)
+            
+            # Emit transcript event
+            for listener in self._transcript_listeners:
+                try:
+                    if asyncio.iscoroutinefunction(listener):
+                        asyncio.create_task(listener(None))
+                    else:
+                        listener(None)
+                except Exception as e:
+                    logger.error(f"Error in transcript listener: {e}")
+            
+            # Call transcript callback if set
+            if self._transcript_callback:
+                try:
+                    if asyncio.iscoroutinefunction(self._transcript_callback):
+                        await self._transcript_callback(text, is_final)
+                    else:
+                        self._transcript_callback(text, is_final)
+                except Exception as e:
+                    logger.error(f"Error in transcript callback: {e}")
+        
+        elif msg_type == "audio":
+            # Handle audio data
+            audio_data = data.get("audio")
+            if audio_data:
+                try:
+                    # Decode base64 audio
+                    audio_bytes = base64.b64decode(audio_data)
+                    
+                    # Call audio output callback if set
+                    if self._audio_output_callback and not self._speaker_muted:
+                        try:
+                            if asyncio.iscoroutinefunction(self._audio_output_callback):
+                                await self._audio_output_callback(audio_bytes)
+                            else:
+                                self._audio_output_callback(audio_bytes)
+                        except Exception as e:
+                            logger.error(f"Error in audio output callback: {e}")
+                except Exception as e:
+                    logger.error(f"Error decoding audio: {e}")
+        
+        elif msg_type == "tool_call":
+            # Handle tool call
+            tool_name = data.get("tool_name")
+            parameters = data.get("parameters", {})
+            invocation_id = data.get("invocation_id")
+            
+            if tool_name in self._tool_implementations:
+                try:
+                    implementation = self._tool_implementations[tool_name]
+                    result = implementation(parameters)
+                    
+                    # Handle async results
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    
+                    # Handle result format (string or object with result and responseType)
+                    if isinstance(result, str):
+                        result_text = result
+                        response_type = None
+                    elif isinstance(result, dict):
+                        result_text = result.get("result", "")
+                        response_type = result.get("responseType")
+                    else:
+                        result_text = str(result)
+                        response_type = None
+                    
+                    # Send tool result back
+                    await self._send_message({
+                        "type": "tool_result",
+                        "invocation_id": invocation_id,
+                        "result": result_text,
+                        "responseType": response_type
+                    })
+                except Exception as e:
+                    logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
+                    await self._send_message({
+                        "type": "tool_result",
+                        "invocation_id": invocation_id,
+                        "result": f"Error: {str(e)}"
+                    })
+            else:
+                logger.warning(f"Tool {tool_name} not registered")
+        
+        elif msg_type == "experimental_message":
+            # Handle debug/experimental messages
+            if "debug" in self.experimental_messages:
+                for listener in self._experimental_message_listeners:
+                    try:
+                        if asyncio.iscoroutinefunction(listener):
+                            asyncio.create_task(listener(data))
+                        else:
+                            listener(data)
+                    except Exception as e:
+                        logger.error(f"Error in experimental message listener: {e}")
+        
+        else:
+            logger.debug(f"Unhandled message type: {msg_type}")
+    
+    async def _send_message(self, message: Dict[str, Any]):
+        """Send message to WebSocket."""
+        if not self._websocket:
+            logger.warning("Cannot send message: WebSocket not connected")
+            return
+        
+        try:
+            await self._websocket.send(json.dumps(message))
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+    
+    async def send_audio(self, audio_data: bytes):
+        """
+        Send audio data to Ultravox.
+        
+        Args:
+            audio_data: PCM audio data (16-bit, 8kHz)
+        """
+        if not self._websocket or self._mic_muted:
+            return
+        
+        # Encode audio as base64
+        audio_b64 = base64.b64encode(audio_data).decode('ascii')
+        
+        await self._send_message({
+            "type": "audio",
+            "audio": audio_b64
+        })
 
 
 async def create_ultravox_call(
     api_key: str,
     organization_id: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None,
     first_speaker_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create an Ultravox call via HTTP POST and return the call payload (expects joinUrl).
 
-    This matches the JavaScript pattern:
-    - POST https://api.ultravox.ai/api/calls
-    - Header: X-API-Key
-    - Body: { systemPrompt, model, voice, temperature, firstSpeaker/firstSpeakerSettings, medium: { twilio: {} } }
-
     Args:
         api_key: Ultravox API key
         organization_id: Optional organization ID for fetching system prompt
-        config: Optional full config dict (if provided, used as-is)
         first_speaker_settings: Optional dict for firstSpeakerSettings (e.g., {"user": {}} for outgoing calls)
             If provided, this will be used instead of default "FIRST_SPEAKER_AGENT"
+
+    Returns:
+        Dict containing call information including joinUrl
     """
     if not api_key or not api_key.strip():
         raise ValueError("Ultravox API key is empty or not set")
 
-    api_key_clean = api_key.strip()
+    # Fetch system prompt
+    try:
+        system_prompt = get_prompt(organization_id=organization_id)
+        logger.info("System prompt fetched successfully")
+    except Exception as e:
+        logger.warning(f"Failed to fetch system prompt: {e}, using default")
+        system_prompt = "You are a helpful assistant."
 
-    if config is None:
-        # Fetch system prompt from Supabase
-        try:
-            system_prompt = get_prompt(organization_id=organization_id)
-            logger.info("System prompt fetched from Supabase successfully")
-        except Exception as e:
-            logger.warning(f"Failed to fetch system prompt from Supabase: {e}, using default")
-            system_prompt = "You are a helpful assistant."
-
-        config = {
-            "systemPrompt": system_prompt,
-            "model": ULTRAVOX_MODEL,
-            "voice": ULTRAVOX_VOICE,
-            "temperature": ULTRAVOX_TEMPERATURE,
-            "medium": {"twilio": {}},
-        }
-        
-        # Set firstSpeaker or firstSpeakerSettings based on parameter
-        if first_speaker_settings is not None:
-            # Use firstSpeakerSettings for outgoing calls (user speaks first)
-            config["firstSpeakerSettings"] = first_speaker_settings
-        else:
-            # Default: agent speaks first
-            config["firstSpeaker"] = "FIRST_SPEAKER_AGENT"
+    # Build config dictionary with model values directly in the dict
+    ULTRAVOX_CALL_CONFIG = {
+        "systemPrompt": system_prompt,
+        "model": "fixie-ai/ultravox",
+        "voice": "Mark",
+        "temperature": 0.3,
+        "firstSpeaker": "FIRST_SPEAKER_AGENT" if first_speaker_settings is None else None,
+        "firstSpeakerSettings": first_speaker_settings if first_speaker_settings is not None else None,
+        "medium": {"twilio": {}}
+    }
+    
+    # Remove None values
+    ULTRAVOX_CALL_CONFIG = {k: v for k, v in ULTRAVOX_CALL_CONFIG.items() if v is not None}
 
     headers = {
         "Content-Type": "application/json",
-        "X-API-Key": api_key_clean,
+        "X-API-Key": api_key.strip(),
     }
 
-    logger.info(f"Creating Ultravox call via HTTP POST → {ULTRAVOX_API_URL}")
-    logger.debug(
-        "Ultravox call config: model=%s voice=%s temperature=%s",
-        config.get("model"),
-        config.get("voice"),
-        config.get("temperature"),
-    )
+    logger.info(f"Creating Ultravox call via HTTP POST to {ULTRAVOX_API_URL}")
+    logger.debug(f"Ultravox call config: model={ULTRAVOX_CALL_CONFIG.get('model')} voice={ULTRAVOX_CALL_CONFIG.get('voice')} temperature={ULTRAVOX_CALL_CONFIG.get('temperature')}")
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(ULTRAVOX_API_URL, json=config, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-
-        if not isinstance(data, dict):
-            raise RuntimeError("Ultravox call creation returned non-object JSON")
-
-        if not data.get("joinUrl"):
-            # Don’t hard fail on schema drift, but surface it clearly.
-            raise RuntimeError(f"Ultravox call creation response missing joinUrl: keys={list(data.keys())}")
-
-        return data
-
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                ULTRAVOX_API_URL,
+                json=ULTRAVOX_CALL_CONFIG,
+                headers=headers,
+                timeout=30.0
+            )
+            response.raise_for_status()
+            result = response.json()
+            logger.info("Ultravox call created successfully")
+            return result
     except httpx.HTTPStatusError as e:
-        logger.error(f"Ultravox call creation failed with HTTP {e.response.status_code}")
-        logger.error(f"Response: {e.response.text}")
+        logger.error(f"HTTP error creating Ultravox call: {e.response.status_code} - {e.response.text}")
         raise
     except Exception as e:
         logger.error(f"Error creating Ultravox call: {e}", exc_info=True)
         raise
 
 
-async def make_outbound_ultravox_call(
-    destination_phone_number: str,
-    organization_id: Optional[str] = None,
-    twilio_account_sid: Optional[str] = None,
-    twilio_auth_token: Optional[str] = None,
-    twilio_phone_number: Optional[str] = None,
-    ultravox_api_key: Optional[str] = None,
-    backend_websocket_url: Optional[str] = None,
-) -> Dict[str, Any]:
+# Backwards-compatible helper functions
+
+def create_ultravox_client(api_key: str, organization_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    Make an outbound Twilio call using Ultravox via Twilio Media Streams.
+    Initialize Ultravox client (backwards compatibility).
     
-    This function:
-    1. Validates all configuration (Twilio and Ultravox)
-    2. Creates an Ultravox call to initialize it with system prompt
-    3. Makes a Twilio outbound call with TwiML that streams to backend WebSocket
-    
-    Args:
-        destination_phone_number: Phone number to call (E.164 format, e.g., +1234567890)
-        organization_id: Optional organization ID for fetching system prompt
-        twilio_account_sid: Optional Twilio Account SID (uses config if not provided)
-        twilio_auth_token: Optional Twilio Auth Token (uses config if not provided)
-        twilio_phone_number: Optional Twilio phone number (uses config if not provided)
-        ultravox_api_key: Optional Ultravox API key (uses Config if not provided)
-        backend_websocket_url: Optional backend WebSocket URL (defaults to wss://voca-2.duckdns.org/twilio)
-    
-    Returns:
-        Dictionary with:
-            - call_sid: Twilio Call SID
-            - status: Call status
-            - join_url: Ultravox joinUrl (for reference)
-            - backend_websocket_url: Backend WebSocket URL used
-            - destination: Destination phone number
-            - from_number: Twilio phone number used
-    
-    Raises:
-        ValueError: If configuration is invalid or missing
-        RuntimeError: If Ultravox call creation fails
-        Exception: If Twilio call creation fails
+    Returns a dict that can be used with helper functions.
+    For new code, use UltravoxSession directly.
     """
-    # ============================================================
-    # Step 1: Validate Configuration
-    # ============================================================
-    errors = []
-    
-    # Get Twilio config
-    twilio_config = get_twilio_config()
-    account_sid = twilio_account_sid or twilio_config.account_sid
-    auth_token = twilio_auth_token or twilio_config.auth_token
-    from_number = twilio_phone_number or twilio_config.phone_number
-    
-    # Validate Twilio Account SID
-    if not account_sid or account_sid.strip() == "" or account_sid.startswith("your_"):
-        errors.append("TWILIO_ACCOUNT_SID is not set or contains placeholder text")
-    elif not validate_twilio_account_sid(account_sid):
-        errors.append("TWILIO_ACCOUNT_SID format appears invalid (should start with 'AC' and be 34 characters)")
-    
-    # Validate Twilio Auth Token
-    if not auth_token or auth_token.strip() == "" or auth_token.startswith("your_"):
-        errors.append("TWILIO_AUTH_TOKEN is not set or contains placeholder text")
-    elif not validate_twilio_auth_token(auth_token):
-        errors.append("TWILIO_AUTH_TOKEN format appears invalid (should be 32 characters)")
-    
-    # Validate Twilio Phone Number
-    if not from_number or from_number.strip() == "" or from_number.startswith("your_"):
-        errors.append("TWILIO_PHONE_NUMBER is not set or contains placeholder text")
-    elif not validate_phone_number(from_number):
-        errors.append("TWILIO_PHONE_NUMBER format appears invalid (should be E.164 format, e.g., +1234567890)")
-    
-    # Validate Destination Phone Number
-    if not destination_phone_number or destination_phone_number.strip() == "":
-        errors.append("DESTINATION_PHONE_NUMBER is required")
-    elif not validate_phone_number(destination_phone_number):
-        errors.append("DESTINATION_PHONE_NUMBER format appears invalid (should be E.164 format, e.g., +1234567890)")
-    
-    # Validate Ultravox API Key
-    ultravox_key = ultravox_api_key or Config.ultravox_api_key
-    if not ultravox_key or ultravox_key.strip() == "" or ultravox_key.startswith("your_"):
-        errors.append("ULTRAVOX_API_KEY is not set or contains placeholder text")
-    elif not validate_ultravox_api_key(ultravox_key):
-        errors.append("ULTRAVOX_API_KEY appears invalid")
-    
-    # Get backend WebSocket URL
-    backend_url = backend_websocket_url or DEFAULT_BACKEND_WEBSOCKET_URL
-    if not backend_url or not backend_url.startswith(("ws://", "wss://")):
-        errors.append(f"Backend WebSocket URL must start with ws:// or wss:// (got: {backend_url})")
-    
-    # Get organization ID
-    org_id = organization_id or Config.default_organization_id or None
-    
-    # Report all errors at once
-    if errors:
-        error_msg = "Configuration Error(s):\n" + "\n".join(f"   ❌ {e}" for e in errors)
-        error_msg += "\n\n💡 Please update the configuration:"
-        error_msg += "\n   • TWILIO_ACCOUNT_SID should start with 'AC' and be 34 characters"
-        error_msg += "\n   • TWILIO_AUTH_TOKEN should be 32 characters"
-        error_msg += "\n   • Phone numbers should be in E.164 format (e.g., +1234567890)"
-        error_msg += "\n   • ULTRAVOX_API_KEY should be set in .env file"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    
-    logger.info("✅ Configuration validation passed!")
-    
-    # ============================================================
-    # Step 2: Create Ultravox Call
-    # ============================================================
-    logger.info("📞 Creating Ultravox call...")
-    try:
-        ultravox_response = await create_ultravox_call(
-            api_key=ultravox_key,
-            organization_id=org_id,
-            first_speaker_settings={"user": {}}  # For outgoing calls, user speaks first
-        )
-        
-        join_url = ultravox_response.get("joinUrl")
-        if not join_url:
-            raise RuntimeError("No joinUrl received from Ultravox API")
-        
-        logger.info(f"✅ Got Ultravox joinUrl: {join_url}")
-        
-    except Exception as e:
-        logger.error(f"💥 Error creating Ultravox call: {e}")
-        if "Authentication" in str(e) or "401" in str(e) or "403" in str(e):
-            raise RuntimeError(f"Ultravox API authentication failed - check your API key: {e}")
-        raise RuntimeError(f"Failed to create Ultravox call: {e}")
-    
-    # ============================================================
-    # Step 3: Make Twilio Outbound Call
-    # ============================================================
-    logger.info("📱 Initiating Twilio call...")
-    try:
-        # Create Twilio client
-        twilio_client = Client(account_sid, auth_token)
-        
-        # Generate inline TwiML that streams to backend WebSocket
-        twiml = f'<Response><Connect><Stream url="{backend_url}" name="ultravox"/></Connect></Response>'
-        
-        logger.info(f"📋 TwiML: {twiml}")
-        logger.info(f"📞 Calling {destination_phone_number} from {from_number}")
-        
-        # Make the call
-        call = twilio_client.calls.create(
-            to=destination_phone_number,
-            from_=from_number,
-            twiml=twiml
-        )
-        
-        logger.info("🎉 Twilio outbound phone call initiated successfully!")
-        logger.info(f"📋 Twilio Call SID: {call.sid}")
-        logger.info(f"📊 Call Status: {call.status}")
-        
-        return {
-            "call_sid": call.sid,
-            "status": call.status,
-            "join_url": join_url,
-            "backend_websocket_url": backend_url,
-            "destination": destination_phone_number,
-            "from_number": from_number,
-            "ultravox_response": ultravox_response,
-        }
-        
-    except Exception as e:
-        logger.error(f"💥 Error making Twilio call: {e}")
-        error_msg = str(e)
-        
-        if "Authentication" in error_msg or "401" in error_msg or "403" in error_msg:
-            raise RuntimeError(f"Twilio authentication failed - check your credentials: {e}")
-        elif "phone number" in error_msg.lower() or "invalid" in error_msg.lower():
-            raise RuntimeError(f"Phone number issue - verify your phone numbers are correct: {e}")
-        else:
-            raise RuntimeError(f"Failed to make Twilio call: {e}")
+    session = UltravoxSession(api_key=api_key, organization_id=organization_id)
+    return {
+        "_session": session,
+        "api_key": api_key,
+        "organization_id": organization_id,
+        "is_connected": False
+    }
 
 
 async def connect_ultravox(client: Dict[str, Any]):
-    """
-    Establish WebSocket connection to Ultravox Realtime API.
+    """Connect to Ultravox (backwards compatibility)."""
+    session = client.get("_session")
+    if not session:
+        raise ValueError("Invalid client dict - missing _session")
     
-    Args:
-        client: Ultravox client dictionary
-    """
-    config = client["config"]
-    api_key = client["api_key"]
+    # Create call first to get joinUrl
+    call_info = await create_ultravox_call(
+        api_key=client["api_key"],
+        organization_id=client.get("organization_id")
+    )
     
-    # Validate API key
-    if not api_key or not api_key.strip():
-        raise ValueError("Ultravox API key is empty or not set")
+    join_url = call_info.get("joinUrl")
+    if not join_url:
+        raise RuntimeError("Ultravox call creation succeeded but joinUrl was missing")
     
-    api_key_clean = api_key.strip()
-    
-    # Prepare authentication headers
-    headers = {
-        "Authorization": f"Bearer {api_key_clean}"
-    }
-    
-    # Build WebSocket URI - check environment variable first, then use default
-    uri = os.getenv("ULTRAVOX_WS_ENDPOINT") or ULTRAVOX_WS_ENDPOINT
-    
-    # Convert https:// to wss:// and http:// to ws:// if needed (WebSocket requires ws/wss protocol)
-    if uri.startswith("https://"):
-        uri = uri.replace("https://", "wss://", 1)
-        logger.debug(f"Converted https:// to wss://: {uri}")
-    elif uri.startswith("http://"):
-        uri = uri.replace("http://", "ws://", 1)
-        logger.debug(f"Converted http:// to ws://: {uri}")
-    
-    logger.info(f"Connecting to Ultravox Realtime → {uri}")
-    logger.debug(f"API key present: {bool(api_key)}, length: {len(api_key) if api_key else 0}")
-    logger.debug(f"Configuration: model={config['model']}, voice={config['voice']}, temperature={config['temperature']}")
-    
-    try:
-        websocket = await connect(uri, extra_headers=headers)
-        client["websocket"] = websocket
-        client["is_connected"] = True
-        client["_stop_event"].clear()
-        
-        # Send initial configuration message
-        initial_config = {
-            "model": config["model"],
-            "voice": config["voice"],
-            "voice_id": config["voice_id"],
-            "temperature": config["temperature"],
-            "language": config["language"],
-            "medium": config["medium"],
-            "first_speaker": config["first_speaker"],
-            "system_prompt": client["system_prompt"]
-        }
-        
-        await websocket.send(json.dumps(initial_config))
-        logger.info("Initial configuration sent to Ultravox")
-        
-        # Start receiving responses
-        client["_receive_task"] = asyncio.create_task(_receive_responses(client))
-        
-    except (websockets.exceptions.InvalidStatusCode, websockets.InvalidStatusCode) as e:
-        logger.error(f"Ultravox connection failed with HTTP {e.status_code}")
-        logger.error(f"API key length: {len(api_key) if api_key else 0}")
-        logger.error(f"URI used: {uri}")
-        if hasattr(e, 'headers'):
-            logger.error(f"Response headers: {e.headers}")
-        
-        if e.status_code == 404:
-            logger.error("=" * 60)
-            logger.error("ERROR: WebSocket endpoint not found (404)")
-            logger.error("The endpoint URL may be incorrect or account-specific.")
-            logger.error("")
-            logger.error("To find your correct endpoint:")
-            logger.error("1. Log in to your Ultravox account dashboard at https://ultravox.ai")
-            logger.error("2. Navigate to API/Settings section")
-            logger.error("3. Look for WebSocket/Realtime endpoint URL")
-            logger.error("4. Check documentation at https://docs.ultravox.ai")
-            logger.error("")
-            logger.error(f"Current endpoint: {uri}")
-            logger.error("")
-            logger.error("You can set the correct endpoint by:")
-            logger.error("- Adding to .env: ULTRAVOX_WS_ENDPOINT=wss://correct-endpoint-here")
-            logger.error("- Or using --endpoint flag in the test script")
-            logger.error("=" * 60)
-        raise
-    except Exception as e:
-        logger.error(f"Error connecting to Ultravox: {e}", exc_info=True)
-        client["is_connected"] = False
-        raise
-
-
-async def _receive_responses(client: Dict[str, Any]):
-    """
-    Handle responses from Ultravox WebSocket.
-    
-    Args:
-        client: Ultravox client dictionary
-    """
-    ws = client["websocket"]
-    
-    try:
-        async for message in ws:
-            if client["_stop_event"].is_set():
-                break
-            
-            try:
-                # Try to parse as JSON first
-                data = json.loads(message)
-                msg_type = data.get("type")
-                
-                if msg_type == "audio":
-                    # Received audio output from Ultravox
-                    audio_data = data.get("audio")
-                    if audio_data:
-                        # Decode base64 audio if needed
-                        if isinstance(audio_data, str):
-                            audio_bytes = base64.b64decode(audio_data)
-                        else:
-                            audio_bytes = audio_data
-                        
-                        # Call audio output callback
-                        cb = client.get("audio_output_callback")
-                        if cb:
-                            await cb(audio_bytes)
-                
-                elif msg_type == "transcript":
-                    # Received transcription
-                    transcript = data.get("text", "")
-                    is_final = data.get("is_final", False)
-                    
-                    if transcript.strip():
-                        cb = client.get("transcript_callback")
-                        if cb:
-                            await cb(transcript, is_final)
-                
-                elif msg_type == "error":
-                    logger.error(f"Ultravox Error: {data}")
-                
-                elif msg_type == "event":
-                    logger.debug(f"Ultravox Event: {data}")
-                
-                else:
-                    logger.debug(f"Ultravox Message: {data}")
-                    
-            except json.JSONDecodeError:
-                # If not JSON, treat as raw audio data
-                cb = client.get("audio_output_callback")
-                if cb:
-                    await cb(message)
-            
-    except websockets.exceptions.ConnectionClosed as e:
-        logger.warning(f"Ultravox WebSocket connection closed: {e.code} - {e.reason}")
-        client["is_connected"] = False
-    except Exception as e:
-        logger.error(f"Error in Ultravox receive loop: {e}", exc_info=True)
-        client["is_connected"] = False
+    session.joinCall(join_url)
+    client["is_connected"] = True
 
 
 async def send_audio(client: Dict[str, Any], audio_data: bytes):
-    """
-    Send audio chunks to Ultravox.
+    """Send audio to Ultravox (backwards compatibility)."""
+    session = client.get("_session")
+    if not session:
+        raise ValueError("Invalid client dict - missing _session")
     
-    Args:
-        client: Ultravox client dictionary
-        audio_data: Audio data bytes (PCM or other format)
-    """
-    if not client.get("is_connected") or not client.get("websocket"):
-        logger.warning("Ultravox not connected, cannot send audio")
-        return
-    
-    if not audio_data:
-        logger.warning("Empty audio data, skipping")
-        return
-    
-    try:
-        # Encode audio as base64 for JSON transmission
-        audio_base64 = base64.b64encode(audio_data).decode("ascii")
-        
-        # Send audio message
-        payload = {
-            "type": "audio",
-            "audio": audio_base64,
-            "encoding": "pcm_s16le",  # Assuming PCM 16-bit little-endian
-            "sample_rate": 16000  # Default sample rate
-        }
-        
-        await client["websocket"].send(json.dumps(payload))
-        
-    except websockets.exceptions.ConnectionClosed as e:
-        logger.warning(f"Ultravox connection closed while sending audio: {e.code} - {e.reason}")
-        client["is_connected"] = False
-    except Exception as e:
-        logger.error(f"Error sending audio to Ultravox: {e}", exc_info=True)
-        client["is_connected"] = False
-
-
-def set_audio_input_callback(client: Dict[str, Any], callback: Callable[[bytes], None]):
-    """
-    Set callback for audio input (for receiving audio from Twilio).
-    
-    Args:
-        client: Ultravox client dictionary
-        callback: Async function that receives audio bytes and forwards to Ultravox
-    """
-    client["audio_input_callback"] = callback
+    await session.send_audio(audio_data)
 
 
 def set_audio_output_callback(client: Dict[str, Any], callback: Callable[[bytes], None]):
-    """
-    Set callback for audio output (for sending audio to Twilio).
+    """Set audio output callback (backwards compatibility)."""
+    session = client.get("_session")
+    if not session:
+        raise ValueError("Invalid client dict - missing _session")
     
-    Args:
-        client: Ultravox client dictionary
-        callback: Async function that receives audio bytes from Ultravox and forwards to Twilio
-    """
-    client["audio_output_callback"] = callback
+    session._audio_output_callback = callback
 
 
 def set_transcript_callback(client: Dict[str, Any], callback: Callable[[str, bool], None]):
-    """
-    Set callback for transcript updates.
+    """Set transcript callback (backwards compatibility)."""
+    session = client.get("_session")
+    if not session:
+        raise ValueError("Invalid client dict - missing _session")
     
-    Args:
-        client: Ultravox client dictionary
-        callback: Async function that receives (transcript: str, is_final: bool)
-    """
-    client["transcript_callback"] = callback
+    session._transcript_callback = callback
 
 
 async def stop_ultravox(client: Dict[str, Any]):
-    """
-    Stop Ultravox client and close WebSocket connection.
+    """Stop Ultravox connection (backwards compatibility)."""
+    session = client.get("_session")
+    if not session:
+        return
     
-    Args:
-        client: Ultravox client dictionary
-    """
-    client["_stop_event"].set()
-    
-    if client["_receive_task"]:
-        client["_receive_task"].cancel()
-        try:
-            await client["_receive_task"]
-        except asyncio.CancelledError:
-            pass
-    
-    if client["websocket"]:
-        await client["websocket"].close()
-    
+    await session.leaveCall()
     client["is_connected"] = False
-    logger.info("Ultravox client stopped")
 
 
-class UltravoxClient:
-    """
-    Ultravox Realtime speech-to-speech client for realtime audio processing.
-    
-    Provides a class-based interface for Ultravox WebSocket API.
-    """
-    
-    def __init__(self, api_key: Optional[str] = None, organization_id: Optional[str] = None):
-        """
-        Initialize Ultravox client.
-        
-        Args:
-            api_key: Ultravox API key (defaults to Config.ultravox_api_key)
-            organization_id: Optional organization ID for fetching system prompt
-        """
-        if api_key is None:
-            api_key = Config.ultravox_api_key
-        
-        if not api_key:
-            raise ValueError("Ultravox API key is required. Set ULTRAVOX_API_KEY in .env or pass api_key parameter.")
-        
-        self._client = create_ultravox_client(api_key, organization_id)
-    
-    @property
-    def is_connected(self) -> bool:
-        """Check if Ultravox client is connected."""
-        return self._client.get("is_connected", False)
-    
-    async def connect(self):
-        """Establish WebSocket connection to Ultravox Realtime service."""
-        await connect_ultravox(self._client)
-    
-    async def send_audio(self, audio_data: bytes):
-        """Send PCM audio data to Ultravox service."""
-        await send_audio(self._client, audio_data)
-    
-    def set_audio_input_callback(self, callback: Callable[[bytes], None]):
-        """
-        Set callback for audio input (receives audio from Twilio, forwards to Ultravox).
-        
-        Args:
-            callback: Async function that receives audio bytes
-        """
-        set_audio_input_callback(self._client, callback)
-    
-    def set_audio_output_callback(self, callback: Callable[[bytes], None]):
-        """
-        Set callback for audio output (receives audio from Ultravox, forwards to Twilio).
-        
-        Args:
-            callback: Async function that receives audio bytes
-        """
-        set_audio_output_callback(self._client, callback)
-    
-    def set_transcript_callback(self, callback: Callable[[str, bool], None]):
-        """
-        Set callback function for transcript updates.
-        
-        Args:
-            callback: Async function that receives (transcript: str, is_final: bool)
-        """
-        set_transcript_callback(self._client, callback)
-    
-    async def stop(self):
-        """Stop Ultravox client and close WebSocket connection."""
-        await stop_ultravox(self._client)
+# Export UltravoxClient class alias for backwards compatibility
+UltravoxClient = UltravoxSession
+
