@@ -1717,6 +1717,20 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # Cleanup - close Ultravox connection
         # This only runs after the message loop exits (on stop event or disconnect)
         logger.info("[ULTRAVOX] Cleaning up connections...")
+        
+        # Get transcripts before closing for debugging
+        try:
+            from src.voca.services.ultravox import getCallTranscript
+            transcripts = getCallTranscript(ultravox_client_dict)
+            if transcripts:
+                logger.info(f"[ULTRAVOX] Call ended with {len(transcripts)} transcript(s)")
+                for i, t in enumerate(transcripts):
+                    logger.info(f"[ULTRAVOX] Transcript {i+1}: {t.get('speaker')} - '{t.get('text', '')[:100]}' (final={t.get('isFinal')})")
+            else:
+                logger.warning("[ULTRAVOX] ⚠️  No transcripts received during call - this indicates Ultravox didn't send any messages")
+        except Exception as e:
+            logger.warning(f"[ULTRAVOX] Error getting transcripts: {e}")
+        
         try:
             await stop_ultravox(ultravox_client_dict)
             logger.info("[ULTRAVOX] Ultravox connection closed")

@@ -23,7 +23,7 @@ if __name__ == "__main__":
         sys.path.insert(0, str(project_root))
 
 from src.voca.config import Config
-from src.voca.system_prompt import get_prompt
+from src.voca.system_prompt import get_prompt, get_welcome_message
 
 logger = logging.getLogger(__name__)
 
@@ -356,6 +356,26 @@ class UltravoxSession:
             logger.info(f"[ULTRAVOX] WebSocket state: open={self._websocket.open if hasattr(self._websocket, 'open') else 'unknown'}")
             logger.info("[ULTRAVOX] Starting message receive loop...")
             
+            # Log connection details for debugging
+            logger.info(f"[ULTRAVOX] Connection URL: {self._join_url}")
+            logger.info(f"[ULTRAVOX] First speaker: AGENT (should speak first)")
+            logger.info(f"[ULTRAVOX] Waiting for Ultravox to send welcome message or status updates...")
+            
+            # Send welcome message if available (after connection is established)
+            try:
+                welcome_msg = get_welcome_message(self.organization_id)
+                if welcome_msg:
+                    logger.info(f"[ULTRAVOX] Fetched welcome message: {welcome_msg[:100]}...")
+                    # Wait a brief moment for connection to fully stabilize
+                    await asyncio.sleep(0.2)
+                    # Send welcome message as text to Ultravox
+                    self.sendText(welcome_msg, defer_response=False)
+                    logger.info("[ULTRAVOX] Welcome message sent to Ultravox - should play first")
+                else:
+                    logger.info("[ULTRAVOX] No welcome message found in system_prompts table")
+            except Exception as e:
+                logger.warning(f"[ULTRAVOX] Error sending welcome message: {e}", exc_info=True)
+            
             # Start a heartbeat task to confirm loop is running
             async def heartbeat():
                 heartbeat_count = 0
@@ -372,6 +392,9 @@ class UltravoxSession:
             last_message_time = None
             loop_start_time = asyncio.get_event_loop().time()
             
+            # Log that we're entering the receive loop
+            logger.info("[ULTRAVOX] Entering WebSocket receive loop - waiting for messages from Ultravox...")
+            
             async for message in self._websocket:
                 if self._stop_event.is_set():
                     logger.info("[ULTRAVOX] Stop event set, breaking receive loop")
@@ -381,8 +404,10 @@ class UltravoxSession:
                 last_message_time = asyncio.get_event_loop().time()
                 elapsed = last_message_time - loop_start_time
                 
-                # Log that we received something
-                if message_count <= 5 or message_count % 50 == 0:
+                # Log that we received something (always log first message)
+                if message_count == 1:
+                    logger.info(f"[ULTRAVOX] ✓ FIRST MESSAGE RECEIVED after {elapsed:.2f}s! (type: {type(message).__name__}, len: {len(message) if hasattr(message, '__len__') else 'N/A'})")
+                elif message_count <= 5 or message_count % 50 == 0:
                     logger.info(f"[ULTRAVOX] ✓ Received message #{message_count} after {elapsed:.2f}s (type: {type(message).__name__}, len: {len(message) if hasattr(message, '__len__') else 'N/A'})")
                 
                 try:
@@ -626,6 +651,16 @@ class UltravoxSession:
             audio_data: PCM audio data (16-bit, 8kHz)
         """
         if not self._websocket or self._mic_muted:
+            if not hasattr(self.send_audio, '_warned_no_ws'):
+                logger.warning(f"[ULTRAVOX] Cannot send audio: websocket={self._websocket is not None}, muted={self._mic_muted}")
+                self.send_audio._warned_no_ws = True
+            return
+        
+        # Check WebSocket state
+        if hasattr(self._websocket, 'open') and not self._websocket.open:
+            if not hasattr(self.send_audio, '_warned_closed'):
+                logger.warning("[ULTRAVOX] WebSocket is closed, cannot send audio")
+                self.send_audio._warned_closed = True
             return
         
         # Ultravox may accept binary audio directly or base64 encoded
@@ -637,11 +672,12 @@ class UltravoxSession:
                 
                 # Log first few audio sends
                 if not hasattr(self.send_audio, '_logged'):
-                    logger.info(f"[ULTRAVOX] First audio sent: {len(audio_data)} bytes (binary)")
+                    logger.info(f"[ULTRAVOX] First audio sent: {len(audio_data)} bytes (binary, PCM 16-bit)")
+                    logger.info(f"[ULTRAVOX] WebSocket open: {self._websocket.open if hasattr(self._websocket, 'open') else 'unknown'}")
                     self.send_audio._logged = True
                 return
         except Exception as e:
-            logger.debug(f"[ULTRAVOX] Failed to send binary audio, trying JSON: {e}")
+            logger.warning(f"[ULTRAVOX] Failed to send binary audio: {e}, trying JSON format")
         
         # Fallback: encode as base64 and send as JSON
         audio_b64 = base64.b64encode(audio_data).decode('ascii')
@@ -700,7 +736,10 @@ async def create_ultravox_call(
     }
 
     logger.info(f"Creating Ultravox call via HTTP POST to {ULTRAVOX_API_URL}")
-    logger.debug(f"Ultravox call config: model={ULTRAVOX_CALL_CONFIG.get('model')} voice={ULTRAVOX_CALL_CONFIG.get('voice')} temperature={ULTRAVOX_CALL_CONFIG.get('temperature')}")
+    logger.info(f"[ULTRAVOX_CONFIG] Model: {ULTRAVOX_CALL_CONFIG.get('model')}, Voice: {ULTRAVOX_CALL_CONFIG.get('voice')}, Temperature: {ULTRAVOX_CALL_CONFIG.get('temperature')}")
+    logger.info(f"[ULTRAVOX_CONFIG] First Speaker: {ULTRAVOX_CALL_CONFIG.get('firstSpeaker', 'NOT SET')}")
+    logger.info(f"[ULTRAVOX_CONFIG] Medium: {ULTRAVOX_CALL_CONFIG.get('medium')}")
+    logger.debug(f"[ULTRAVOX_CONFIG] Full config: {json.dumps(ULTRAVOX_CALL_CONFIG, indent=2)}")
 
     try:
         async with httpx.AsyncClient() as client:
