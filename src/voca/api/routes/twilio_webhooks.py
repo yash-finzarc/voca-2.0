@@ -1189,41 +1189,13 @@ async def handle_twilio_websocket(websocket: WebSocket):
         logger.info(f"[ULTRAVOX] ✓ WebSocket accepted from {client_ip}")
         call_state = CallState.INIT
         
-        # Connect to Ultravox WebSocket for real-time speech-to-speech
-        logger.info("[ULTRAVOX] Connecting to Ultravox Realtime API...")
-        try:
-            await connect_ultravox(ultravox_client_dict)
-            logger.info("[ULTRAVOX] ✓ Ultravox connected")
-        except Exception as e:
-            logger.error(f"[ULTRAVOX] Failed to connect to Ultravox: {e}", exc_info=True)
-            try:
-                await websocket.close(code=1008, reason="Failed to connect to Ultravox")
-            except Exception:
-                pass
-            return
-        
-        # Commented out: Sarvam TTS/STT connection code - using Ultravox instead
-        # # CRITICAL: Connect TTS once and keep it open for the entire call (persistent connection)
-        # # This eliminates handshake/config overhead and reduces latency
-        # logger.info("[CUSTOM_LLM_PIPELINE] Connecting to SarvamAI TTS (persistent connection)...")
-        # await tts_client.connect()
-        # logger.info("[CUSTOM_LLM_PIPELINE] ✓ TTS connected")
-        # 
-        # # CRITICAL: Connect STT early for full-duplex operation
-        # # STT must run continuously, independently of TTS, from the start of the call
-        # logger.info("[CUSTOM_LLM_PIPELINE] Connecting to SarvamAI STT (full-duplex)...")
-        # try:
-        #     await stt_client.connect()
-        #     logger.info("[CUSTOM_LLM_PIPELINE] ✓ STT connected (ready for continuous audio forwarding)")
-        # except Exception as e:
-        #     logger.error(f"[CUSTOM_LLM_PIPELINE] Failed to connect STT: {e}", exc_info=True)
-        #     # Don't fail the entire call if STT connection fails - we can retry later
-        
-        # Set up Ultravox audio output callback (replaces TTS audio callback)
+        # Set up Ultravox audio output callback BEFORE connecting (replaces TTS audio callback)
+        # CRITICAL: Set callback before connecting so we don't miss any audio messages
         async def ultravox_audio_output_callback(pcm_audio: bytes):
             """Callback for Ultravox audio output (speech from AI)."""
             nonlocal call_state, tts_audio_sent
             if not streamsid:
+                logger.debug(f"[AUDIO_OUT] Dropping audio: streamsid not set yet")
                 return
             
             # CRITICAL: Convert PCM to μ-law (sample width = 2 bytes for 16-bit PCM)
@@ -1244,19 +1216,47 @@ async def handle_twilio_websocket(websocket: WebSocket):
                 "streamSid": streamsid,
                 "media": {"payload": audio_payload}
             }
-            await websocket.send_json(media_message)
             
-            # Log audio being sent to Twilio
-            logger.info(f"[AUDIO_OUT] Sent {len(audio_payload)} bytes (base64) to Twilio stream {streamsid}")
-            
-            # Log first outbound audio frame
-            if not tts_audio_sent:
-                logger.info("[AUDIO_OUT] First Ultravox audio frame sent to Twilio")
-                tts_audio_sent = True
+            try:
+                await websocket.send_json(media_message)
+                
+                # Log first outbound audio frame
+                if not tts_audio_sent:
+                    logger.info("[AUDIO_OUT] ✓ First Ultravox audio frame sent to Twilio")
+                    tts_audio_sent = True
+                elif not hasattr(ultravox_audio_output_callback, '_logged_success'):
+                    logger.info(f"[AUDIO_OUT] ✓ Audio streaming to Twilio (streamsid={streamsid})")
+                    ultravox_audio_output_callback._logged_success = True
+            except Exception as e:
+                logger.error(f"[AUDIO_OUT] Error sending audio to Twilio: {e}")
         
-        # Set audio output callback for Ultravox (replaces TTS audio callback)
+        # Set audio output callback for Ultravox BEFORE connecting
         from src.voca.services.ultravox import set_audio_output_callback
         set_audio_output_callback(ultravox_client_dict, ultravox_audio_output_callback)
+        logger.info("[ULTRAVOX] Audio output callback set")
+        
+        # Set up Ultravox transcript callback (optional - for logging/transcripts)
+        async def ultravox_transcript_callback(transcript: str, is_final: bool):
+            """Callback for Ultravox transcripts (for logging purposes)."""
+            if transcript.strip():
+                logger.info(f"[ULTRAVOX_TRANSCRIPT] {transcript} (final={is_final})")
+        
+        from src.voca.services.ultravox import set_transcript_callback
+        set_transcript_callback(ultravox_client_dict, ultravox_transcript_callback)
+        logger.info("[ULTRAVOX] Transcript callback set")
+        
+        # Connect to Ultravox WebSocket for real-time speech-to-speech
+        logger.info("[ULTRAVOX] Connecting to Ultravox Realtime API...")
+        try:
+            await connect_ultravox(ultravox_client_dict)
+            logger.info("[ULTRAVOX] ✓ Ultravox connected")
+        except Exception as e:
+            logger.error(f"[ULTRAVOX] Failed to connect to Ultravox: {e}", exc_info=True)
+            try:
+                await websocket.close(code=1008, reason="Failed to connect to Ultravox")
+            except Exception:
+                pass
+            return
         
         # Commented out: Sarvam TTS audio callback - using Ultravox instead
         # # Set up TTS audio callback
@@ -1303,15 +1303,6 @@ async def handle_twilio_websocket(websocket: WebSocket):
         
         # Commented out: Sarvam TTS completion callback - Ultravox handles completion internally
         # Ultravox manages its own audio streaming lifecycle, so we don't need completion callbacks
-        
-        # Set up Ultravox transcript callback (optional - for logging/transcripts)
-        async def ultravox_transcript_callback(transcript: str, is_final: bool):
-            """Callback for Ultravox transcripts (for logging purposes)."""
-            if transcript.strip():
-                logger.info(f"[ULTRAVOX_TRANSCRIPT] {transcript} (final={is_final})")
-        
-        from src.voca.services.ultravox import set_transcript_callback
-        set_transcript_callback(ultravox_client_dict, ultravox_transcript_callback)
         
         # Commented out: Sarvam STT transcript callback - Ultravox handles speech-to-speech internally
         # Ultravox processes speech-to-speech in real-time, so we don't need separate STT->LLM->TTS pipeline

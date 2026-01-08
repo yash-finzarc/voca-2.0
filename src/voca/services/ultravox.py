@@ -311,21 +311,49 @@ class UltravoxSession:
             self._set_status(UltravoxSessionStatus.IDLE)
             
             # Receive messages
+            message_count = 0
             async for message in self._websocket:
                 if self._stop_event.is_set():
                     break
                 
+                message_count += 1
+                
                 try:
+                    # Handle binary audio data
+                    if isinstance(message, bytes):
+                        # Binary audio data - pass directly to audio callback
+                        if self._audio_output_callback and not self._speaker_muted:
+                            try:
+                                if asyncio.iscoroutinefunction(self._audio_output_callback):
+                                    await self._audio_output_callback(message)
+                                else:
+                                    self._audio_output_callback(message)
+                                
+                                # Log first few audio messages
+                                if message_count <= 3:
+                                    logger.info(f"[ULTRAVOX] ✓ Received binary audio message #{message_count}: {len(message)} bytes → sent to callback")
+                            except Exception as e:
+                                logger.error(f"[ULTRAVOX] Error in audio output callback for binary: {e}", exc_info=True)
+                        else:
+                            if message_count <= 3:
+                                logger.warning(f"[ULTRAVOX] Received binary audio but callback not set or muted: callback={self._audio_output_callback is not None}, muted={self._speaker_muted}, bytes={len(message)}")
+                        continue
+                    
+                    # Handle text/JSON messages
                     if isinstance(message, str):
                         data = json.loads(message)
                     else:
                         data = json.loads(message.decode('utf-8'))
                     
+                    # Log first few messages for debugging
+                    if message_count <= 10:
+                        logger.info(f"[ULTRAVOX] Received message #{message_count}: {json.dumps(data)[:200]}")
+                    
                     await self._handle_message(data)
                 except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse message: {e}")
+                    logger.warning(f"[ULTRAVOX] Failed to parse message #{message_count}: {e}, message type: {type(message)}, length: {len(message) if hasattr(message, '__len__') else 'N/A'}")
                 except Exception as e:
-                    logger.error(f"Error handling message: {e}", exc_info=True)
+                    logger.error(f"[ULTRAVOX] Error handling message #{message_count}: {e}", exc_info=True)
         
         except asyncio.CancelledError:
             logger.info("WebSocket receive task cancelled")
@@ -342,9 +370,14 @@ class UltravoxSession:
     
     async def _handle_message(self, data: Dict[str, Any]):
         """Handle incoming WebSocket message."""
-        msg_type = data.get("type")
+        # Log all messages for debugging
+        logger.debug(f"[ULTRAVOX] Handling message: {json.dumps(data)[:500]}")
         
-        if msg_type == "status":
+        msg_type = data.get("type")
+        event_type = data.get("event")  # Some messages use "event" instead of "type"
+        
+        # Handle status updates
+        if msg_type == "status" or event_type == "status":
             status_str = data.get("status", "").lower()
             status_map = {
                 "disconnected": UltravoxSessionStatus.DISCONNECTED,
@@ -358,14 +391,18 @@ class UltravoxSession:
             if status_str in status_map:
                 self._set_status(status_map[status_str])
         
-        elif msg_type == "transcript":
-            text = data.get("text", "")
-            is_final = data.get("isFinal", False)
-            speaker = data.get("speaker", "user")
-            medium = data.get("medium", "voice")
+        elif msg_type == "transcript" or event_type == "transcript" or "transcript" in data:
+            # Handle transcript data
+            transcript_data = data.get("transcript") or data
+            text = transcript_data.get("text", data.get("text", ""))
+            is_final = transcript_data.get("isFinal", data.get("isFinal", False))
+            speaker = transcript_data.get("speaker", data.get("speaker", "user"))
+            medium = transcript_data.get("medium", data.get("medium", "voice"))
             
-            transcript = Transcript(text, is_final, speaker, medium)
-            self._transcripts.append(transcript)
+            if text:
+                transcript = Transcript(text, is_final, speaker, medium)
+                self._transcripts.append(transcript)
+                logger.info(f"[ULTRAVOX] Transcript: {text} (final={is_final}, speaker={speaker})")
             
             # Emit transcript event
             for listener in self._transcript_listeners:
@@ -387,13 +424,19 @@ class UltravoxSession:
                 except Exception as e:
                     logger.error(f"Error in transcript callback: {e}")
         
-        elif msg_type == "audio":
-            # Handle audio data
-            audio_data = data.get("audio")
+        elif msg_type == "audio" or event_type == "audio" or "audio" in data:
+            # Handle audio data (can be in different formats)
+            audio_data = data.get("audio") or data.get("data")
             if audio_data:
                 try:
-                    # Decode base64 audio
-                    audio_bytes = base64.b64decode(audio_data)
+                    # Decode base64 audio if it's a string
+                    if isinstance(audio_data, str):
+                        audio_bytes = base64.b64decode(audio_data)
+                    elif isinstance(audio_data, bytes):
+                        audio_bytes = audio_data
+                    else:
+                        logger.warning(f"[ULTRAVOX] Unexpected audio data type: {type(audio_data)}")
+                        return
                     
                     # Call audio output callback if set
                     if self._audio_output_callback and not self._speaker_muted:
@@ -402,10 +445,19 @@ class UltravoxSession:
                                 await self._audio_output_callback(audio_bytes)
                             else:
                                 self._audio_output_callback(audio_bytes)
+                            
+                            # Log first audio chunk
+                            if not hasattr(self._handle_message, '_audio_logged'):
+                                logger.info(f"[ULTRAVOX] ✓ First audio chunk received and sent to callback: {len(audio_bytes)} bytes")
+                                self._handle_message._audio_logged = True
                         except Exception as e:
-                            logger.error(f"Error in audio output callback: {e}")
+                            logger.error(f"[ULTRAVOX] Error in audio output callback: {e}", exc_info=True)
+                    else:
+                        if not hasattr(self._handle_message, '_callback_warned'):
+                            logger.warning(f"[ULTRAVOX] Audio received but callback not set or muted: callback={self._audio_output_callback is not None}, muted={self._speaker_muted}")
+                            self._handle_message._callback_warned = True
                 except Exception as e:
-                    logger.error(f"Error decoding audio: {e}")
+                    logger.error(f"Error decoding audio: {e}", exc_info=True)
         
         elif msg_type == "tool_call":
             # Handle tool call
@@ -463,7 +515,11 @@ class UltravoxSession:
                         logger.error(f"Error in experimental message listener: {e}")
         
         else:
-            logger.debug(f"Unhandled message type: {msg_type}")
+            # Log unhandled messages for debugging
+            logger.debug(f"[ULTRAVOX] Unhandled message type: {msg_type or event_type}, data keys: {list(data.keys())[:10]}")
+            # Try to handle as generic message
+            if "audio" in str(data).lower() or "sound" in str(data).lower():
+                logger.debug(f"[ULTRAVOX] Message might contain audio but format unknown")
     
     async def _send_message(self, message: Dict[str, Any]):
         """Send message to WebSocket."""
@@ -486,7 +542,22 @@ class UltravoxSession:
         if not self._websocket or self._mic_muted:
             return
         
-        # Encode audio as base64
+        # Ultravox may accept binary audio directly or base64 encoded
+        # Try sending as binary first (more efficient)
+        try:
+            if hasattr(self._websocket, 'send'):
+                # Send binary audio directly
+                await self._websocket.send(audio_data)
+                
+                # Log first few audio sends
+                if not hasattr(self.send_audio, '_logged'):
+                    logger.info(f"[ULTRAVOX] First audio sent: {len(audio_data)} bytes (binary)")
+                    self.send_audio._logged = True
+                return
+        except Exception as e:
+            logger.debug(f"[ULTRAVOX] Failed to send binary audio, trying JSON: {e}")
+        
+        # Fallback: encode as base64 and send as JSON
         audio_b64 = base64.b64encode(audio_data).decode('ascii')
         
         await self._send_message({
@@ -526,8 +597,8 @@ async def create_ultravox_call(
     # Build config dictionary with model values directly in the dict
     ULTRAVOX_CALL_CONFIG = {
         "systemPrompt": system_prompt,
-        "model": "fixie-ai/ultravox",
-        "voice": "Mark",
+        "model": "ultravox-v0.7",
+        "voice": "Riya-Hindi-Urdu",
         "temperature": 0.3,
         "firstSpeaker": "FIRST_SPEAKER_AGENT" if first_speaker_settings is None else None,
         "firstSpeakerSettings": first_speaker_settings if first_speaker_settings is not None else None,
@@ -599,8 +670,27 @@ async def connect_ultravox(client: Dict[str, Any]):
     if not join_url:
         raise RuntimeError("Ultravox call creation succeeded but joinUrl was missing")
     
+    logger.info(f"[ULTRAVOX] Got joinUrl: {join_url}")
+    
+    # Start connection (non-blocking)
     session.joinCall(join_url)
-    client["is_connected"] = True
+    
+    # Wait a bit for connection to establish
+    await asyncio.sleep(0.5)
+    
+    # Check if connected
+    max_wait = 5.0
+    wait_time = 0.0
+    while wait_time < max_wait and session.status == "connecting":
+        await asyncio.sleep(0.1)
+        wait_time += 0.1
+    
+    if session.status in ["idle", "listening", "thinking", "speaking"]:
+        client["is_connected"] = True
+        logger.info(f"[ULTRAVOX] Connection established, status: {session.status}")
+    else:
+        logger.warning(f"[ULTRAVOX] Connection status: {session.status} (may still be connecting)")
+        client["is_connected"] = True  # Set anyway to allow audio sending
 
 
 async def send_audio(client: Dict[str, Any], audio_data: bytes):
@@ -619,6 +709,7 @@ def set_audio_output_callback(client: Dict[str, Any], callback: Callable[[bytes]
         raise ValueError("Invalid client dict - missing _session")
     
     session._audio_output_callback = callback
+    logger.debug(f"[ULTRAVOX] Audio output callback set on session (status: {session.status})")
 
 
 def set_transcript_callback(client: Dict[str, Any], callback: Callable[[str, bool], None]):
