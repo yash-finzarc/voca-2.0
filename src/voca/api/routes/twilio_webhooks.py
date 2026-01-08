@@ -229,35 +229,31 @@ logger = logging.getLogger(__name__)
 async def handle_outbound_call(request: Request):
     """
     Handle outbound Twilio call webhook.
+    
+    CRITICAL: This endpoint connects Twilio to OUR /twilio WebSocket, NOT directly to Ultravox.
+    The /twilio WebSocket handler will create and manage the Ultravox connection.
     """
     form_data = await request.form()
     call_sid = form_data.get("CallSid")
     to_number = form_data.get("To")
     
-    logger.info(f"[ULTRAVOX] Outbound call to {to_number}, SID: {call_sid}")
+    logger.info(f"[OUTBOUND] Outbound call to {to_number}, SID: {call_sid}")
 
     twiml = VoiceResponse()
     try:
-        # Create Ultravox call and get joinUrl
-        ultravox_api_key = Config.ultravox_api_key
-        if not ultravox_api_key or not ultravox_api_key.strip():
-            raise ValueError("ULTRAVOX_API_KEY not configured")
-
-        call_info = await create_ultravox_call(
-            api_key=ultravox_api_key,
-            organization_id=Config.default_organization_id or None,
-        )
-        join_url = call_info.get("joinUrl")
-        if not join_url:
-            raise RuntimeError("Ultravox call creation succeeded but joinUrl was missing")
-
+        # CRITICAL FIX: Connect Twilio to OUR /twilio WebSocket endpoint
+        # This ensures Twilio audio goes to the same Ultravox call that our server manages
         connect = twiml.connect()
-        connect.stream(url=join_url, name="ultravox")
-
+        connect.stream(
+            url="wss://voca-2.duckdns.org/twilio",
+            name="twilio"
+        )
+        
+        logger.info(f"[OUTBOUND] ✓ TwiML generated - Twilio will connect to wss://voca-2.duckdns.org/twilio")
         return Response(content=str(twiml), media_type="text/xml")
 
     except Exception as e:
-        logger.error(f"[ULTRAVOX] Error handling outbound call {call_sid}: {e}", exc_info=True)
+        logger.error(f"[OUTBOUND] Error handling outbound call {call_sid}: {e}", exc_info=True)
         twiml.say("Sorry, there was an error connecting your call.")
         return Response(content=str(twiml), media_type="text/xml")
 

@@ -131,6 +131,9 @@ class UltravoxSession:
         
         # Audio sending state
         self._audio_sent_logged = False
+        
+        # Welcome message state (once-only guard)
+        self._welcome_sent = False
     
     @property
     def status(self) -> str:
@@ -365,22 +368,9 @@ class UltravoxSession:
             # Log connection details for debugging
             logger.info(f"[ULTRAVOX] Connection URL: {self._join_url}")
             logger.info(f"[ULTRAVOX] First speaker: AGENT (should speak first)")
-            logger.info(f"[ULTRAVOX] Waiting for Ultravox to send welcome message or status updates...")
+            logger.info(f"[ULTRAVOX] Waiting for Ultravox to send status updates...")
             
-            # Send welcome message if available (after connection is established)
-            try:
-                welcome_msg = get_welcome_message(self.organization_id)
-                if welcome_msg:
-                    logger.info(f"[ULTRAVOX] Fetched welcome message: {welcome_msg[:100]}...")
-                    # Wait a brief moment for connection to fully stabilize
-                    await asyncio.sleep(0.2)
-                    # Send welcome message as text to Ultravox
-                    self.sendText(welcome_msg, defer_response=False)
-                    logger.info("[ULTRAVOX] Welcome message sent to Ultravox - should play first")
-                else:
-                    logger.info("[ULTRAVOX] No welcome message found in system_prompts table")
-            except Exception as e:
-                logger.warning(f"[ULTRAVOX] Error sending welcome message: {e}", exc_info=True)
+            # Welcome message will be sent AFTER status changes to idle/listening (see below)
             
             # Start a heartbeat task to confirm loop is running
             async def heartbeat():
@@ -507,6 +497,22 @@ class UltravoxSession:
             }
             if status_str in status_map:
                 self._set_status(status_map[status_str])
+                
+                # CRITICAL FIX: Send welcome message ONLY ONCE when status becomes idle or listening
+                if status_str in ["idle", "listening"] and not self._welcome_sent:
+                    try:
+                        welcome_msg = get_welcome_message(self.organization_id)
+                        if welcome_msg:
+                            logger.info(f"[ULTRAVOX] ✓ Status is now {status_str} - sending welcome message: {welcome_msg[:100]}...")
+                            self.sendText(welcome_msg, defer_response=False)
+                            self._welcome_sent = True
+                            logger.info("[ULTRAVOX] ✓ Welcome message sent to Ultravox")
+                        else:
+                            logger.info("[ULTRAVOX] No welcome message found in system_prompts table")
+                            self._welcome_sent = True  # Mark as sent even if empty to avoid retrying
+                    except Exception as e:
+                        logger.warning(f"[ULTRAVOX] Error sending welcome message: {e}", exc_info=True)
+                        self._welcome_sent = True  # Mark as sent to avoid infinite retries
         
         elif msg_type == "transcript" or event_type == "transcript" or "transcript" in data:
             # Handle transcript data
