@@ -33,7 +33,7 @@ ULTRAVOX_WS_ENDPOINT = os.getenv("ULTRAVOX_WS_ENDPOINT", "wss://api.ultravox.ai/
 ULTRAVOX_API_URL = "https://api.ultravox.ai/api/calls"
 
 # Default backend WebSocket URL for Twilio Media Streams
-DEFAULT_BACKEND_WEBSOCKET_URL = "wss://voca-2.duckdns.org/twilio"
+DEFAULT_BACKEND_WEBSOCKET_URL = "wss://voca2.duckdns.org/twilio"
 
 
 def validate_phone_number(phone_number: str) -> bool:
