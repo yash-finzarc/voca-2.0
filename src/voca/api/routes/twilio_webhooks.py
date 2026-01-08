@@ -11,7 +11,6 @@ from src.voca.api.state import app_state
 from src.voca.Twilio.twilio_config import get_twilio_config
 from src.voca.config import Config
 from src.voca.services.ultravox import UltravoxSession, create_ultravox_call
-from src.voca.audio_utils import mulaw_to_pcm, pcm_to_mulaw
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -106,8 +105,6 @@ async def handle_twilio_websocket(websocket: WebSocket):
     call_sid = ""
     streamsid = ""
     ultravox_session: UltravoxSession = None
-    audio_buffer = bytearray()
-    BUFFER_SIZE = 160  # 20ms of audio at 8kHz (160 bytes for μ-law)
     
     try:
         await websocket.accept()
@@ -146,12 +143,9 @@ async def handle_twilio_websocket(websocket: WebSocket):
             if not streamsid:
                 return
             
-            # Ultravox sends PCM 16-bit audio, Twilio needs μ-law
-            # Convert PCM to μ-law
-            mulaw_audio = pcm_to_mulaw(audio_bytes, sample_width=2)
-            
-            # Encode μ-law to base64
-            audio_payload = base64.b64encode(mulaw_audio).decode("ascii")
+            # Ultravox handles Twilio audio format natively - no conversion needed
+            # Encode audio to base64
+            audio_payload = base64.b64encode(audio_bytes).decode("ascii")
             
             # Send to Twilio Media Stream
             media_message = {
@@ -164,7 +158,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
                 await websocket.send_json(media_message)
                 # Log first audio frame
                 if not hasattr(ultravox_audio_callback, '_logged'):
-                    logger.info(f"[ULTRAVOX] ✓ First audio frame sent to Twilio: {len(audio_bytes)} bytes PCM → {len(mulaw_audio)} bytes μ-law")
+                    logger.info(f"[ULTRAVOX] ✓ First audio frame sent to Twilio: {len(audio_bytes)} bytes")
                     ultravox_audio_callback._logged = True
             except Exception as e:
                 logger.error(f"[ULTRAVOX] Error sending audio to Twilio: {e}", exc_info=True)
@@ -206,41 +200,22 @@ async def handle_twilio_websocket(websocket: WebSocket):
                     elif event == "media":
                         media = data.get("media", {})
                         if media.get("track") == "inbound":
-                            # Inbound audio from Twilio - send to Ultravox
-                            mulaw_chunk = base64.b64decode(media.get("payload", ""))
-                            audio_buffer.extend(mulaw_chunk)
+                            # Inbound audio from Twilio - send directly to Ultravox (no conversion needed)
+                            audio_chunk = base64.b64decode(media.get("payload", ""))
                             
-                            # Process buffer in chunks (20ms at 8kHz = 160 bytes μ-law)
-                            while len(audio_buffer) >= BUFFER_SIZE:
-                                mulaw_to_convert = bytes(audio_buffer[:BUFFER_SIZE])
-                                audio_buffer = audio_buffer[BUFFER_SIZE:]
+                            try:
+                                await ultravox_session.send_audio(audio_chunk)
                                 
-                                # Convert μ-law to PCM and send to Ultravox
-                                try:
-                                    pcm_audio = mulaw_to_pcm(mulaw_to_convert)
-                                    await ultravox_session.send_audio(pcm_audio)
-                                    
-                                    # Log first audio frame
-                                    if not hasattr(handle_twilio_websocket, '_audio_sent_logged'):
-                                        logger.info(f"[ULTRAVOX] ✓ First audio frame sent to Ultravox: {len(mulaw_to_convert)} bytes μ-law → {len(pcm_audio)} bytes PCM")
-                                        handle_twilio_websocket._audio_sent_logged = True
-                                except Exception as e:
-                                    logger.error(f"[ULTRAVOX] Error sending audio to Ultravox: {e}", exc_info=True)
+                                # Log first audio frame
+                                if not hasattr(handle_twilio_websocket, '_audio_sent_logged'):
+                                    logger.info(f"[ULTRAVOX] ✓ First audio frame sent to Ultravox: {len(audio_chunk)} bytes")
+                                    handle_twilio_websocket._audio_sent_logged = True
+                            except Exception as e:
+                                logger.error(f"[ULTRAVOX] Error sending audio to Ultravox: {e}", exc_info=True)
                     
                     elif event == "stop":
                         logger.info("[TWILIO] event=stop received")
                         logger.info("[ULTRAVOX] WebSocket loop exiting due to STOP event")
-                        
-                        # Send remaining audio buffer
-                        while len(audio_buffer) > 0:
-                            mulaw_to_convert = bytes(audio_buffer[:BUFFER_SIZE] if len(audio_buffer) >= BUFFER_SIZE else audio_buffer)
-                            audio_buffer = audio_buffer[len(mulaw_to_convert):]
-                            if mulaw_to_convert:
-                                try:
-                                    pcm_audio = mulaw_to_pcm(mulaw_to_convert)
-                                    await ultravox_session.send_audio(pcm_audio)
-                                except Exception as e:
-                                    logger.error(f"[ULTRAVOX] Error sending final audio: {e}")
                         break
                     
                 except json.JSONDecodeError as e:
