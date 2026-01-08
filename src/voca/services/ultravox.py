@@ -128,6 +128,9 @@ class UltravoxSession:
         # Audio callbacks
         self._audio_output_callback: Optional[Callable[[bytes], None]] = None
         self._transcript_callback: Optional[Callable[[str, bool], None]] = None
+        
+        # Audio sending state
+        self._audio_sent_logged = False
     
     @property
     def status(self) -> str:
@@ -645,47 +648,40 @@ class UltravoxSession:
     
     async def send_audio(self, audio_data: bytes):
         """
-        Send audio data to Ultravox.
+        Send PCM audio to Ultravox (REQUIRED: binary frames only).
+        
+        Ultravox Telephony (Twilio medium) ONLY accepts binary PCM frames.
+        JSON audio format is NOT supported for telephony calls.
         
         Args:
-            audio_data: PCM audio data (16-bit, 8kHz)
+            audio_data: PCM audio data (16-bit, 8kHz, mono, little-endian)
         """
         if not self._websocket or self._mic_muted:
-            if not hasattr(self.send_audio, '_warned_no_ws'):
-                logger.warning(f"[ULTRAVOX] Cannot send audio: websocket={self._websocket is not None}, muted={self._mic_muted}")
-                self.send_audio._warned_no_ws = True
             return
         
-        # Check WebSocket state
-        if hasattr(self._websocket, 'open') and not self._websocket.open:
-            if not hasattr(self.send_audio, '_warned_closed'):
-                logger.warning("[ULTRAVOX] WebSocket is closed, cannot send audio")
-                self.send_audio._warned_closed = True
+        if hasattr(self._websocket, "open") and not self._websocket.open:
+            logger.warning("[ULTRAVOX] WebSocket closed, cannot send audio")
             return
         
-        # Ultravox may accept binary audio directly or base64 encoded
-        # Try sending as binary first (more efficient)
+        if not isinstance(audio_data, (bytes, bytearray)):
+            logger.error("[ULTRAVOX] Audio must be bytes")
+            return
+        
         try:
-            if hasattr(self._websocket, 'send'):
-                # Send binary audio directly
-                await self._websocket.send(audio_data)
+            await self._websocket.send(audio_data)
+            
+            if not self._audio_sent_logged:
+                logger.info(
+                    f"[ULTRAVOX] ✓ First audio frame sent: {len(audio_data)} bytes "
+                    f"(binary PCM 16-bit)"
+                )
+                self._audio_sent_logged = True
                 
-                # Log first few audio sends
-                if not hasattr(self.send_audio, '_logged'):
-                    logger.info(f"[ULTRAVOX] First audio sent: {len(audio_data)} bytes (binary, PCM 16-bit)")
-                    logger.info(f"[ULTRAVOX] WebSocket open: {self._websocket.open if hasattr(self._websocket, 'open') else 'unknown'}")
-                    self.send_audio._logged = True
-                return
         except Exception as e:
-            logger.warning(f"[ULTRAVOX] Failed to send binary audio: {e}, trying JSON format")
-        
-        # Fallback: encode as base64 and send as JSON
-        audio_b64 = base64.b64encode(audio_data).decode('ascii')
-        
-        await self._send_message({
-            "type": "audio",
-            "audio": audio_b64
-        })
+            logger.error(
+                f"[ULTRAVOX] ❌ Failed to send audio frame: {e}",
+                exc_info=True
+            )
 
 
 async def create_ultravox_call(
