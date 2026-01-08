@@ -13,6 +13,15 @@ from websockets.legacy.client import connect
 from typing import Callable, Dict, Any, Optional, List
 from enum import Enum
 import httpx
+import sys
+import pathlib
+
+# Add project root to Python path if running as a script
+if __name__ == "__main__":
+    project_root = pathlib.Path(__file__).parent.parent.parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
 from src.voca.config import Config
 from src.voca.system_prompt import get_prompt
 
@@ -129,6 +138,36 @@ class UltravoxSession:
     def transcripts(self) -> List[Dict[str, Any]]:
         """Get transcripts array."""
         return [t.to_dict() for t in self._transcripts]
+    
+    def getCallTranscript(self) -> List[Dict[str, Any]]:
+        """
+        Get call transcripts.
+        
+        Returns:
+            List of transcript dictionaries with keys: text, isFinal, speaker, medium
+        """
+        return self.transcripts
+    
+    def getCallTranscriptText(self, separator: str = "\n") -> str:
+        """
+        Get call transcripts as formatted text.
+        
+        Args:
+            separator: String to separate multiple transcripts (default: newline)
+        
+        Returns:
+            Formatted string of all transcripts
+        """
+        if not self._transcripts:
+            return ""
+        
+        formatted = []
+        for transcript in self._transcripts:
+            speaker_label = transcript.speaker.upper() if transcript.speaker else "UNKNOWN"
+            final_marker = "[FINAL]" if transcript.isFinal else "[INTERIM]"
+            formatted.append(f"{speaker_label} {final_marker}: {transcript.text}")
+        
+        return separator.join(formatted)
     
     def _set_status(self, new_status: UltravoxSessionStatus):
         """Set status and emit status event."""
@@ -766,6 +805,39 @@ def set_transcript_callback(client: Dict[str, Any], callback: Callable[[str, boo
         raise ValueError("Invalid client dict - missing _session")
     
     session._transcript_callback = callback
+
+
+def getCallTranscript(client: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Get call transcripts from Ultravox session.
+    
+    Args:
+        client: Ultravox client dict (from create_ultravox_client) or UltravoxSession instance
+    
+    Returns:
+        List of transcript dictionaries with keys: text, isFinal, speaker, medium
+    """
+    # Handle both client dict and direct session instance
+    if isinstance(client, UltravoxSession):
+        session = client
+    else:
+        session = client.get("_session")
+        if not session:
+            raise ValueError("Invalid client dict - missing _session")
+    
+    # Get transcripts from session
+    transcripts = session.transcripts
+    
+    # Log transcript summary for debugging
+    if transcripts:
+        logger.info(f"[ULTRAVOX] Retrieved {len(transcripts)} transcript(s) from call")
+        for i, transcript in enumerate(transcripts):
+            logger.info(f"[ULTRAVOX] Transcript #{i+1}: speaker={transcript.get('speaker')}, "
+                       f"final={transcript.get('isFinal')}, text='{transcript.get('text', '')[:100]}...'")
+    else:
+        logger.warning("[ULTRAVOX] No transcripts found in call session")
+    
+    return transcripts
 
 
 async def stop_ultravox(client: Dict[str, Any]):
