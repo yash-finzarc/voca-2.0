@@ -19,11 +19,13 @@ from src.voca.Twilio.twilio_config import get_twilio_config
 from src.voca.config import Config
 from src.voca.services.ultravox import create_ultravox_call
 # Removed unused imports: deepgramtts, stream_tts_to_twilio, WebRTCSession, DeepgramSTTClient
-# These were used by the old STT-LLM-TTS pipeline which is now replaced by custom LLM pipeline
+# These were used by the old STT-LLM-TTS pipeline which is now replaced by Ultravox speech-to-speech
 
-# Import custom LLM pipeline components
-from src.voca.orchestrator import VocaOrchestrator
-# Commented out Sarvam STT/TTS - using Ultravox instead
+# Commented out: Custom LLM pipeline components - not needed with Ultravox
+# Ultravox handles speech-to-speech internally, so we don't need VocaOrchestrator or separate STT/TTS clients
+# from src.voca.orchestrator import VocaOrchestrator
+
+# Commented out: Sarvam STT/TTS - using Ultravox instead
 # from src.voca.services.sarvam_stt import SarvamSTTClient
 # from src.voca.services.sarvam_tts import SarvamTTSClient
 from src.voca.services.ultravox import UltravoxClient, create_ultravox_client, connect_ultravox, send_audio, stop_ultravox
@@ -1148,40 +1150,39 @@ async def handle_twilio_websocket(websocket: WebSocket):
         organization_id=Config.default_organization_id
     )
     
-    # Commented out: Sarvam STT/TTS clients - using Ultravox instead
-    # Initialize orchestrator for LLM pipeline
+    # Commented out: Sarvam STT/TTS clients and custom LLM pipeline - using Ultravox instead
+    # Ultravox handles speech-to-speech internally, so we don't need separate STT/TTS clients or orchestrator
     # orchestrator = VocaOrchestrator(
     #     on_log=lambda msg: app_state._log_callback(f"[CUSTOM_LLM_PIPELINE] {msg}"),
     #     organization_id=Config.default_organization_id
     # )
-    # 
-    # # Initialize STT and TTS clients (but don't connect yet - sequential connection required)
     # stt_client = SarvamSTTClient(api_key=sarvam_api_key, language=Config.sarvam_language, sample_rate=8000)
     # tts_client = SarvamTTSClient(api_key=sarvam_api_key, language=Config.sarvam_language, voice=Config.sarvam_voice, sample_rate=8000)
     
-    # State machine: INIT → WELCOME → LISTENING → PROCESSING → SPEAKING
+    # Simplified state machine for Ultravox (handles everything internally)
     class CallState(Enum):
         INIT = "init"  # WebSocket accepted, waiting for start event
-        WELCOME = "welcome"  # TTS connected, playing welcome message
-        LISTENING = "listening"  # Welcome complete, STT connected, listening for user
-        PROCESSING = "processing"  # User spoke, processing through LLM
-        SPEAKING = "speaking"  # TTS playing response
+        LISTENING = "listening"  # Ready for real-time speech-to-speech conversation
+        # Note: WELCOME, PROCESSING, SPEAKING states not needed - Ultravox handles these internally
     
     call_state = CallState.INIT
     
     # State management
     call_sid = ""
     streamsid = ""
-    conversation_history = []
-    current_tts_task = None
-    welcome_complete_event = asyncio.Event()  # Signals when welcome TTS completes
-    welcome_audio_received = False  # Track if we've received any audio for welcome
-    tts_active = False  # Flag to track if TTS is currently streaming audio
-    tts_audio_sent = False  # Flag to track if any TTS audio has been sent to Twilio
-    pending_closing_message = False  # Flag to track if current TTS is a closing message
+    # Commented out: Variables tied to old STT->LLM->TTS pipeline - not needed with Ultravox
+    # conversation_history = []
+    # current_tts_task = None
+    # welcome_complete_event = asyncio.Event()
+    # welcome_audio_received = False
+    # tts_active = False
+    # pending_closing_message = False
+    # should_end_call = asyncio.Event()
+    
+    # Variables needed for Ultravox
+    tts_audio_sent = False  # Flag to track if any Ultravox audio has been sent to Twilio (for logging)
     audio_buffer = bytearray()
     BUFFER_SIZE = 20 * 160  # 20ms of audio at 8kHz
-    should_end_call = asyncio.Event()  # Event to signal call should end after closing message
     
     try:
         await websocket.accept()
@@ -1221,8 +1222,8 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # Set up Ultravox audio output callback (replaces TTS audio callback)
         async def ultravox_audio_output_callback(pcm_audio: bytes):
             """Callback for Ultravox audio output (speech from AI)."""
-            nonlocal call_state, welcome_audio_received, tts_audio_sent
-            if not tts_active or not streamsid:
+            nonlocal call_state, tts_audio_sent
+            if not streamsid:
                 return
             
             # CRITICAL: Convert PCM to μ-law (sample width = 2 bytes for 16-bit PCM)
@@ -1252,10 +1253,6 @@ async def handle_twilio_websocket(websocket: WebSocket):
             if not tts_audio_sent:
                 logger.info("[AUDIO_OUT] First Ultravox audio frame sent to Twilio")
                 tts_audio_sent = True
-            
-            # Mark that we've received audio (for welcome message tracking)
-            if call_state == CallState.WELCOME:
-                welcome_audio_received = True
         
         # Set audio output callback for Ultravox (replaces TTS audio callback)
         from src.voca.services.ultravox import set_audio_output_callback
@@ -1304,23 +1301,8 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # # Set audio callback for persistent TTS connection
         # tts_client.set_audio_callback(tts_audio_callback)
         
-        # Commented out: Sarvam TTS completion callback - Ultravox handles this internally
-        # # Set completion callback to track when TTS audio streaming finishes
-        # async def tts_completion_callback():
-        #     """Callback when TTS audio streaming completes."""
-        #     nonlocal tts_active, pending_closing_message, should_end_call
-        #     logger.info("[STATE] TTS audio streaming completed")
-        #     tts_active = False
-        #     
-        #     # If this was a closing message, signal that call should end
-        #     if pending_closing_message:
-        #         logger.info("[CUSTOM_LLM_PIPELINE] Closing message TTS completed - signaling call end")
-        #         pending_closing_message = False
-        #         should_end_call.set()
-        #     
-        #     # Note: State transition to LISTENING will happen via VAD (when STT detects silence AND tts_active == False)
-        # 
-        # tts_client.set_completion_callback(tts_completion_callback)
+        # Commented out: Sarvam TTS completion callback - Ultravox handles completion internally
+        # Ultravox manages its own audio streaming lifecycle, so we don't need completion callbacks
         
         # Set up Ultravox transcript callback (optional - for logging/transcripts)
         async def ultravox_transcript_callback(transcript: str, is_final: bool):
@@ -1474,27 +1456,25 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # stt_client.set_transcript_callback(stt_transcript_callback)
         
         # Main message loop
-        welcome_sent = False
-        
-        # Create a task to monitor should_end_call event
-        async def monitor_end_call():
-            await should_end_call.wait()
-            logger.info("[CUSTOM_LLM_PIPELINE] Closing message event set - closing WebSocket to end call")
-            try:
-                await websocket.close(code=1000, reason="Call ended after closing message")
-            except Exception as e:
-                logger.debug(f"[CUSTOM_LLM_PIPELINE] WebSocket already closed: {e}")
-        
-        end_call_task = asyncio.create_task(monitor_end_call())
+        # Commented out: welcome_sent and monitor_end_call - Ultravox handles these internally
+        # welcome_sent = False
+        # async def monitor_end_call():
+        #     await should_end_call.wait()
+        #     logger.info("[CUSTOM_LLM_PIPELINE] Closing message event set - closing WebSocket to end call")
+        #     try:
+        #         await websocket.close(code=1000, reason="Call ended after closing message")
+        #     except Exception as e:
+        #         logger.debug(f"[CUSTOM_LLM_PIPELINE] WebSocket already closed: {e}")
+        # end_call_task = asyncio.create_task(monitor_end_call())
         
         # Persistent message loop - stays open until explicit stop or disconnect
-        logger.info("[CUSTOM_LLM_PIPELINE] Starting persistent message loop - waiting for Twilio events...")
+        logger.info("[ULTRAVOX] Starting persistent message loop - waiting for Twilio events...")
         loop_exit_reason = None
         
         try:
             async for message in websocket.iter_text():
                 try:
-                    logger.debug(f"[CUSTOM_LLM_PIPELINE] Received message: {message[:100] if len(message) > 100 else message}")
+                    logger.debug(f"[ULTRAVOX] Received message: {message[:100] if len(message) > 100 else message}")
                     data = json.loads(message)
                     event = data.get("event")
                     
@@ -1708,14 +1688,14 @@ async def handle_twilio_websocket(websocket: WebSocket):
                         #             await stt_client.send_audio(pcm_audio)
                     
                 except json.JSONDecodeError as e:
-                    logger.warning(f"[CUSTOM_LLM_PIPELINE] Failed to parse message: {e}")
+                    logger.warning(f"[ULTRAVOX] Failed to parse message: {e}")
                     # Continue loop - don't exit on JSON errors
                     continue
                 except Exception as e:
-                    logger.error(f"[CUSTOM_LLM_PIPELINE] Error processing message: {e}", exc_info=True)
-                    # If WebSocket was closed (by monitor_end_call), break the loop
+                    logger.error(f"[ULTRAVOX] Error processing message: {e}", exc_info=True)
+                    # If WebSocket was closed, break the loop
                     if "not connected" in str(e).lower() or "closed" in str(e).lower():
-                        logger.info("[PIPELINE] WebSocket loop exiting due to connection closed")
+                        logger.info("[ULTRAVOX] WebSocket loop exiting due to connection closed")
                         loop_exit_reason = "connection closed"
                         break
                     # For other errors, continue the loop - don't exit
@@ -1723,24 +1703,25 @@ async def handle_twilio_websocket(websocket: WebSocket):
             
             # Log why the loop exited
             if loop_exit_reason:
-                logger.info(f"[PIPELINE] WebSocket loop exited: {loop_exit_reason}")
+                logger.info(f"[ULTRAVOX] WebSocket loop exited: {loop_exit_reason}")
             else:
-                logger.info("[PIPELINE] WebSocket loop exited: iterator exhausted (normal disconnect)")
+                logger.info("[ULTRAVOX] WebSocket loop exited: iterator exhausted (normal disconnect)")
         finally:
-            # Cancel the monitoring task if it's still running
-            if not end_call_task.done():
-                end_call_task.cancel()
-                try:
-                    await end_call_task
-                except asyncio.CancelledError:
-                    pass
+            # Commented out: Monitor task cleanup - not needed without monitor_end_call
+            # if not end_call_task.done():
+            #     end_call_task.cancel()
+            #     try:
+            #         await end_call_task
+            #     except asyncio.CancelledError:
+            #         pass
+            pass
         
     except WebSocketDisconnect:
-        logger.info("[CUSTOM_LLM_PIPELINE] WebSocket disconnected by client")
+        logger.info("[ULTRAVOX] WebSocket disconnected by client")
     except Exception as e:
-        logger.error(f"[CUSTOM_LLM_PIPELINE] Error in WebSocket handler: {e}", exc_info=True)
+        logger.error(f"[ULTRAVOX] Error in WebSocket handler: {e}", exc_info=True)
         import traceback
-        logger.error(f"[CUSTOM_LLM_PIPELINE] Traceback: {traceback.format_exc()}")
+        logger.error(f"[ULTRAVOX] Traceback: {traceback.format_exc()}")
     finally:
         # Cleanup - close Ultravox connection
         # This only runs after the message loop exits (on stop event or disconnect)
@@ -1768,5 +1749,5 @@ async def handle_twilio_websocket(websocket: WebSocket):
         # Note: Don't close websocket here - FastAPI handles it automatically on handler exit
 
 
-# Removed Deepgram agent endpoints - using custom LLM pipeline instead
+# Removed Deepgram agent endpoints - using Ultravox speech-to-speech instead
 
