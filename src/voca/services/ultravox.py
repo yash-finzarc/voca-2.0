@@ -1,9 +1,3 @@
-"""
-Ultravox Client SDK implementation for Python.
-
-This module implements the complete Ultravox SDK according to the official documentation,
-including REST API client for creating calls and WebSocket client for joining calls.
-"""
 import asyncio
 import json
 import logging
@@ -206,12 +200,15 @@ WELCOME_MESSAGE = "नमस्ते आपका Heal Card में स्व
 
 ULTRAVOX_CALL_CONFIG = {
     "systemPrompt": SYSTEM_PROMPT,
-    "welcomeMessage": WELCOME_MESSAGE,
     "model": "ultravox-v0.7",
     "voice": "Riya-Hindi-Urdu",
     "temperature": 0.3,
-    "firstSpeaker": "FIRST_SPEAKER_AGENT",
-    "medium": {"twilio": {}}
+    "firstSpeakerSettings": {
+        "agent": {
+            "text": WELCOME_MESSAGE
+        }
+    },
+    "medium": {"twilio": {}}  # Use twilio medium
 }
 
 class UltravoxSessionStatus(Enum):
@@ -913,23 +910,11 @@ async def create_ultravox_call(
     if not api_key or not api_key.strip():
         raise ValueError("Ultravox API key is empty or not set")
 
-    # Use system prompt from constant
-    system_prompt = SYSTEM_PROMPT
-    logger.info("Using system prompt from constant")
-
-    # Build config dictionary with model values directly in the dict
-    ULTRAVOX_CALL_CONFIG = {
-        "systemPrompt": system_prompt,
-        "model": "ultravox-v0.7",
-        "voice": "Riya-Hindi-Urdu",
-        "temperature": 0.3,
-        "firstSpeaker": "FIRST_SPEAKER_AGENT" if first_speaker_settings is None else None,
-        "firstSpeakerSettings": first_speaker_settings if first_speaker_settings is not None else None,
-        "medium": {"twilio": {}}
-    }
+    # Use the ULTRAVOX_CALL_CONFIG constant defined at the top of the file
+    logger.info("Using ULTRAVOX_CALL_CONFIG constant from top of file")
     
-    # Remove None values
-    ULTRAVOX_CALL_CONFIG = {k: v for k, v in ULTRAVOX_CALL_CONFIG.items() if v is not None}
+    # Create a copy to avoid modifying the original constant
+    config = ULTRAVOX_CALL_CONFIG.copy()
 
     headers = {
         "Content-Type": "application/json",
@@ -937,16 +922,16 @@ async def create_ultravox_call(
     }
 
     logger.info(f"Creating Ultravox call via HTTP POST to {ULTRAVOX_API_URL}")
-    logger.info(f"[ULTRAVOX_CONFIG] Model: {ULTRAVOX_CALL_CONFIG.get('model')}, Voice: {ULTRAVOX_CALL_CONFIG.get('voice')}, Temperature: {ULTRAVOX_CALL_CONFIG.get('temperature')}")
-    logger.info(f"[ULTRAVOX_CONFIG] First Speaker: {ULTRAVOX_CALL_CONFIG.get('firstSpeaker', 'NOT SET')}")
-    logger.info(f"[ULTRAVOX_CONFIG] Medium: {ULTRAVOX_CALL_CONFIG.get('medium')}")
-    logger.debug(f"[ULTRAVOX_CONFIG] Full config: {json.dumps(ULTRAVOX_CALL_CONFIG, indent=2)}")
+    logger.info(f"[ULTRAVOX_CONFIG] Model: {config.get('model')}, Voice: {config.get('voice')}, Temperature: {config.get('temperature')}")
+    logger.info(f"[ULTRAVOX_CONFIG] First Speaker Settings: {config.get('firstSpeakerSettings', 'NOT SET')}")
+    logger.info(f"[ULTRAVOX_CONFIG] Medium: {config.get('medium')}")
+    logger.debug(f"[ULTRAVOX_CONFIG] Full config: {json.dumps(config, indent=2)}")
 
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 ULTRAVOX_API_URL,
-                json=ULTRAVOX_CALL_CONFIG,
+                json=config,
                 headers=headers,
                 timeout=30.0
             )

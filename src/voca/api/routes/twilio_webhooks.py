@@ -15,6 +15,17 @@ from src.voca.services.ultravox import UltravoxSession, create_ultravox_call
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Import audioop - handle Python 3.13+ where audioop was removed
+try:
+    import audioop
+except ImportError:
+    # Python 3.13+ - use audioop-lts package
+    try:
+        import audioop_lts as audioop
+    except ImportError:
+        logger.error("audioop not available. Please install audioop-lts for Python 3.13+: pip install audioop-lts")
+        audioop = None
+
 
 @router.post("/outbound")
 async def handle_outbound_call(request: Request):
@@ -105,6 +116,7 @@ async def handle_twilio_websocket(websocket: WebSocket):
     call_sid = ""
     streamsid = ""
     ultravox_session: UltravoxSession = None
+    mulaw_to_pcm_state = None  # Audio conversion state (not used by audioop, kept for compatibility)
     
     try:
         await websocket.accept()
@@ -135,33 +147,44 @@ async def handle_twilio_websocket(websocket: WebSocket):
             organization_id=Config.default_organization_id
         )
         
+        # Audio conversion state
+        pcm_to_mulaw_state = None
+        
         # Set up audio output callback (Ultravox → Twilio)
         async def ultravox_audio_callback(audio_bytes: bytes):
-            """Callback for audio from Ultravox - send to Twilio."""
-            nonlocal streamsid
+            """Callback for audio from Ultravox (PCM s16le) - convert to mulaw and send to Twilio."""
+            nonlocal streamsid, pcm_to_mulaw_state
             
             if not streamsid:
                 return
             
-            # Ultravox handles Twilio audio format natively - no conversion needed
-            # Encode audio to base64
-            audio_payload = base64.b64encode(audio_bytes).decode("ascii")
+            if audioop is None:
+                logger.error("[ULTRAVOX] audioop not available - cannot convert PCM to mulaw")
+                return
             
-            # Send to Twilio Media Stream
-            media_message = {
-                "event": "media",
-                "streamSid": streamsid,
-                "media": {"payload": audio_payload}
-            }
-            
+            # Convert PCM s16le → mulaw (G.711 μ-law)
+            # audioop.lin2ulaw(data, width) - width=2 means 16-bit samples
             try:
+                mulaw_audio = audioop.lin2ulaw(audio_bytes, 2)
+                
+                # Encode mulaw audio to base64
+                audio_payload = base64.b64encode(mulaw_audio).decode("ascii")
+                
+                # Send to Twilio Media Stream
+                media_message = {
+                    "event": "media",
+                    "streamSid": streamsid,
+                    "media": {"payload": audio_payload}
+                }
+                
                 await websocket.send_json(media_message)
+                
                 # Log first audio frame
                 if not hasattr(ultravox_audio_callback, '_logged'):
-                    logger.info(f"[ULTRAVOX] ✓ First audio frame sent to Twilio: {len(audio_bytes)} bytes")
+                    logger.info(f"[ULTRAVOX] ✓ First audio frame converted (PCM→mulaw) and sent to Twilio: {len(audio_bytes)} bytes PCM → {len(mulaw_audio)} bytes mulaw")
                     ultravox_audio_callback._logged = True
             except Exception as e:
-                logger.error(f"[ULTRAVOX] Error sending audio to Twilio: {e}", exc_info=True)
+                logger.error(f"[ULTRAVOX] Error converting/sending audio to Twilio: {e}", exc_info=True)
         
         ultravox_session._audio_output_callback = ultravox_audio_callback
         
@@ -200,18 +223,28 @@ async def handle_twilio_websocket(websocket: WebSocket):
                     elif event == "media":
                         media = data.get("media", {})
                         if media.get("track") == "inbound":
-                            # Inbound audio from Twilio - send directly to Ultravox (no conversion needed)
-                            audio_chunk = base64.b64decode(media.get("payload", ""))
+                            # Inbound audio from Twilio (mulaw) - convert to PCM and send to Ultravox
+                            if audioop is None:
+                                logger.error("[ULTRAVOX] audioop not available - cannot convert mulaw to PCM")
+                                continue
                             
+                            # Decode base64 mulaw audio from Twilio
+                            mulaw_audio = base64.b64decode(media.get("payload", ""))
+                            
+                            # Convert mulaw (G.711 μ-law) → PCM s16le
+                            # audioop.ulaw2lin(data, width) - width=2 means 16-bit samples
                             try:
-                                await ultravox_session.send_audio(audio_chunk)
+                                pcm_audio = audioop.ulaw2lin(mulaw_audio, 2)
+                                
+                                # Send PCM to Ultravox
+                                await ultravox_session.send_audio(pcm_audio)
                                 
                                 # Log first audio frame
                                 if not hasattr(handle_twilio_websocket, '_audio_sent_logged'):
-                                    logger.info(f"[ULTRAVOX] ✓ First audio frame sent to Ultravox: {len(audio_chunk)} bytes")
+                                    logger.info(f"[ULTRAVOX] ✓ First audio frame converted (mulaw→PCM) and sent to Ultravox: {len(mulaw_audio)} bytes mulaw → {len(pcm_audio)} bytes PCM")
                                     handle_twilio_websocket._audio_sent_logged = True
                             except Exception as e:
-                                logger.error(f"[ULTRAVOX] Error sending audio to Ultravox: {e}", exc_info=True)
+                                logger.error(f"[ULTRAVOX] Error converting/sending audio to Ultravox: {e}", exc_info=True)
                     
                     elif event == "stop":
                         logger.info("[TWILIO] event=stop received")
