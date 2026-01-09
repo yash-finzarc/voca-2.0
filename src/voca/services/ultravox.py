@@ -208,7 +208,12 @@ ULTRAVOX_CALL_CONFIG = {
             "text": WELCOME_MESSAGE
         }
     },
-    "medium": {"twilio": {}}  # Use twilio medium
+    "medium": {
+        "serverWebSocket": {
+            "inputSampleRate": 8000,
+            "outputSampleRate": 8000
+        }
+    }
 }
 
 class UltravoxSessionStatus(Enum):
@@ -310,9 +315,6 @@ class UltravoxSession:
         
         # Audio sending state
         self._audio_sent_logged = False
-        
-        # Welcome message state (once-only guard)
-        self._welcome_sent = False
     
     @property
     def status(self) -> str:
@@ -532,9 +534,6 @@ class UltravoxSession:
             self._websocket = await connect(self._join_url)
             logger.info("Connected to Ultravox WebSocket")
             
-            # CRITICAL: Send START event with audio config (required for telephony)
-            await self._send_start_event()
-            
             # Wait a moment for connection to stabilize
             await asyncio.sleep(0.1)
             
@@ -676,22 +675,6 @@ class UltravoxSession:
             }
             if status_str in status_map:
                 self._set_status(status_map[status_str])
-                
-                # CRITICAL FIX: Send welcome message ONLY ONCE when status becomes idle or listening
-                if status_str in ["idle", "listening"] and not self._welcome_sent:
-                    try:
-                        welcome_msg = WELCOME_MESSAGE
-                        if welcome_msg:
-                            logger.info(f"[ULTRAVOX] ✓ Status is now {status_str} - sending welcome message: {welcome_msg[:100]}...")
-                            self.sendText(welcome_msg, defer_response=False)
-                            self._welcome_sent = True
-                            logger.info("[ULTRAVOX] ✓ Welcome message sent to Ultravox")
-                        else:
-                            logger.info("[ULTRAVOX] No welcome message found")
-                            self._welcome_sent = True  # Mark as sent even if empty to avoid retrying
-                    except Exception as e:
-                        logger.warning(f"[ULTRAVOX] Error sending welcome message: {e}", exc_info=True)
-                        self._welcome_sent = True  # Mark as sent to avoid infinite retries
         
         elif msg_type == "transcript" or event_type == "transcript" or "transcript" in data:
             # Handle transcript data
@@ -834,42 +817,9 @@ class UltravoxSession:
         except Exception as e:
             logger.error(f"Error sending message: {e}")
     
-    async def _send_start_event(self):
-        """
-        Send START event to Ultravox with audio configuration.
-        
-        This is REQUIRED for telephony mode - Ultravox needs to know:
-        - Audio encoding (PCM 16-bit little-endian)
-        - Sample rate (8000 Hz for Twilio)
-        - Channel count (mono = 1)
-        
-        Without this, Ultravox will not process incoming audio.
-        """
-        if not self._websocket:
-            logger.warning("[ULTRAVOX] Cannot send START event: WebSocket not connected")
-            return
-        
-        start_msg = {
-            "type": "start",
-            "audio": {
-                "encoding": "pcm_s16le",
-                "sample_rate": 8000,
-                "channels": 1
-            }
-        }
-        
-        try:
-            await self._websocket.send(json.dumps(start_msg))
-            logger.info("[ULTRAVOX] ✓ Sent START event (audio config: PCM 16-bit, 8kHz, mono)")
-        except Exception as e:
-            logger.error(f"[ULTRAVOX] ❌ Failed to send START event: {e}", exc_info=True)
-    
     async def send_audio(self, audio_data: bytes):
         """
-        Send PCM audio to Ultravox (REQUIRED: binary frames only).
-        
-        Ultravox Telephony (Twilio medium) ONLY accepts binary PCM frames.
-        JSON audio format is NOT supported for telephony calls.
+        Send PCM audio to Ultravox via serverWebSocket (binary frames only).
         
         Args:
             audio_data: PCM audio data (16-bit, 8kHz, mono, little-endian)
